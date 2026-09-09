@@ -27,7 +27,7 @@ pip-compile --generate-hashes --allow-unsafe \
   pyproject.toml
 
 pip-compile --generate-hashes --allow-unsafe \
-  --extra dev --extra test \
+  --extra dev --extra test --extra lint \
   --output-file=requirements/dev.lock.txt \
   pyproject.toml
 

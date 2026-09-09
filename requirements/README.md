@@ -11,9 +11,9 @@ file has drifted from what `pyproject.toml` actually resolves to.
   `pip install privacyfence` actually installs and what PyInstaller bundles into the `.app`. It's
   also the blocking half of `dependency-audit.yml`'s `pip-audit` severity policy — see that
   workflow's own comments.
-- **`dev.lock.txt`** — the above plus the `dev` and `test` extras: build/release/test tooling CI and
-  contributors install, that never reaches an end user's machine. Audited too, but informationally,
-  by the same workflow.
+- **`dev.lock.txt`** — the above plus the `dev`, `test`, and `lint` extras: build/release/test/static-
+  analysis tooling CI and contributors install, that never reaches an end user's machine. Audited
+  too, but informationally, by the same workflow.
 
 Every package is pinned to an exact version with every hash PyPI has published for it —
 `pip install --require-hashes -r requirements/runtime.lock.txt` verifies each download against this
