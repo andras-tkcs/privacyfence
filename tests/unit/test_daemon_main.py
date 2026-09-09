@@ -904,6 +904,20 @@ class TestSetupLogging:
         daemon_main.setup_logging({})
         assert (tmp_path / "logs" / "privacyfence.log").exists()
 
+    def test_a_secret_logged_anywhere_is_redacted_in_the_log_file(self, tmp_path):
+        # SEC-10 (docs/security-remediation-plan.md Phase 1.7): the root
+        # logger's formatter is safe_errors.SecretRedactingFormatter, so
+        # this holds for every logger in the process, not just routes_mcp.py's
+        # own tool-call-failure log line.
+        log_file = tmp_path / "privacyfence.log"
+        daemon_main.setup_logging({"logging": {"file": str(log_file)}})
+        logging.getLogger("privacyfence.some_module").warning(
+            "Upstream call failed: refresh_token=abcdefgh12345678"
+        )
+        contents = log_file.read_text()
+        assert "abcdefgh12345678" not in contents
+        assert "[REDACTED]" in contents
+
 
 # ---------------------------------------------------------------------------- #
 # _maybe_start_web_server -- since P10 (see docs/https-connector-refactor-
