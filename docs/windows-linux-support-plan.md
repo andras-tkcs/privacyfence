@@ -31,6 +31,10 @@ they're different audiences with different packaging needs, not two flavors of t
 Linux splits into two genuinely different deliverables. Don't conflate them — "Linux support" as a
 single checkbox hides that one path is basically already shipped and the other hasn't been started.
 
+See [`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md) for A2.3's detailed,
+phased implementation plan (PyInstaller build, `debian/` packaging, XDG autostart, CI, versioning) —
+written once A2.1/A2.2 below are far enough along to be a real prerequisite rather than a guess.
+
 ### A1. Org mode (server) — already exists; needs battle-testing, not building
 
 This is **already a working, documented install path**, not a gap to fill:
@@ -124,6 +128,11 @@ Checklist:
 
 Unlike Linux, this has essentially nothing shipped yet beyond the fact that the daemon's core logic
 is platform-independent Python. Real new work, in five parts:
+
+See [`windows-support-plan.md`](windows-support-plan.md) for the detailed, phased implementation
+plan (B1–B6 expanded into ten sequenced phases, ending — per explicit scoping — with closing
+[#121](https://github.com/andras-tkcs/privacyfence/issues/121) only once a real signed release has
+shipped and been QA'd, not as an early checkbox).
 
 - [ ] **B1 — Fix the one genuine portability bug.** `daemon_main.py`'s single-instance lock
       (`_acquire_instance_lock`/`_release_instance_lock`) calls `fcntl.flock`, which doesn't exist on
