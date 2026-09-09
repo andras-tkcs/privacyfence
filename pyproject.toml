@@ -62,7 +62,7 @@ dependencies = [
     # is_error, which would break that contract test's client-side imports
     # outright. Bump the cap only alongside a rewrite of that test and a
     # check of web/routes_mcp.py's own server-side surface against 2.0.
-    "mcp>=1.28,<2.0.0",
+    "mcp>=1.28,<3.0.0",
     # Verifying the org IdP's ID token (P7, docs/https-connector-refactor-
     # plan.md §9.4: PrivacyFence is its own minimal OAuth 2.1 authorization
     # server, decision B in §15, authenticating the human against the org's
