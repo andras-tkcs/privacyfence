@@ -528,6 +528,10 @@ def _maybe_start_web_server(
         pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
         ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
         max_pending=int(approvals_config.get("max_pending", 50)),
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): see
+        # approvals.DEFAULT_MAX_PENDING_PER_PRINCIPAL's own comment for why
+        # this exists alongside max_pending above.
+        max_pending_per_principal=int(approvals_config.get("max_pending_per_principal", 20)),
     )
     web_ui = init_web_approval_ui(registry=registry)
     init_approval_ui(web_ui)
@@ -631,6 +635,10 @@ def _start_org_web_server(
         pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
         ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
         max_pending=int(approvals_config.get("max_pending", 50)),
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): see
+        # approvals.DEFAULT_MAX_PENDING_PER_PRINCIPAL's own comment for why
+        # this exists alongside max_pending above.
+        max_pending_per_principal=int(approvals_config.get("max_pending_per_principal", 20)),
     )
     web_ui = init_web_approval_ui(registry=approval_registry)
     # WebApprovalUI is unconditionally the ApprovalUI here, same as local
