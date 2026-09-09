@@ -141,6 +141,15 @@ test = [
     # starlette.testclient.TestClient's transport -- test-only, exercising
     # web/ routes (tests/unit/web/) without a real socket.
     "httpx>=0.27",
+    # tests/integration/test_browser_smoke.py (TST-06, docs/security-
+    # remediation-plan.md Phase 2 item 2.5) -- drives the real web approval
+    # surface in a real headless browser, for the CSP/SameSite-cookie/SSE
+    # behavior only a real browser actually enforces (see that module's own
+    # docstring). Also needs a downloaded Chromium build (`playwright
+    # install chromium`, see .github/workflows/tests.yml); the test module
+    # skips itself if either is missing, so this alone doesn't force a
+    # browser download on every `pip install -e ".[test]"`.
+    "playwright>=1.48,<2.0",
 ]
 # Static analysis gate (docs/security-remediation-plan.md, Phase 2 item 2.3,
 # TST-07). ruff is the CI-blocking step ([tool.ruff.lint] below); mypy and
