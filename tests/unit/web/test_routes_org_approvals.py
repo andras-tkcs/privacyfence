@@ -169,7 +169,7 @@ class TestDecideWithoutStepUp:
         app, sessions, web_ui = _app()
         approval = _register(web_ui, ALICE, gate_kind="review")
         client = _client(app)
-        session_id = _signed_in(client, sessions, ALICE)
+        _signed_in(client, sessions, ALICE)
         r = client.post(
             f"/api/approvals/{approval.id}/decide", content=b"not json",
             headers={"content-type": "application/json"},
