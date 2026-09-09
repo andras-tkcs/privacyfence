@@ -326,7 +326,7 @@ oversight measure**, sitting in front of the AI system rather than being one:
 | Control | Implementation |
 |---|---|
 | Authentication to connected services | OAuth2 (or Telethon/MTProto for Telegram), per user, per connector — no shared service accounts |
-| Authentication to PrivacyFence itself | **Local mode:** possession of a random bearer token written to a local file is the whole authorization model — see the "Local-mode token semantics" note below for exactly what that does and doesn't provide. **Org mode:** each person signs in via OIDC against the organization's own IdP (§2); the resulting server-side session is an unguessable, HttpOnly/Secure/SameSite=Strict cookie with a 30-minute sliding idle timeout, held in memory only (a session does not survive a daemon restart — signing in again is the accepted cost, see `web/org_session.py`) |
+| Authentication to PrivacyFence itself | **Local mode:** possession of a random bearer token written to a local file is the whole authorization model — see the "Local-mode token semantics" note below for exactly what that does and doesn't provide. **Org mode:** each person signs in via OIDC against the organization's own IdP (§2); the resulting server-side session is an unguessable, HttpOnly/Secure/SameSite=Strict cookie with a 30-minute sliding idle timeout and a 24-hour absolute cap from sign-in regardless of activity, held in memory only (a session does not survive a daemon restart — signing in again is the accepted cost, see `web/org_session.py`); an MCP client's OAuth refresh token carries the same absolute-lifetime cap (30 days from its original issuance, unaffected by rotation) alongside its own rotate-on-use behavior (see `web/oauth_provider.py`) |
 | Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, channel, or task list |
 | PII detection gate | Local regex heuristic (Hungarian/English/German) over `review` (read) dialog content only; a match requires an extra explicit confirmation before Allow once takes effect. Toggleable per user (PrivacyFence Settings / `pii_detection.enabled`) |
 | Transport to Claude | **Local mode:** loopback-bound (`localhost`) `/mcp` Streamable HTTP endpoint, authenticated by a shared bearer token (`~/.privacyfence/mcp_token`) required on every request; Claude Desktop's stdio shim carries no credentials of its own and only relays it. **Org mode:** `/mcp` over HTTPS, authenticated by a real OAuth 2.1 authorization server (dynamic client registration, PKCE, tokens bound to the OIDC-verified principal) instead of one shared secret |
@@ -353,17 +353,20 @@ upgrade — is tracked as SEC-06 in [`security-remediation-plan.md`](security-re
 is not yet implemented; treat the paragraph above, not the "per-launch" framing an earlier version of
 this document used, as the current state.
 
-**Storage format and permissions — also not fully hardened yet.** Each credential/token file is
-written in plain text and then `chmod`'d to `0600` *after* the write completes (not written
-atomically via a temp-file-and-rename, and not created with restrictive permissions from the start);
-a failure to apply that `chmod` — e.g. an unusual filesystem — is caught and merely logged at debug
-level, not treated as fatal. The directories these files live in (`~/.privacyfence` and its
-subdirectories) are created with the process's default umask, not deliberately restricted to `0700`.
-In practice this means the directory tree's own permissions, not anything PrivacyFence actively
-enforces beyond the individual file `chmod`, are what stand between another local account on the
-same machine and these files. Moving to atomic, already-`0600` writes and enforcing/warning on
-directory permissions is tracked as SEC-09 in
-[`security-remediation-plan.md`](security-remediation-plan.md).
+**Storage format and permissions.** Every credential/token/config file is written through a shared
+helper (`secure_files.py`, SEC-09 in [`security-remediation-plan.md`](security-remediation-plan.md))
+that writes to a fresh
+`O_CREAT|O_EXCL`-created temp file in the same directory — already at `0600` from the instant it
+exists, never created with the process's default umask even briefly — then `fsync`s and
+atomically `os.replace`s it into place. A reader can only ever see the old complete file or the new
+complete file, never a partial write from a crash or a concurrent daemon instance. The directories
+these files live in (`~/.privacyfence` and its subdirectories — `data_dir()`/`org_dir()`/
+`user_dir()`) are created, and re-tightened on every resolution if they already existed at looser
+permissions (e.g. from a pre-SEC-09 install), to `0700` the same way. A failure to apply either the
+file or directory permissions — e.g. an unusual filesystem — is logged at `warning`, not silently
+swallowed at `debug` the way it was before this fix. Daemon startup additionally audits
+`data_dir()`/`org_dir()`/`user_dir()`'s actual on-disk permissions: local mode logs a warning and
+keeps starting if any of them grants group/other access, organization mode refuses to start.
 
 ---
 

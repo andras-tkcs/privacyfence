@@ -54,22 +54,32 @@ class FakeResponse:
 
 
 class TestDiscoverIdp:
+    @staticmethod
+    def _valid_metadata(issuer="https://idp.example.com"):
+        return {
+            "issuer": issuer, "authorization_endpoint": "https://idp.example.com/authorize",
+            "token_endpoint": "https://idp.example.com/token", "jwks_uri": "https://idp.example.com/jwks",
+        }
+
     def test_fetches_the_well_known_document(self, monkeypatch):
         calls = []
 
         def fake_get(url, timeout):
             calls.append((url, timeout))
-            return FakeResponse({"authorization_endpoint": "a", "token_endpoint": "t", "jwks_uri": "j"})
+            return FakeResponse(self._valid_metadata())
 
         monkeypatch.setattr(oi.requests, "get", fake_get)
         result = oi.discover_idp("https://idp.example.com")
 
         assert calls == [("https://idp.example.com/.well-known/openid-configuration", oi._HTTP_TIMEOUT_SECONDS)]
-        assert result["jwks_uri"] == "j"
+        assert result["jwks_uri"] == "https://idp.example.com/jwks"
 
     def test_strips_a_trailing_slash_on_the_issuer(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(oi.requests, "get", lambda url, timeout: calls.append(url) or FakeResponse({}))
+        monkeypatch.setattr(
+            oi.requests, "get",
+            lambda url, timeout: calls.append(url) or FakeResponse(self._valid_metadata()),
+        )
         oi.discover_idp("https://idp.example.com/")
         assert calls == ["https://idp.example.com/.well-known/openid-configuration"]
 
@@ -77,6 +87,72 @@ class TestDiscoverIdp:
         monkeypatch.setattr(oi.requests, "get", lambda url, timeout: FakeResponse({}, status_code=500))
         with pytest.raises(requests.HTTPError):
             oi.discover_idp("https://idp.example.com")
+
+    def test_rejects_a_plain_http_issuer(self, monkeypatch):
+        monkeypatch.delenv(oi._DEV_ALLOW_INSECURE_IDP_ENV, raising=False)
+        with pytest.raises(oi.ConfigurationError, match="issuer"):
+            oi.discover_idp("http://idp.example.com")
+
+    def test_dev_override_permits_a_plain_http_issuer(self, monkeypatch):
+        monkeypatch.setenv(oi._DEV_ALLOW_INSECURE_IDP_ENV, "1")
+        monkeypatch.setattr(
+            oi.requests, "get",
+            lambda url, timeout: FakeResponse(self._valid_metadata(issuer="http://idp.example.com")),
+        )
+        result = oi.discover_idp("http://idp.example.com")
+        assert result["issuer"] == "http://idp.example.com"
+
+    def test_rejects_a_document_that_is_not_an_object(self, monkeypatch):
+        monkeypatch.setattr(oi.requests, "get", lambda url, timeout: FakeResponse(["not", "a", "dict"]))
+        with pytest.raises(oi.ConfigurationError, match="JSON object"):
+            oi.discover_idp("https://idp.example.com")
+
+    @pytest.mark.parametrize("missing", ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"])
+    def test_rejects_a_document_missing_a_required_field(self, monkeypatch, missing):
+        metadata = self._valid_metadata()
+        del metadata[missing]
+        monkeypatch.setattr(oi.requests, "get", lambda url, timeout: FakeResponse(metadata))
+        with pytest.raises(oi.ConfigurationError, match=missing):
+            oi.discover_idp("https://idp.example.com")
+
+    def test_rejects_a_document_whose_issuer_does_not_match(self, monkeypatch):
+        monkeypatch.setattr(
+            oi.requests, "get",
+            lambda url, timeout: FakeResponse(self._valid_metadata(issuer="https://not-the-idp.example.com")),
+        )
+        with pytest.raises(oi.ConfigurationError, match="does not match"):
+            oi.discover_idp("https://idp.example.com")
+
+    def test_issuer_match_tolerates_a_trailing_slash_mismatch(self, monkeypatch):
+        monkeypatch.setattr(
+            oi.requests, "get",
+            lambda url, timeout: FakeResponse(self._valid_metadata(issuer="https://idp.example.com/")),
+        )
+        result = oi.discover_idp("https://idp.example.com")
+        assert result["issuer"] == "https://idp.example.com/"
+
+    @pytest.mark.parametrize("field", ["authorization_endpoint", "token_endpoint", "jwks_uri"])
+    def test_rejects_a_plain_http_endpoint_in_the_document(self, monkeypatch, field):
+        monkeypatch.delenv(oi._DEV_ALLOW_INSECURE_IDP_ENV, raising=False)
+        metadata = self._valid_metadata()
+        metadata[field] = metadata[field].replace("https://", "http://")
+        monkeypatch.setattr(oi.requests, "get", lambda url, timeout: FakeResponse(metadata))
+        with pytest.raises(oi.ConfigurationError, match=field):
+            oi.discover_idp("https://idp.example.com")
+
+    def test_dev_override_permits_a_plain_http_endpoint_in_the_document(self, monkeypatch):
+        monkeypatch.setenv(oi._DEV_ALLOW_INSECURE_IDP_ENV, "1")
+        metadata = self._valid_metadata()
+        metadata["jwks_uri"] = "http://idp.example.com/jwks"
+        monkeypatch.setattr(oi.requests, "get", lambda url, timeout: FakeResponse(metadata))
+        result = oi.discover_idp("https://idp.example.com")
+        assert result["jwks_uri"] == "http://idp.example.com/jwks"
+
+    @pytest.mark.parametrize("falsy", ["0", "false", "False", ""])
+    def test_dev_override_env_var_falsy_values_do_not_disable_the_check(self, monkeypatch, falsy):
+        monkeypatch.setenv(oi._DEV_ALLOW_INSECURE_IDP_ENV, falsy)
+        with pytest.raises(oi.ConfigurationError):
+            oi.discover_idp("http://idp.example.com")
 
 
 class TestIdpConfigFromOrgConfig:

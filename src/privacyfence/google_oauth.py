@@ -37,11 +37,12 @@ top-level key ``Flow.from_client_config`` needs instead of "installed".
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
+
+from .secure_files import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +102,7 @@ def save_credentials(token_file: str, creds: Credentials) -> None:
     ``Credentials.from_authorized_user_file`` reads back -- a token
     obtained through this module's server-redirect flow is indistinguishable
     on disk from one obtained through the local-mode loopback flow."""
-    os.makedirs(os.path.dirname(os.path.abspath(token_file)), exist_ok=True)
-    with open(token_file, "w", encoding="utf-8") as fh:
-        fh.write(creds.to_json())
-    try:
-        os.chmod(token_file, 0o600)
-    except OSError:  # pragma: no cover - best effort on non-POSIX
-        logger.debug("Could not chmod Google token file (non-fatal)")
+    atomic_write_text(token_file, creds.to_json())
 
 
 __all__ = [

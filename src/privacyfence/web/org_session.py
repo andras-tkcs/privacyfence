@@ -35,6 +35,17 @@ SESSION_COOKIE = "pf_org_session"
 # logged out mid-task; an abandoned tab is.
 DEFAULT_IDLE_TIMEOUT_SECONDS = 30 * 60
 
+# SEC-13 (docs/security-remediation-plan.md, Phase 1 item 1.6): a hard cap
+# from creation, regardless of activity -- the sliding idle timeout above
+# is not enough on its own, since a session an attacker (or a script) keeps
+# "active" by polling never idles out. Same figure and rationale as
+# web/session_auth.py's own DEFAULT_ABSOLUTE_TIMEOUT_SECONDS (that module's
+# local-mode counterpart to this one): long enough that a workday's worth
+# of real use doesn't force a re-login mid-task, short enough that a
+# session -- unlike this store's previous unbounded-lifetime design -- has
+# a real ceiling. Once it lapses the only way back in is /login again.
+DEFAULT_ABSOLUTE_TIMEOUT_SECONDS = 24 * 60 * 60
+
 
 @dataclass
 class OrgSession:
@@ -51,8 +62,14 @@ class OrgSessionStore:
     restart would mean persisting session ids in plaintext somewhere, which
     is a bigger new risk than "sign in again after a restart.\""""
 
-    def __init__(self, *, idle_timeout_seconds: float = DEFAULT_IDLE_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        idle_timeout_seconds: float = DEFAULT_IDLE_TIMEOUT_SECONDS,
+        absolute_timeout_seconds: float = DEFAULT_ABSOLUTE_TIMEOUT_SECONDS,
+    ) -> None:
         self._idle_timeout_seconds = idle_timeout_seconds
+        self._absolute_timeout_seconds = absolute_timeout_seconds
         self._lock = threading.Lock()
         self._sessions: dict[str, OrgSession] = {}
 
@@ -64,9 +81,10 @@ class OrgSessionStore:
         return session_id
 
     def get(self, session_id: str) -> Principal | None:
-        """The session's ``Principal`` if ``session_id`` is live and not
-        idle-expired -- touches ``last_seen_at`` as a side effect (the
-        sliding idle timeout §9.4 asks for). ``None`` for an unknown or
+        """The session's ``Principal`` if ``session_id`` is live and
+        neither idle- nor absolute-expired (SEC-13) -- touches
+        ``last_seen_at`` as a side effect (the sliding idle timeout §9.4
+        asks for) only when it's still live. ``None`` for an unknown or
         expired session; never raises, so a forged or stale cookie is just
         "not authenticated," not a 500."""
         now = time.time()
@@ -75,6 +93,9 @@ class OrgSessionStore:
             if session is None:
                 return None
             if (now - session.last_seen_at) > self._idle_timeout_seconds:
+                del self._sessions[session_id]
+                return None
+            if (now - session.created_at) > self._absolute_timeout_seconds:
                 del self._sessions[session_id]
                 return None
             session.last_seen_at = now
@@ -148,6 +169,7 @@ def check_origin(request: Request) -> bool:
 
 
 __all__ = [
+    "DEFAULT_ABSOLUTE_TIMEOUT_SECONDS",
     "DEFAULT_IDLE_TIMEOUT_SECONDS",
     "SESSION_COOKIE",
     "OrgSession",

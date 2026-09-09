@@ -74,7 +74,6 @@ import fcntl
 import json
 import logging
 import os
-import shutil
 import sys
 import threading
 import uuid
@@ -98,6 +97,13 @@ from .auto_accept import (
 from .pii_detector import init_pii_detection
 from .privacy_filter import check_consistency_warnings, init_privacy_filter
 from .resource_grants import build_effective_rules, migrate_rules_to_grants
+from .safe_errors import SecretRedactingFormatter
+from .secure_files import (
+    InsecurePermissionsError,
+    atomic_write_bytes,
+    atomic_write_text,
+    audit_directory_permissions,
+)
 from .connectors.apps_script import AppsScriptConnector
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
@@ -263,8 +269,7 @@ def _bootstrap_config(resolved: str) -> None:
     automatically now that there's no setup wizard to do it.
     """
     example = Path(__file__).parent / "resources" / "settings.yaml.example"
-    os.makedirs(os.path.dirname(resolved), exist_ok=True)
-    shutil.copyfile(example, resolved)
+    atomic_write_bytes(resolved, example.read_bytes())
 
 
 def load_config(config_path: str) -> dict[str, Any]:
@@ -396,6 +401,44 @@ def log_org_config_bundle_hash(org_config: dict[str, Any]) -> None:
         logger.warning("Audit log write failed for organization config startup hash: %s", exc)
 
 
+def check_storage_permissions(org_mode_active: bool) -> None:
+    """SEC-09's startup check: warn (or, in org mode, refuse to start) if
+    any of this install's own data directories grant group/other access --
+    e.g. an install that predates ``paths.py``'s ``secure_mkdir`` adoption,
+    upgraded in place, or a directory hand-created (or restored from a
+    backup) under a looser umask than PrivacyFence itself would ever use.
+    ``data_dir()``/``org_dir()``/``user_dir()`` already self-heal on every
+    call (``secure_mkdir`` re-``chmod``s an existing directory to ``0700``
+    every time it's resolved) -- this check exists for the cases that
+    self-healing doesn't cover: a filesystem that silently refuses
+    ``chmod`` (already logged at ``warning`` from ``secure_mkdir`` itself,
+    but easy to miss in a large log), or a directory whose looser
+    permissions were restored *after* the ``chmod`` that would have fixed
+    them ran.
+
+    Local mode logs every finding at ``warning`` and keeps starting -- the
+    same "detectable, not necessarily preventable" posture SEC-05's interim
+    hash-logging takes. Org mode -- centrally managed, and the posture this
+    whole phase is meant to bring up to enterprise-production-ready -- fails
+    closed: ``InsecurePermissionsError`` propagates out of ``run_app()``
+    through the same top-level "print and refuse to start" path SEC-04's
+    ``ConfigurationError`` already uses (main()'s own ``except Exception``).
+    """
+    # dict.fromkeys dedupes without disturbing order -- user_dir() with no
+    # principal in scope resolves to data_dir() itself (the local
+    # principal's storage root *is* data_dir(), see paths.py's own
+    # docstring), so at daemon startup this list often names the same
+    # directory twice; no need to warn about it twice too.
+    dirs = list(dict.fromkeys([data_dir(), org_dir(), user_dir()]))
+    problems = audit_directory_permissions(dirs)
+    for problem in problems:
+        logger.warning("SEC-09: %s", problem)
+    if problems and org_mode_active:
+        raise InsecurePermissionsError(
+            "Refusing to start in organization mode: " + " ".join(problems)
+        )
+
+
 def setup_logging(config: dict[str, Any]) -> None:
     log_cfg = config.get("logging", {}) or {}
     level_name = str(log_cfg.get("level", "INFO")).upper()
@@ -403,7 +446,14 @@ def setup_logging(config: dict[str, Any]) -> None:
     log_file = _resolve_path(log_cfg.get("file", "logs/privacyfence.log"))
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    fmt = logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
+    # SEC-10 (docs/security-remediation-plan.md Phase 1.7): every logger in
+    # the process inherits the root logger's handlers, so this is the one
+    # place that needs to redact token-shaped substrings for the whole
+    # daemon rather than at each individual `except Exception` -- see
+    # safe_errors.py's module docstring for what this catches and why the
+    # MCP-boundary public-message allowlist (routes_mcp.py) is a separate,
+    # stricter layer rather than relying on this alone.
+    fmt = SecretRedactingFormatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
     handlers: list[logging.Handler] = [
         logging.FileHandler(log_file, encoding="utf-8"),
         logging.StreamHandler(sys.stderr),
@@ -528,6 +578,10 @@ def _maybe_start_web_server(
         pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
         ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
         max_pending=int(approvals_config.get("max_pending", 50)),
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): see
+        # approvals.DEFAULT_MAX_PENDING_PER_PRINCIPAL's own comment for why
+        # this exists alongside max_pending above.
+        max_pending_per_principal=int(approvals_config.get("max_pending_per_principal", 20)),
     )
     web_ui = init_web_approval_ui(registry=registry)
     init_approval_ui(web_ui)
@@ -631,6 +685,10 @@ def _start_org_web_server(
         pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
         ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
         max_pending=int(approvals_config.get("max_pending", 50)),
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): see
+        # approvals.DEFAULT_MAX_PENDING_PER_PRINCIPAL's own comment for why
+        # this exists alongside max_pending above.
+        max_pending_per_principal=int(approvals_config.get("max_pending_per_principal", 20)),
     )
     web_ui = init_web_approval_ui(registry=approval_registry)
     # WebApprovalUI is unconditionally the ApprovalUI here, same as local
@@ -1163,8 +1221,9 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     config, telegram_search_migrated = migrate_telegram_search_operation_key(config)
     if migration_summary or telegram_search_migrated:
         try:
-            with open(_resolve_path(config_path), "w", encoding="utf-8") as fh:
-                yaml.safe_dump(config, fh, default_flow_style=False, allow_unicode=True)
+            atomic_write_text(
+                _resolve_path(config_path), yaml.safe_dump(config, default_flow_style=False, allow_unicode=True),
+            )
             if migration_summary:
                 logger.info(
                     "Auto-accept config migrated to connector-scoped grants:\n  %s",
@@ -1204,6 +1263,9 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     # function, its ConfigurationError (SEC-04) still surfacing through the
     # same top-level "print and refuse to start" path in main().
     org_config = load_org_config()
+    # SEC-09: same "org mode fails closed, local mode warns" posture as the
+    # rest of this function's fail-safe defaults now that mode is known.
+    check_storage_permissions(org_mode.resolve_mode(org_config) == "org")
     init_privacy_filter(config, org_managed=org_mode.resolve_mode(org_config) == "org")
     for warning in check_consistency_warnings():
         logger.warning(warning)

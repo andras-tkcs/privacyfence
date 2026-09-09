@@ -395,6 +395,64 @@ class TestLogOrgConfigBundleHash:
         assert "signed=True" in entries[0]["summary"]
 
 
+class TestCheckStoragePermissions:
+    """SEC-09's startup check: local mode warns and keeps starting, org
+    mode refuses to start -- same "detectable vs. preventable" split
+    SEC-05's interim hash-logging draws for a similarly upgrade-sensitive
+    finding."""
+
+    def _patch_dirs(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "user_dir", lambda: tmp_path)
+
+    def test_no_warning_when_directory_is_already_0700(self, tmp_path, monkeypatch, caplog):
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o700)
+
+        with caplog.at_level(logging.WARNING):
+            daemon_main.check_storage_permissions(org_mode_active=False)
+
+        assert "SEC-09" not in caplog.text
+
+    def test_local_mode_logs_warning_but_does_not_raise(self, tmp_path, monkeypatch, caplog):
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o755)
+
+        with caplog.at_level(logging.WARNING):
+            daemon_main.check_storage_permissions(org_mode_active=False)  # must not raise
+
+        assert "SEC-09" in caplog.text
+        assert str(tmp_path) in caplog.text
+
+    def test_org_mode_raises_insecure_permissions_error(self, tmp_path, monkeypatch):
+        from privacyfence.secure_files import InsecurePermissionsError
+
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o755)
+
+        with pytest.raises(InsecurePermissionsError):
+            daemon_main.check_storage_permissions(org_mode_active=True)
+
+    def test_org_mode_with_correct_permissions_does_not_raise(self, tmp_path, monkeypatch):
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o700)
+
+        daemon_main.check_storage_permissions(org_mode_active=True)  # must not raise
+
+    def test_dedupes_the_same_directory_named_more_than_once(self, tmp_path, monkeypatch, caplog):
+        """user_dir() with no principal in scope resolves to data_dir()
+        itself -- the same real directory named twice must only be warned
+        about once."""
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o755)
+
+        with caplog.at_level(logging.WARNING):
+            daemon_main.check_storage_permissions(org_mode_active=False)
+
+        assert caplog.text.count("SEC-09") == 1
+
+
 # ---------------------------------------------------------------------------- #
 # build_connectors: the Google-backed connectors (gmail, drive, calendar,
 # contacts, tasks, apps_script) all follow the same "needs installed google
@@ -904,6 +962,20 @@ class TestSetupLogging:
         daemon_main.setup_logging({})
         assert (tmp_path / "logs" / "privacyfence.log").exists()
 
+    def test_a_secret_logged_anywhere_is_redacted_in_the_log_file(self, tmp_path):
+        # SEC-10 (docs/security-remediation-plan.md Phase 1.7): the root
+        # logger's formatter is safe_errors.SecretRedactingFormatter, so
+        # this holds for every logger in the process, not just routes_mcp.py's
+        # own tool-call-failure log line.
+        log_file = tmp_path / "privacyfence.log"
+        daemon_main.setup_logging({"logging": {"file": str(log_file)}})
+        logging.getLogger("privacyfence.some_module").warning(
+            "Upstream call failed: refresh_token=abcdefgh12345678"
+        )
+        contents = log_file.read_text()
+        assert "abcdefgh12345678" not in contents
+        assert "[REDACTED]" in contents
+
 
 # ---------------------------------------------------------------------------- #
 # _maybe_start_web_server -- since P10 (see docs/https-connector-refactor-
@@ -1021,6 +1093,7 @@ class TestMaybeStartWebServer:
                     "approvals": {
                         "hold_window_seconds": 5, "pending_ttl_seconds": 60,
                         "ledger_ttl_seconds": 30, "max_pending": 3,
+                        "max_pending_per_principal": 2,
                     },
                 },
             },
@@ -1032,6 +1105,23 @@ class TestMaybeStartWebServer:
         assert registry.pending_ttl == 60
         assert registry.ledger_ttl == 30
         assert registry.max_pending == 3
+        assert registry.max_pending_per_principal == 2
+
+    def test_max_pending_per_principal_defaults_when_not_configured(self, monkeypatch, tmp_path):
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): an
+        # install that never sets this key still gets the lower per-
+        # principal cap, not an unbounded one.
+        from privacyfence.approvals import DEFAULT_MAX_PENDING_PER_PRINCIPAL
+        from privacyfence.web_approval_ui import get_web_approval_ui
+        self._no_bind(monkeypatch, tmp_path)
+
+        daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False,
+        )
+
+        registry = get_web_approval_ui().deferred_registry
+        assert registry.max_pending_per_principal == DEFAULT_MAX_PENDING_PER_PRINCIPAL
 
     def test_mcp_dispatcher_sees_the_connector_hosts_live_connector_set(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
@@ -1226,6 +1316,21 @@ class TestMaybeStartWebServerOrgMode:
         )
         registry = get_web_approval_ui().deferred_registry
         assert registry.approval_url("abc") == f"{result.base_url}/approvals/abc"
+
+    def test_org_mode_registry_gets_the_per_principal_approval_cap(self, monkeypatch, tmp_path):
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8):
+        # this is the mode the cap actually matters in -- one registry
+        # shared by every principal -- so it must be wired through org
+        # mode's own registry construction, not just local mode's.
+        from privacyfence.web_approval_ui import get_web_approval_ui
+
+        self._no_bind(monkeypatch, tmp_path)
+        daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}, "approvals": {"max_pending_per_principal": 7}}},
+            self._connector_host(), unattended_sessions_enabled=False, org_config=self._org_config(),
+        )
+        registry = get_web_approval_ui().deferred_registry
+        assert registry.max_pending_per_principal == 7
 
     def test_org_mode_without_idp_section_raises(self, monkeypatch, tmp_path):
         # SEC-04's "org-mode-incomplete-IdP-or-server" case.
@@ -1777,6 +1882,29 @@ class TestRunApp:
         assert len(warm_calls) == 1
         assert warm_calls[0][0] == [connector]
         assert warm_calls[0][1] is loop
+
+    def test_org_mode_refuses_to_start_over_insecure_storage_permissions(self, tmp_path, monkeypatch):
+        """SEC-09: wired into run_app() right after org_config is loaded --
+        raises before build_connectors()/the web server ever get a chance
+        to run, same "fail fast, before anything else stands up" posture
+        SEC-04's ConfigurationError already has for a broken org config."""
+        from privacyfence.secure_files import InsecurePermissionsError
+
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(daemon_main, "load_org_config", lambda: {"mode": "org"})
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "user_dir", lambda: tmp_path)
+        tmp_path.chmod(0o755)
+        build_calls = []
+        monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: build_calls.append(1))
+
+        with pytest.raises(InsecurePermissionsError):
+            daemon_main.run_app({}, "config.yaml")
+
+        assert build_calls == []
 
     def test_background_cache_warm_skipped_silently_when_no_web_server_at_all(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)

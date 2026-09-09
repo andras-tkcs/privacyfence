@@ -312,6 +312,47 @@ class TestRefreshToken:
         assert await provider.load_refresh_token(other_client, tokens.refresh_token) is None
 
 
+class TestRefreshTokenAbsoluteLifetime:
+    """SEC-12: an absolute cap on the refresh-token *chain*, independent of
+    rotation -- a client that keeps refreshing forever must still hit a
+    ceiling eventually."""
+
+    async def test_absolute_expired_refresh_token_is_rejected_and_revoked(self, tmp_path, monkeypatch):
+        provider = _provider(tmp_path, monkeypatch)
+        client = _client_info()
+        _qs, _auth_code, tokens = await _drive_full_flow(provider, monkeypatch, client, claims={"sub": "alice"})
+        provider._refresh_tokens[tokens.refresh_token].issued_at = 1  # force past the absolute cap
+
+        assert await provider.load_refresh_token(client, tokens.refresh_token) is None
+        # Revoked outright, not just rejected once -- the paired access token
+        # goes with it, same cascade load_access_token's own expiry uses.
+        assert await provider.verify_token(tokens.access_token) is None
+
+    async def test_rotation_preserves_the_chains_original_issuance(self, tmp_path, monkeypatch):
+        provider = _provider(tmp_path, monkeypatch)
+        client = _client_info()
+        _qs, _auth_code, tokens = await _drive_full_flow(provider, monkeypatch, client, claims={"sub": "alice"})
+        original_issued_at = provider._refresh_tokens[tokens.refresh_token].issued_at
+
+        loaded = await provider.load_refresh_token(client, tokens.refresh_token)
+        new_tokens = await provider.exchange_refresh_token(client, loaded, [])
+
+        assert provider._refresh_tokens[new_tokens.refresh_token].issued_at == original_issued_at
+
+    async def test_a_rotated_token_still_expires_at_the_original_chains_absolute_cap(self, tmp_path, monkeypatch):
+        provider = _provider(tmp_path, monkeypatch)
+        client = _client_info()
+        _qs, _auth_code, tokens = await _drive_full_flow(provider, monkeypatch, client, claims={"sub": "alice"})
+        loaded = await provider.load_refresh_token(client, tokens.refresh_token)
+        new_tokens = await provider.exchange_refresh_token(client, loaded, [])
+        # Backdate the original chain's issuance the rotated token carried
+        # forward -- not the rotated token's own mint time -- since SEC-12
+        # bounds the whole chain, not each individual rotation's own clock.
+        provider._refresh_tokens[new_tokens.refresh_token].issued_at = 1
+
+        assert await provider.load_refresh_token(client, new_tokens.refresh_token) is None
+
+
 class TestRevokeToken:
     async def test_revoking_an_access_token_invalidates_it(self, tmp_path, monkeypatch):
         provider = _provider(tmp_path, monkeypatch)
