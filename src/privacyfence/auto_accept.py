@@ -17,6 +17,7 @@ from .resource_grants import (
     DRIVE_SANDBOX_WRITE_TARGETS,
     build_effective_rules,
 )
+from .secure_files import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -518,7 +519,7 @@ class AutoAcceptEvaluator:
     def _rule_label_match(self, value, ctx):
         if not value:
             return False
-        labels = {l.lower() for l in (getattr(ctx.raw_data, "labels", []) or [])}
+        labels = {label.lower() for label in (getattr(ctx.raw_data, "labels", []) or [])}
         allowed = {v.lower() for v in (value if isinstance(value, list) else [value])}
         return bool(labels & allowed)
 
@@ -1556,8 +1557,7 @@ def add_auto_accept_rule(operation_key: str, rule_name: str, value: Any) -> None
         if new_rule in rules:
             return
         rules.append(new_rule)
-        with open(state.config_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
+        atomic_write_text(state.config_path, yaml.safe_dump(cfg, default_flow_style=False, allow_unicode=True))
         reload_rules(build_effective_rules(cfg))
 
 
@@ -1588,8 +1588,7 @@ def remove_auto_accept_rule(operation_key: str, rule_name: str, value: Any = Non
             cfg["auto_accept_rules"][operation_key] = remaining
         else:
             cfg.get("auto_accept_rules", {}).pop(operation_key, None)
-        with open(state.config_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
+        atomic_write_text(state.config_path, yaml.safe_dump(cfg, default_flow_style=False, allow_unicode=True))
         reload_rules(build_effective_rules(cfg))
         return True
 
@@ -1637,8 +1636,7 @@ def mutate_grants(mutator: Callable[[dict[str, Any]], bool]) -> bool:
             cfg = yaml.safe_load(f) or {}
         changed = mutator(cfg)
         if changed:
-            with open(state.config_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
+            atomic_write_text(state.config_path, yaml.safe_dump(cfg, default_flow_style=False, allow_unicode=True))
             reload_rules(build_effective_rules(cfg))
         return changed
 

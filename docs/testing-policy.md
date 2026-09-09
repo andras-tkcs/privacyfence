@@ -13,12 +13,22 @@ this document is about which ones run automatically versus which ones a human ha
 ```bash
 npm test              # mcpb/shim/, Node's built-in test runner
 npm run typecheck     # mcpb/shim/, tsc --noEmit
-pytest -v --cov=src/privacyfence --cov-report=term-missing
+pytest -v --cov=src/privacyfence --cov-branch --cov-report=term-missing --cov-report=json:coverage.json
+python scripts/check_coverage_floor.py coverage.json
 ```
 
-on an `ubuntu-latest` runner. A 100% pass rate is required to merge, for both suites; the coverage
-report is informational only — nothing gates on a specific percentage. This `test` job is the one a
-PR needs to pass to merge.
+on an `ubuntu-latest` runner. A 100% pass rate is required to merge, for both suites. Coverage
+itself is a ratchet, not a specific percentage a PR must hit (TST-03,
+`docs/security-remediation-plan.md` Phase 2.1): `scripts/check_coverage_floor.py` fails the build
+if overall branch+line coverage, or the coverage of any module on its security-critical list (the
+URL-scheme allowlist, identity-matching, audit-export, org-config/bundle-trust, session/token-
+lifetime, privacy-filter, secure-write, OIDC-discovery-trust, and MCP-error-taxonomy code paths —
+see that script's `MODULE_FLOORS` for the exact list), drops below where it was recorded. A PR that
+raises coverage on one of those modules should bump its floor in the same PR; a PR that needs to
+*lower* one is a real regression, not a config edit. `pytest`'s own `--cov-report=json`/`html`
+output is uploaded as a `coverage-report` CI artifact on every run (pass or fail) so a regression
+can be inspected without re-running locally. This `test` job is the one a PR needs to pass to
+merge.
 
 Through P9 this ran on `macos-latest` instead, and a second, non-blocking `test-linux` job carried
 the platform-independent subset (everything under `web/`, `web_approval_ui.py`, `card_builder.py`,
@@ -64,6 +74,15 @@ manual steps. It includes:
   socket, same posture as the approval routes above. `TestAudienceSeparation` in
   `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
   approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
+- `tests/unit/web/test_mcp_tools.py` — added at security-remediation-plan.md phase 1.9 (TST-02):
+  `mcp_tools.py`'s own `ToolSpec`-to-`Tool`/`CallToolResult` schema translation (untested by either
+  file above, which exercise dispatch and wire framing, not this mapping layer), plus end-to-end
+  coverage over the real `/mcp` transport for three narrow behaviors: an unattended session denying
+  `privacyfence_propose_auto_accept_rule_change` before any confirmation popup can be shown (a real
+  gap this phase found and fixed — see `McpDispatcher.propose_rule_change`'s own comment in
+  `mcp_dispatch.py`), `privacyfence_begin_unattended_session` refusing when disabled by
+  configuration, and `privacyfence_list_auto_accept_rules` always leaving an audit entry for its own
+  disclosure.
 - `mcpb/shim/test/*.test.ts` (`npm test`, run from `mcpb/shim/`) — the .mcpb shim's own suite (D11 in
   `docs/https-connector-refactor-plan.md` §12): daemon discovery/launch (`daemon.test.ts`, against
   `mcp_url` file discovery) and the stdio<->Streamable HTTP message proxy (`proxy.test.ts`,
@@ -200,6 +219,7 @@ full release-time checklist tying all three tiers together.
 | Check | Runs in CI? | When |
 |---|---|---|
 | `pytest` (full suite, incl. the mcp/daemon and shim/mcp contract tests) | Yes, every PR | Always — this is the merge gate |
+| `check_coverage_floor.py` (coverage ratchet, TST-03) | Yes, every PR | Always — this is also a merge gate |
 | `npm test` (mcpb/shim/'s own suite) | Yes, every PR | Always — this is the merge gate |
 | `npm run typecheck` (mcpb/shim/) | Yes, every PR | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |

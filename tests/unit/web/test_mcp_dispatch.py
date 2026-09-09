@@ -406,7 +406,7 @@ class TestProposeRuleChange:
 
     async def test_confirmed_rule_add_is_persisted_to_disk(self):
         dispatcher = _dispatcher({})
-        result = await dispatcher.propose_rule_change({
+        result = await dispatcher.propose_rule_change("s1", {
             "target": "rule", "operation": "add", "reason": "Trusting example.com.",
             "operation_key": "gmail.read_message", "rule_name": "trusted_sender_domain",
             "value": ["example.com"],
@@ -419,10 +419,44 @@ class TestProposeRuleChange:
         monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: False)
         dispatcher = _dispatcher({})
         with pytest.raises(RuntimeError, match="denied"):
-            await dispatcher.propose_rule_change({
+            await dispatcher.propose_rule_change("s1", {
                 "target": "rule", "operation": "add", "reason": "x",
                 "operation_key": "gmail.read_message", "rule_name": "i_am_sender",
             })
+
+    async def test_denied_immediately_when_this_sessions_unattended_flag_is_set(self, monkeypatch):
+        # TST-02 regression -- see propose_rule_change's own docstring
+        # comment in mcp_dispatch.py: before this fix, an unattended
+        # session's own privacyfence_propose_auto_accept_rule_change call
+        # never saw itself as unattended and fell through to a real
+        # (never-to-be-answered) confirmation popup instead of the
+        # immediate denial its tool description promises.
+        called = []
+        from privacyfence import gate
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: called.append(1) or True)
+        dispatcher = _dispatcher({}, unattended_sessions_enabled=True)
+        dispatcher.begin_unattended_session("s1", "scheduled run")
+
+        with pytest.raises(RuntimeError, match="unattended session"):
+            await dispatcher.propose_rule_change("s1", {
+                "target": "rule", "operation": "add", "reason": "x",
+                "operation_key": "gmail.read_message", "rule_name": "i_am_sender",
+            })
+
+        assert called == []  # popup never shown
+
+    async def test_a_different_sessions_unattended_flag_does_not_leak_into_this_one(self, monkeypatch):
+        from privacyfence import gate
+        monkeypatch.setattr(gate, "show_rule_confirmation_popup", lambda description: True)
+        dispatcher = _dispatcher({}, unattended_sessions_enabled=True)
+        dispatcher.begin_unattended_session("s1", "scheduled run")
+
+        result = await dispatcher.propose_rule_change("s2", {
+            "target": "rule", "operation": "add", "reason": "x",
+            "operation_key": "gmail.read_message", "rule_name": "i_am_sender",
+        })
+
+        assert result["confirmed"] is True
 
 
 # --------------------------------------------------------------------------- #

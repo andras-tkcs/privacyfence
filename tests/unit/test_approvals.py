@@ -6,7 +6,6 @@ own orchestration in the way.
 """
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
@@ -578,3 +577,96 @@ class TestPrincipalDimension:
         assert resolved == [bob_approval]
         assert not alice_approval.is_finalized()
         assert bob_approval.is_finalized()
+
+
+class TestPerPrincipalApprovalCap:
+    """SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): one
+    principal issuing a burst of distinct gated calls must not be able to
+    fill the whole shared registry and lock every other principal out with
+    TooManyPendingApprovalsError. max_pending_per_principal is the fix;
+    max_pending (exercised by TestRegisterOrCoalesce above) stays in force
+    unchanged as the secondary, whole-registry backstop."""
+
+    def test_a_principal_hitting_their_own_cap_does_not_block_a_different_principal(self):
+        registry = make_registry(max_pending=10, max_pending_per_principal=1)
+        with principal_scope(Principal(id="alice")):
+            registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+            )
+            with pytest.raises(TooManyPendingApprovalsError):
+                registry.register_or_coalesce(
+                    dedupe_key="k2", connector="c", tool="t", gate_kind="review", request_id="r2",
+                )
+        # Bob is a different principal -- Alice's own cap must not spill
+        # over onto him, and there is plenty of headroom left in the
+        # whole-registry cap.
+        with principal_scope(Principal(id="bob")):
+            approval, created = registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r3",
+            )
+        assert created is True
+        assert approval.principal_id == "bob"
+
+    def test_per_principal_cap_message_names_the_per_principal_limit(self):
+        registry = make_registry(max_pending=10, max_pending_per_principal=1)
+        registry.register_or_coalesce(
+            dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+        )
+        with pytest.raises(TooManyPendingApprovalsError, match="pending for this principal"):
+            registry.register_or_coalesce(
+                dedupe_key="k2", connector="c", tool="t", gate_kind="review", request_id="r2",
+            )
+
+    def test_a_finalized_approval_frees_the_principals_own_cap(self):
+        registry = make_registry(max_pending=10, max_pending_per_principal=1)
+        with principal_scope(Principal(id="alice")):
+            first, _ = registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+            )
+            registry.finalize(first.id, "deny")
+            # The cap only counts *live* (not-yet-finalized) approvals, same
+            # rule the whole-registry cap already follows.
+            second, created = registry.register_or_coalesce(
+                dedupe_key="k2", connector="c", tool="t", gate_kind="review", request_id="r2",
+            )
+        assert created is True
+        assert second is not first
+
+    def test_a_coalescing_hit_is_not_charged_against_the_principals_own_cap(self):
+        registry = make_registry(max_pending=10, max_pending_per_principal=1)
+        with principal_scope(Principal(id="alice")):
+            registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+            )
+            # Same key again -- coalesces onto the existing approval rather
+            # than counting as a second live one against alice's own cap.
+            _, created = registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r2",
+            )
+        assert created is False
+
+    def test_whole_registry_cap_still_binds_across_multiple_principals_within_their_own_caps(self):
+        # Each of alice and bob stays within their own per-principal cap,
+        # but together they exceed the shared registry cap -- the secondary
+        # backstop this plan item explicitly keeps in force.
+        registry = make_registry(max_pending=2, max_pending_per_principal=5)
+        with principal_scope(Principal(id="alice")):
+            registry.register_or_coalesce(
+                dedupe_key="k1", connector="c", tool="t", gate_kind="review", request_id="r1",
+            )
+        with principal_scope(Principal(id="bob")):
+            registry.register_or_coalesce(
+                dedupe_key="k2", connector="c", tool="t", gate_kind="review", request_id="r2",
+            )
+            with pytest.raises(TooManyPendingApprovalsError, match=r"already pending \(2\)"):
+                registry.register_or_coalesce(
+                    dedupe_key="k3", connector="c", tool="t", gate_kind="review", request_id="r3",
+                )
+
+    def test_default_per_principal_cap_is_lower_than_the_default_whole_registry_cap(self):
+        # The whole point (see module docstring's DEFAULT_MAX_PENDING_PER_
+        # PRINCIPAL comment): a single principal must never be able to
+        # exhaust the shared registry cap alone.
+        from privacyfence.approvals import DEFAULT_MAX_PENDING, DEFAULT_MAX_PENDING_PER_PRINCIPAL
+
+        assert DEFAULT_MAX_PENDING_PER_PRINCIPAL < DEFAULT_MAX_PENDING

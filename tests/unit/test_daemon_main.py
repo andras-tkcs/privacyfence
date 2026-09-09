@@ -196,10 +196,14 @@ class TestLoadOrgConfig:
         (tmp_path / "org_config.json").write_text(json.dumps({"slack": {"client_id": "abc"}}))
         assert daemon_main.load_org_config() == {"slack": {"client_id": "abc"}}
 
-    def test_returns_parsed_dict_when_explicit_org_mode(self, tmp_path, monkeypatch):
+    def test_explicit_org_mode_unsigned_raises_configuration_error(self, tmp_path, monkeypatch):
+        """SEC-05 (full signing): org mode requires a signed bundle -- see
+        TestLoadOrgConfigSigning below for the signed-bundle path this
+        now gates behind."""
         monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
         (tmp_path / "org_config.json").write_text(json.dumps({"mode": "org"}))
-        assert daemon_main.load_org_config() == {"mode": "org"}
+        with pytest.raises(org_mode.ConfigurationError, match="requires a signed bundle"):
+            daemon_main.load_org_config()
 
     def test_raises_configuration_error_on_malformed_json(self, tmp_path, monkeypatch):
         monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
@@ -240,6 +244,213 @@ class TestLoadOrgConfig:
         with pytest.raises(org_mode.ConfigurationError):
             org_config = daemon_main.load_org_config()
             org_mode.resolve_mode(org_config)
+
+
+def _write_signed_bundle(tmp_path, bundle, private_key=None):
+    """Signs ``bundle`` (with a fresh keypair, unless one is given) the
+    same way scripts/build_org_bundle.py --sign-key does, and writes it
+    to tmp_path/org_config.json. Returns the private key used, so a test
+    can sign a second, deliberately different bundle with the same key."""
+    from privacyfence import org_bundle_signing
+
+    if private_key is None:
+        private_key, _ = org_bundle_signing.generate_keypair()
+    signed = org_bundle_signing.sign_bundle(bundle, private_key)
+    (tmp_path / "org_config.json").write_text(json.dumps(signed))
+    return private_key
+
+
+class TestLoadOrgConfigSigning:
+    """SEC-05 (full signing): org_bundle_signing.verify_and_maybe_pin() is
+    wired into every load_org_config() call -- trust-on-first-use of the
+    first signed bundle an install ever sees, then mandatory verification
+    against that pinned key for everything after."""
+
+    def test_unsigned_bundle_in_local_mode_is_unaffected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        (tmp_path / "org_config.json").write_text(json.dumps({"slack": {"client_id": "abc"}}))
+        assert daemon_main.load_org_config() == {"slack": {"client_id": "abc"}}
+
+    def test_first_signed_bundle_is_accepted_and_pins_its_key(self, tmp_path, monkeypatch):
+        from privacyfence import org_bundle_signing
+
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}})
+
+        loaded = daemon_main.load_org_config()
+
+        assert loaded["mode"] == "org"
+        assert org_bundle_signing.pinned_public_key_path(tmp_path).exists()
+
+    def test_second_load_verifies_against_the_pinned_key(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}})
+        daemon_main.load_org_config()  # pins
+
+        loaded_again = daemon_main.load_org_config()
+
+        assert loaded_again["mode"] == "org"
+
+    def test_tampering_after_pin_raises_configuration_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}, "org_name": "Acme"})
+        daemon_main.load_org_config()  # pins
+
+        data = json.loads((tmp_path / "org_config.json").read_text())
+        data["org_name"] = "Evil Corp"
+        (tmp_path / "org_config.json").write_text(json.dumps(data))
+
+        with pytest.raises(org_mode.ConfigurationError, match="signing-key verification"):
+            daemon_main.load_org_config()
+
+    def test_replacing_with_a_different_key_after_pin_raises_configuration_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}})
+        daemon_main.load_org_config()  # pins the first key
+
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}})  # signed with a NEW key
+
+        with pytest.raises(org_mode.ConfigurationError, match="signing-key verification"):
+            daemon_main.load_org_config()
+
+    def test_downgrade_to_unsigned_after_pin_raises_configuration_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"mode": "org", "server": {}, "idp": {}})
+        daemon_main.load_org_config()  # pins
+
+        (tmp_path / "org_config.json").write_text(json.dumps({"mode": "org", "server": {}, "idp": {}}))
+
+        with pytest.raises(org_mode.ConfigurationError, match="signing-key verification"):
+            daemon_main.load_org_config()
+
+    def test_org_mode_still_rejected_when_unsigned(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        (tmp_path / "org_config.json").write_text(json.dumps({"mode": "org"}))
+        with pytest.raises(org_mode.ConfigurationError, match="requires a signed bundle"):
+            daemon_main.load_org_config()
+
+    def test_local_mode_signed_bundle_is_accepted(self, tmp_path, monkeypatch):
+        """Signing is opt-in, not org-mode-exclusive -- an install can
+        sign its bundle without turning org mode on at all."""
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        _write_signed_bundle(tmp_path, {"slack": {"client_id": "abc"}})
+
+        loaded = daemon_main.load_org_config()
+
+        assert loaded["slack"] == {"client_id": "abc"}
+
+
+class TestLogOrgConfigBundleHash:
+    """SEC-05 (interim): a sha256 of the installed bundle logged (and
+    audited) once per daemon startup, independent of whether it's signed
+    -- see log_org_config_bundle_hash's own docstring for why this isn't
+    folded into load_org_config() itself."""
+
+    def test_no_file_logs_absence_and_writes_no_audit_entry(self, tmp_path, monkeypatch, caplog):
+        from privacyfence.audit_log import init_audit_logger
+
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        init_audit_logger(str(tmp_path / "audit"))
+        with caplog.at_level(logging.INFO):
+            daemon_main.log_org_config_bundle_hash({})
+        assert "absent" in caplog.text
+        assert not list((tmp_path / "audit").glob("*.jsonl"))
+
+    def test_installed_bundle_logs_hash_and_writes_audit_entry(self, tmp_path, monkeypatch, caplog):
+        from privacyfence.audit_log import init_audit_logger
+        from privacyfence.org_bundle_signing import sha256_hex
+
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        raw = json.dumps({"slack": {"client_id": "abc"}}).encode("utf-8")
+        (tmp_path / "org_config.json").write_bytes(raw)
+        init_audit_logger(str(tmp_path / "audit"))
+
+        with caplog.at_level(logging.INFO):
+            daemon_main.log_org_config_bundle_hash({"slack": {"client_id": "abc"}})
+
+        expected_hash = sha256_hex(raw)
+        assert expected_hash in caplog.text
+
+        jsonl_files = list((tmp_path / "audit").glob("*.jsonl"))
+        assert len(jsonl_files) == 1
+        entries = [json.loads(line) for line in jsonl_files[0].read_text().splitlines()]
+        assert len(entries) == 1
+        assert entries[0]["decision"] == "org_config_startup"
+        assert expected_hash in entries[0]["summary"]
+
+    def test_signed_bundle_is_recorded_as_signed(self, tmp_path, monkeypatch):
+        from privacyfence import org_bundle_signing
+        from privacyfence.audit_log import init_audit_logger
+
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        private_key, _ = org_bundle_signing.generate_keypair()
+        signed = org_bundle_signing.sign_bundle({"slack": {"client_id": "abc"}}, private_key)
+        (tmp_path / "org_config.json").write_text(json.dumps(signed))
+        init_audit_logger(str(tmp_path / "audit"))
+
+        daemon_main.log_org_config_bundle_hash(signed)
+
+        jsonl_files = list((tmp_path / "audit").glob("*.jsonl"))
+        entries = [json.loads(line) for line in jsonl_files[0].read_text().splitlines()]
+        assert "signed=True" in entries[0]["summary"]
+
+
+class TestCheckStoragePermissions:
+    """SEC-09's startup check: local mode warns and keeps starting, org
+    mode refuses to start -- same "detectable vs. preventable" split
+    SEC-05's interim hash-logging draws for a similarly upgrade-sensitive
+    finding."""
+
+    def _patch_dirs(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "user_dir", lambda: tmp_path)
+
+    def test_no_warning_when_directory_is_already_0700(self, tmp_path, monkeypatch, caplog):
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o700)
+
+        with caplog.at_level(logging.WARNING):
+            daemon_main.check_storage_permissions(org_mode_active=False)
+
+        assert "SEC-09" not in caplog.text
+
+    def test_local_mode_logs_warning_but_does_not_raise(self, tmp_path, monkeypatch, caplog):
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o755)
+
+        with caplog.at_level(logging.WARNING):
+            daemon_main.check_storage_permissions(org_mode_active=False)  # must not raise
+
+        assert "SEC-09" in caplog.text
+        assert str(tmp_path) in caplog.text
+
+    def test_org_mode_raises_insecure_permissions_error(self, tmp_path, monkeypatch):
+        from privacyfence.secure_files import InsecurePermissionsError
+
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o755)
+
+        with pytest.raises(InsecurePermissionsError):
+            daemon_main.check_storage_permissions(org_mode_active=True)
+
+    def test_org_mode_with_correct_permissions_does_not_raise(self, tmp_path, monkeypatch):
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o700)
+
+        daemon_main.check_storage_permissions(org_mode_active=True)  # must not raise
+
+    def test_dedupes_the_same_directory_named_more_than_once(self, tmp_path, monkeypatch, caplog):
+        """user_dir() with no principal in scope resolves to data_dir()
+        itself -- the same real directory named twice must only be warned
+        about once."""
+        self._patch_dirs(monkeypatch, tmp_path)
+        tmp_path.chmod(0o755)
+
+        with caplog.at_level(logging.WARNING):
+            daemon_main.check_storage_permissions(org_mode_active=False)
+
+        assert caplog.text.count("SEC-09") == 1
 
 
 # ---------------------------------------------------------------------------- #
@@ -751,6 +962,20 @@ class TestSetupLogging:
         daemon_main.setup_logging({})
         assert (tmp_path / "logs" / "privacyfence.log").exists()
 
+    def test_a_secret_logged_anywhere_is_redacted_in_the_log_file(self, tmp_path):
+        # SEC-10 (docs/security-remediation-plan.md Phase 1.7): the root
+        # logger's formatter is safe_errors.SecretRedactingFormatter, so
+        # this holds for every logger in the process, not just routes_mcp.py's
+        # own tool-call-failure log line.
+        log_file = tmp_path / "privacyfence.log"
+        daemon_main.setup_logging({"logging": {"file": str(log_file)}})
+        logging.getLogger("privacyfence.some_module").warning(
+            "Upstream call failed: refresh_token=abcdefgh12345678"
+        )
+        contents = log_file.read_text()
+        assert "abcdefgh12345678" not in contents
+        assert "[REDACTED]" in contents
+
 
 # ---------------------------------------------------------------------------- #
 # _maybe_start_web_server -- since P10 (see docs/https-connector-refactor-
@@ -868,6 +1093,7 @@ class TestMaybeStartWebServer:
                     "approvals": {
                         "hold_window_seconds": 5, "pending_ttl_seconds": 60,
                         "ledger_ttl_seconds": 30, "max_pending": 3,
+                        "max_pending_per_principal": 2,
                     },
                 },
             },
@@ -879,6 +1105,23 @@ class TestMaybeStartWebServer:
         assert registry.pending_ttl == 60
         assert registry.ledger_ttl == 30
         assert registry.max_pending == 3
+        assert registry.max_pending_per_principal == 2
+
+    def test_max_pending_per_principal_defaults_when_not_configured(self, monkeypatch, tmp_path):
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): an
+        # install that never sets this key still gets the lower per-
+        # principal cap, not an unbounded one.
+        from privacyfence.approvals import DEFAULT_MAX_PENDING_PER_PRINCIPAL
+        from privacyfence.web_approval_ui import get_web_approval_ui
+        self._no_bind(monkeypatch, tmp_path)
+
+        daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False,
+        )
+
+        registry = get_web_approval_ui().deferred_registry
+        assert registry.max_pending_per_principal == DEFAULT_MAX_PENDING_PER_PRINCIPAL
 
     def test_mcp_dispatcher_sees_the_connector_hosts_live_connector_set(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
@@ -901,8 +1144,6 @@ class TestMaybeStartWebServer:
     # ------------------------------------------------------------------ #
 
     def _controller(self, tmp_path, monkeypatch):
-        from types import SimpleNamespace
-
         from privacyfence import resource_names, settings_controller as sc, update_checker
 
         monkeypatch.setattr(resource_names, "_cache_file", lambda: tmp_path / "rn.json")
@@ -1073,6 +1314,21 @@ class TestMaybeStartWebServerOrgMode:
         )
         registry = get_web_approval_ui().deferred_registry
         assert registry.approval_url("abc") == f"{result.base_url}/approvals/abc"
+
+    def test_org_mode_registry_gets_the_per_principal_approval_cap(self, monkeypatch, tmp_path):
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8):
+        # this is the mode the cap actually matters in -- one registry
+        # shared by every principal -- so it must be wired through org
+        # mode's own registry construction, not just local mode's.
+        from privacyfence.web_approval_ui import get_web_approval_ui
+
+        self._no_bind(monkeypatch, tmp_path)
+        daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}, "approvals": {"max_pending_per_principal": 7}}},
+            self._connector_host(), unattended_sessions_enabled=False, org_config=self._org_config(),
+        )
+        registry = get_web_approval_ui().deferred_registry
+        assert registry.max_pending_per_principal == 7
 
     def test_org_mode_without_idp_section_raises(self, monkeypatch, tmp_path):
         # SEC-04's "org-mode-incomplete-IdP-or-server" case.
@@ -1625,6 +1881,29 @@ class TestRunApp:
         assert warm_calls[0][0] == [connector]
         assert warm_calls[0][1] is loop
 
+    def test_org_mode_refuses_to_start_over_insecure_storage_permissions(self, tmp_path, monkeypatch):
+        """SEC-09: wired into run_app() right after org_config is loaded --
+        raises before build_connectors()/the web server ever get a chance
+        to run, same "fail fast, before anything else stands up" posture
+        SEC-04's ConfigurationError already has for a broken org config."""
+        from privacyfence.secure_files import InsecurePermissionsError
+
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(daemon_main, "load_org_config", lambda: {"mode": "org"})
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "org_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "user_dir", lambda: tmp_path)
+        tmp_path.chmod(0o755)
+        build_calls = []
+        monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: build_calls.append(1))
+
+        with pytest.raises(InsecurePermissionsError):
+            daemon_main.run_app({}, "config.yaml")
+
+        assert build_calls == []
+
     def test_background_cache_warm_skipped_silently_when_no_web_server_at_all(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
@@ -1700,6 +1979,51 @@ class TestRunApp:
             daemon_main.run_app(config, "config.yaml")
 
         assert "file_metadata" not in caplog.text
+
+    def test_malformed_privacy_filter_config_refuses_to_start(self, monkeypatch):
+        # SEC-07: a typo'd default_policy must fail closed, not silently
+        # downgrade to "allow" -- run_app() propagates
+        # PrivacyFilterConfigError (a ValueError) all the way out, same
+        # "print and refuse to start" path SEC-04's org_mode.
+        # ConfigurationError already takes via main()'s top-level catch.
+        from privacyfence.privacy_filter import PrivacyFilterConfigError
+
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        config = {"privacy": {"default_policy": "delete_everything"}}
+
+        with pytest.raises(PrivacyFilterConfigError):
+            daemon_main.run_app(config, "config.yaml")
+
+    def test_org_mode_passes_org_managed_through_to_privacy_filter(self, monkeypatch):
+        # SEC-07: an org-managed install's genuinely-absent privacy groups
+        # should fail closed to "block", not inherit local mode's "allow".
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(
+            daemon_main, "load_org_config",
+            lambda: {"mode": "org", "server": {"issuer_url": "https://pf.example.com"},
+                      "idp": {"issuer": "https://idp.example.com", "client_id": "c"}},
+        )
+
+        result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 0
+        from privacyfence.privacy_filter import category_policy
+        assert category_policy("privacy", "body") == "block"
+
+    def test_local_mode_privacy_filter_still_defaults_to_allow(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        self._patch_common(monkeypatch)
+
+        result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 0
+        from privacyfence.privacy_filter import category_policy
+        assert category_policy("privacy", "body") == "allow"
 
     def test_keyboard_interrupt_is_caught_lock_released_returns_0(self, monkeypatch, caplog):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)

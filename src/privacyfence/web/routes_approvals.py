@@ -34,10 +34,10 @@ from starlette.routing import BaseRoute, Route
 from .. import approval_list_html, web_shell
 from ..web_approval_ui import WebApprovalUI
 from .session_auth import SESSION_COOKIE as _SESSION_COOKIE
-from .session_auth import authenticated as _token_authenticated
+from .session_auth import LocalSessionStore
+from .session_auth import authenticated as _session_authenticated
 from .session_auth import check_csrf as _csrf_matches
 from .session_auth import check_origin as _origin_ok
-from .session_auth import set_session_cookie as _set_session_cookie_on
 from .session_auth import unauthorized_html as _unauthorized_response
 
 # How often the SSE stream below checks for a change in what's pending --
@@ -58,11 +58,12 @@ _SW_JS = (Path(__file__).parent.parent / "resources" / "sw.js").read_text(encodi
 # _SESSION_COOKIE re-exported (see the session_auth import above) purely so
 # this module's own docstring/history referencing "pf_session" as a local
 # name still resolves -- session_auth.py is the actual definition now,
-# shared with web/routes_settings.py. See that module's own docstring for
-# why this is the whole local-mode auth model in P1: the same "possession
-# of the token is the authority" posture ~/.privacyfence/ipc_token already
-# has for the bridge. SameSite=Strict + HttpOnly: never sent cross-site,
-# never readable from page JS.
+# shared with web/routes_settings.py. SameSite=Strict + HttpOnly: never
+# sent cross-site, never readable from page JS. See session_auth.py's own
+# module docstring (SEC-06) for how a session actually gets established --
+# web/server.py's ``_BootstrapMiddleware`` sets this cookie via the
+# ``?bootstrap=`` exchange; nothing in this module ever sets it itself any
+# more.
 
 _DECIDED_MESSAGE = "Decision recorded."
 _DENIED_MESSAGE = "Denied."
@@ -146,17 +147,22 @@ def _inject_shim(html: str, shim: str) -> str:
 def create_app(
     web_ui: WebApprovalUI,
     *,
-    token: str,
+    sessions: LocalSessionStore,
     extra_routes: list[BaseRoute] | None = None,
     lifespan=None,
     notifications_enabled: bool = True,
     notifications_detail: str = "minimal",
 ) -> Starlette:
-    """Build the Starlette app serving the approval surface. ``token`` is
-    the shared local-mode secret (see server.py) -- this function takes it
-    as a plain argument rather than reading paths.py itself, so tests can
-    construct an app against an isolated WebApprovalUI/token pair with no
-    filesystem or global-singleton dependency.
+    """Build the Starlette app serving the approval surface. ``sessions``
+    (SEC-06, see session_auth.py's own module docstring) is the local-mode
+    session store -- this function takes it as a plain argument rather than
+    reading paths.py itself, so tests can construct an app against an
+    isolated WebApprovalUI/session-store pair with no filesystem or
+    global-singleton dependency. A request's own ``pf_session`` cookie
+    value doubles as the CSRF token baked into every rendered page below --
+    it is only ever set by web/server.py's ``_BootstrapMiddleware``, which
+    is what actually authenticates the one-time ``?bootstrap=`` exchange;
+    nothing in this module ever mints or sets that cookie itself.
 
     ``extra_routes``/``lifespan`` are how server.py folds the ``/mcp``
     endpoint (routes_mcp.py, P2) into this same combined app rather than
@@ -173,36 +179,40 @@ def create_app(
     """
 
     def _authenticated(request: Request) -> bool:
-        return _token_authenticated(request, token)
+        return _session_authenticated(request, sessions)
 
-    def _unauthorized() -> Response:
-        return _unauthorized_response()
-
-    def _set_session_cookie(response: Response) -> None:
-        _set_session_cookie_on(response, token)
+    def _unauthorized(request: Request) -> Response:
+        return _unauthorized_response(request)
 
     async def index(request: Request) -> Response:
-        return RedirectResponse(f"/approvals?token={token}" if "token" not in request.query_params else "/approvals")
+        # No ``?bootstrap=``/``?token=`` handling here any more -- SEC-06
+        # moved that one-time exchange into web/server.py's
+        # ``_BootstrapMiddleware``, which runs ahead of every route
+        # (including this one) and already turned a valid code into a real
+        # session before this ever executes. This just sends whatever the
+        # request's own cookie already resolves to (authenticated or not --
+        # list_approvals below is what actually enforces that) on to the
+        # one real landing page.
+        return RedirectResponse("/approvals")
 
     def _list_rows() -> list:
         return web_ui.deferred_registry.list_pending()
 
     async def list_approvals(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized()
+            return _unauthorized(request)
+        csrf = request.cookies.get(_SESSION_COOKIE, "")
         rows = [approval_list_html.row_from_approval(card) for card in _list_rows()]
-        body = approval_list_html.build_list_html(rows, csrf=token)
+        body = approval_list_html.build_list_html(rows, csrf=csrf)
         html = web_shell.wrap(
             body, title="PrivacyFence — Approvals", active="approvals",
             notifications_enabled=notifications_enabled, notifications_detail=notifications_detail,
         )
-        response = HTMLResponse(html, headers={"Cache-Control": "no-store"})
-        _set_session_cookie(response)
-        return response
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     async def show_approval(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized()
+            return _unauthorized(request)
         approval_id = request.path_params["id"]
         card = web_ui.deferred_registry.get(approval_id)
         if card is None or card.event.is_set():
@@ -220,14 +230,13 @@ def create_app(
                 status_code=200,
                 headers={"Cache-Control": "no-store"},
             )
-        shim = _bridge_shim(decide_url=f"/api/approvals/{card.id}/decide", csrf=token)
-        response = HTMLResponse(_inject_shim(card.html, shim), headers={"Cache-Control": "no-store"})
-        _set_session_cookie(response)
-        return response
+        csrf = request.cookies.get(_SESSION_COOKIE, "")
+        shim = _bridge_shim(decide_url=f"/api/approvals/{card.id}/decide", csrf=csrf)
+        return HTMLResponse(_inject_shim(card.html, shim), headers={"Cache-Control": "no-store"})
 
     async def approvals_stream(request: Request) -> Response:
         if not _authenticated(request):
-            return _unauthorized()
+            return _unauthorized(request)
 
         async def event_source():
             last_ids: tuple[str, ...] | None = None

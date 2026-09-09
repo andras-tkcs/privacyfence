@@ -222,6 +222,9 @@ A new connector's test module should include, at minimum:
 ### 2.7 Definition of done for a PR touching this repo
 
 - [ ] `pytest -v --cov=src/privacyfence --cov-report=term-missing` passes at 100%.
+- [ ] `ruff check .` passes (CI's `static-analysis` job blocks on this; `mypy`/`bandit` run in the
+      same job but are informational only for now — see `[tool.mypy]`/`[tool.bandit]` in
+      `pyproject.toml` and `docs/security-remediation-plan.md` TST-07).
 - [ ] Every new/changed tool call still resolves through `gated_call` or an explicit
       always-auto-approve connector, and leaves an audit trail either way.
 - [ ] No preview dict carries full content; no log line carries a credential or a message/document
@@ -244,3 +247,8 @@ A new connector's test module should include, at minimum:
       PATH) and confirm `test_shim_mcp_contract.py` still passes — a change on one side of the
       shim<->`/mcp` contract without the other only fails there, not in either side's own unit
       tests (D11 in `docs/https-connector-refactor-plan.md` §12).
+- [ ] If this PR changes a dependency in `pyproject.toml` (a version bound, a new package, an
+      extra): run `scripts/update_dependency_locks.sh` (needs `python3.13 -m pip install pip-tools`
+      — Python 3.13 specifically, see the script's own comments for why) and commit the resulting
+      `requirements/*.lock.txt` — `dependency-audit.yml`'s `lockfile-freshness` job
+      (SEC-19, `security-remediation-plan.md` Phase 2.4) fails the build otherwise.

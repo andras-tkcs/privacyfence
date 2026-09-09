@@ -2,6 +2,15 @@
 (docs/https-connector-refactor-plan.md §16, W3/W4): the allowlisted action
 dispatcher, CSRF/Origin checks, per-action argument validation, the org
 config upload, the audit log download, and quit_app's confirmation gate.
+
+SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2): this module's
+own create_app() no longer takes a shared ``token`` -- it authenticates
+against a web/session_auth.py ``LocalSessionStore`` instead, the same store
+test_routes_approvals.py's own tests use (this surface shares the approval
+surface's one session by design, see build_routes()'s own docstring).
+``_authed()`` below signs a session in and returns its id, which now
+doubles as the CSRF value every mutating request below sends -- the direct
+replacement for the old shared ``TOKEN`` constant.
 """
 from __future__ import annotations
 
@@ -14,8 +23,7 @@ from starlette.testclient import TestClient
 
 from privacyfence import daemon_main, resource_names, settings_controller as sc, update_checker
 from privacyfence.web.routes_settings import _ALLOWED_ACTIONS, create_app
-
-TOKEN = "test-token-0123456789"
+from privacyfence.web.session_auth import SESSION_COOKIE, LocalSessionStore
 
 
 def wait_until(predicate, timeout=2.0, interval=0.005) -> bool:
@@ -49,13 +57,23 @@ def controller(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client(controller):
-    app = create_app(controller, token=TOKEN)
+def sessions():
+    return LocalSessionStore()
+
+
+@pytest.fixture
+def client(controller, sessions):
+    app = create_app(controller, sessions=sessions)
     return TestClient(app, base_url="http://localhost")
 
 
-def _authed(client):
-    client.cookies.set("pf_session", TOKEN)
+def _authed(client: TestClient, sessions: LocalSessionStore) -> str:
+    """Signs `client` in and returns the session id -- also the CSRF value
+    every mutating request below sends, per session_auth.py's own
+    double-submit design (the session id doubles as its own CSRF token)."""
+    session_id = sessions.create()
+    client.cookies.set(SESSION_COOKIE, session_id)
+    return session_id
 
 
 class TestSettingsPage:
@@ -63,20 +81,20 @@ class TestSettingsPage:
         r = client.get("/settings")
         assert r.status_code == 401
 
-    def test_authenticated_renders_the_shell_and_the_settings_document(self, client):
-        _authed(client)
+    def test_authenticated_renders_the_shell_and_the_settings_document(self, client, sessions):
+        _authed(client, sessions)
         r = client.get("/settings")
         assert r.status_code == 200
         assert "PrivacyFence — Settings" in r.text
         assert "pf-shell-nav" in r.text
         assert "__pfInitialState" in r.text
 
-    def test_response_is_never_cached(self, client):
-        _authed(client)
+    def test_response_is_never_cached(self, client, sessions):
+        _authed(client, sessions)
         r = client.get("/settings")
         assert r.headers.get("cache-control") == "no-store"
 
-    def test_notifications_enabled_config_reaches_the_page(self, controller):
+    def test_notifications_enabled_config_reaches_the_page(self, controller, sessions):
         # settings_page reads this off the controller's own live snapshot
         # (general.notifications_enabled), not the notifications_enabled=
         # closure arg below -- that arg is only ever the daemon-startup
@@ -89,22 +107,22 @@ class TestSettingsPage:
         cfg = controller._load_config()
         cfg.setdefault("web", {}).setdefault("notifications", {})["enabled"] = False
         controller._save_config(cfg)
-        app = create_app(controller, token=TOKEN, notifications_enabled=True)
+        app = create_app(controller, sessions=sessions, notifications_enabled=True)
         c = TestClient(app, base_url="http://localhost")
-        c.cookies.set("pf_session", TOKEN)
+        _authed(c, sessions)
         r = c.get("/settings")
         assert "NOTIFICATIONS_ENABLED = false" in r.text
 
-    def test_notifications_detail_reflects_a_live_config_edit_without_restart(self, controller):
+    def test_notifications_detail_reflects_a_live_config_edit_without_restart(self, controller, sessions):
         # settings_page reads notifications_enabled/detail off this
         # request's own fresh snapshot, not the notifications_detail=
         # "minimal" default create_app was built with (server.py's
         # daemon-startup value) -- so a set_notifications_detail() call in
         # between two GETs must change what the *second* GET renders, with
         # no server restart and no create_app() rebuild.
-        app = create_app(controller, token=TOKEN, notifications_detail="minimal")
+        app = create_app(controller, sessions=sessions, notifications_detail="minimal")
         c = TestClient(app, base_url="http://localhost")
-        c.cookies.set("pf_session", TOKEN)
+        _authed(c, sessions)
         before = c.get("/settings")
         assert 'NOTIFICATIONS_DETAIL = "minimal"' in before.text
 
@@ -115,102 +133,102 @@ class TestSettingsPage:
 
 
 class TestActionDispatch:
-    def test_unlisted_action_is_404_before_any_getattr(self, client, controller, monkeypatch):
-        _authed(client)
+    def test_unlisted_action_is_404_before_any_getattr(self, client, controller, sessions, monkeypatch):
+        csrf = _authed(client, sessions)
         called = []
         monkeypatch.setattr(sc.SettingsController, "__getattribute__", lambda self, name: (
             called.append(name) or object.__getattribute__(self, name)
         ))
-        r = client.post("/api/settings/_load_config", json={"csrf": TOKEN})
+        r = client.post("/api/settings/_load_config", json={"csrf": csrf})
         assert r.status_code == 404
         assert "_load_config" not in called
 
-    def test_dunder_and_snapshot_are_rejected(self, client):
-        _authed(client)
+    def test_dunder_and_snapshot_are_rejected(self, client, sessions):
+        csrf = _authed(client, sessions)
         for action in ("snapshot", "__init__", "_save_config", "on_change"):
-            r = client.post(f"/api/settings/{action}", json={"csrf": TOKEN})
+            r = client.post(f"/api/settings/{action}", json={"csrf": csrf})
             assert r.status_code == 404, action
 
     def test_every_allowed_action_actually_exists_on_the_controller(self, controller):
         for action in _ALLOWED_ACTIONS:
             assert callable(getattr(controller, action, None)), action
 
-    def test_mechanical_action_returns_a_fresh_snapshot(self, client):
-        _authed(client)
-        r = client.post("/api/settings/toggle_pii_detection", json={"csrf": TOKEN})
+    def test_mechanical_action_returns_a_fresh_snapshot(self, client, sessions):
+        csrf = _authed(client, sessions)
+        r = client.post("/api/settings/toggle_pii_detection", json={"csrf": csrf})
         assert r.status_code == 200
         assert r.json()["general"]["pii_enabled"] is False
 
-    def test_action_with_arguments_coerces_idx_to_int(self, client, controller):
+    def test_action_with_arguments_coerces_idx_to_int(self, client, controller, sessions):
         controller.add_rule_row("gmail.read_message")
-        _authed(client)
+        csrf = _authed(client, sessions)
         r = client.post(
             "/api/settings/update_rule_row",
-            json={"op_key": "gmail.read_message", "idx": "0", "field": "rule_type", "value": "i_am_sender", "csrf": TOKEN},
+            json={"op_key": "gmail.read_message", "idx": "0", "field": "rule_type", "value": "i_am_sender", "csrf": csrf},
         )
         assert r.status_code == 200
         rows = r.json()["rules"]["sections_by_connector"]["gmail"][0]["rows"]
         assert rows[0]["rule_type"] == "i_am_sender"
 
-    def test_bad_idx_type_is_400_not_500(self, client):
-        _authed(client)
+    def test_bad_idx_type_is_400_not_500(self, client, sessions):
+        csrf = _authed(client, sessions)
         r = client.post(
             "/api/settings/update_rule_row",
-            json={"op_key": "gmail.read_message", "idx": "not-a-number", "field": "value", "value": "x", "csrf": TOKEN},
+            json={"op_key": "gmail.read_message", "idx": "not-a-number", "field": "value", "value": "x", "csrf": csrf},
         )
         assert r.status_code == 400
 
-    def test_missing_required_argument_is_400(self, client):
-        _authed(client)
-        r = client.post("/api/settings/update_rule_row", json={"csrf": TOKEN})
+    def test_missing_required_argument_is_400(self, client, sessions):
+        csrf = _authed(client, sessions)
+        r = client.post("/api/settings/update_rule_row", json={"csrf": csrf})
         assert r.status_code == 400
 
-    def test_connector_icons_are_augmented(self, client):
-        _authed(client)
-        r = client.post("/api/settings/refresh_connectors", json={"csrf": TOKEN})
+    def test_connector_icons_are_augmented(self, client, sessions):
+        csrf = _authed(client, sessions)
+        r = client.post("/api/settings/refresh_connectors", json={"csrf": csrf})
         connectors = r.json()["connectors"]
         assert any("icon_data_uri" in c for c in connectors)
 
-    def test_missing_csrf_is_401(self, client):
-        _authed(client)
+    def test_missing_csrf_is_401(self, client, sessions):
+        _authed(client, sessions)
         r = client.post("/api/settings/toggle_pii_detection", json={})
         assert r.status_code == 401
 
-    def test_wrong_csrf_is_401(self, client):
-        _authed(client)
+    def test_wrong_csrf_is_401(self, client, sessions):
+        _authed(client, sessions)
         r = client.post("/api/settings/toggle_pii_detection", json={"csrf": "wrong"})
         assert r.status_code == 401
 
-    def test_cross_origin_is_403(self, client):
-        _authed(client)
+    def test_cross_origin_is_403(self, client, sessions):
+        csrf = _authed(client, sessions)
         r = client.post(
-            "/api/settings/toggle_pii_detection", json={"csrf": TOKEN},
+            "/api/settings/toggle_pii_detection", json={"csrf": csrf},
             headers={"Origin": "https://evil.example.com"},
         )
         assert r.status_code == 403
 
     def test_unauthenticated_is_401(self, client):
-        r = client.post("/api/settings/toggle_pii_detection", json={"csrf": TOKEN})
+        r = client.post("/api/settings/toggle_pii_detection", json={"csrf": "irrelevant"})
         assert r.status_code == 401
 
-    def test_malformed_json_is_400(self, client):
-        _authed(client)
+    def test_malformed_json_is_400(self, client, sessions):
+        _authed(client, sessions)
         r = client.post(
             "/api/settings/toggle_pii_detection", content=b"not json",
             headers={"Content-Type": "application/json"},
         )
         assert r.status_code == 400
 
-    def test_set_notifications_detail_persists_and_returns_it_in_general(self, client):
-        _authed(client)
-        r = client.post("/api/settings/set_notifications_detail", json={"level": "detailed", "csrf": TOKEN})
+    def test_set_notifications_detail_persists_and_returns_it_in_general(self, client, sessions):
+        csrf = _authed(client, sessions)
+        r = client.post("/api/settings/set_notifications_detail", json={"level": "detailed", "csrf": csrf})
         assert r.status_code == 200
         assert r.json()["general"]["notifications_detail"] == "detailed"
 
-    def test_set_notifications_detail_rejects_an_unknown_level(self, client, controller):
-        _authed(client)
-        client.post("/api/settings/set_notifications_detail", json={"level": "standard", "csrf": TOKEN})
-        r = client.post("/api/settings/set_notifications_detail", json={"level": "bogus", "csrf": TOKEN})
+    def test_set_notifications_detail_rejects_an_unknown_level(self, client, controller, sessions):
+        csrf = _authed(client, sessions)
+        client.post("/api/settings/set_notifications_detail", json={"level": "standard", "csrf": csrf})
+        r = client.post("/api/settings/set_notifications_detail", json={"level": "bogus", "csrf": csrf})
         assert r.status_code == 200
         # Same shape as set_log_level's own bad-value handling -- an
         # invalid value is a silent no-op snapshot, not a 400 (the
@@ -226,7 +244,7 @@ class TestConnectorAuthenticationEndToEnd:
     test_settings_controller.py's TestPickResourceIndexWebMode, Telegram's
     multi-step flow in its own TestTelegramStartAuth/... classes there)."""
 
-    def test_authenticate_connector_reflects_busy_then_connected(self, client, controller, monkeypatch):
+    def test_authenticate_connector_reflects_busy_then_connected(self, client, controller, sessions, monkeypatch):
         import threading
 
         release = threading.Event()
@@ -245,10 +263,10 @@ class TestConnectorAuthenticationEndToEnd:
         monkeypatch.setattr(daemon_main, "load_org_config", lambda: {"slack": {"client_id": "cid"}})
         monkeypatch.setattr(sc, "slack_authorize_interactive", fake_authorize)
         monkeypatch.setattr(controller, "refresh_connectors", lambda: controller._push_snapshot())
-        _authed(client)
+        csrf = _authed(client, sessions)
 
         r = client.post(
-            "/api/settings/authenticate_connector", json={"connector": "slack", "csrf": TOKEN},
+            "/api/settings/authenticate_connector", json={"connector": "slack", "csrf": csrf},
         )
         assert r.status_code == 200
         assert any(c["key"] == "slack" and c["busy"] for c in r.json()["connectors"])
@@ -256,71 +274,71 @@ class TestConnectorAuthenticationEndToEnd:
         release.set()
         assert wait_until(lambda: "slack" not in controller._busy_connectors)
 
-    def test_missing_org_config_surfaces_an_error_not_a_500(self, client):
-        _authed(client)
+    def test_missing_org_config_surfaces_an_error_not_a_500(self, client, sessions):
+        csrf = _authed(client, sessions)
         r = client.post(
-            "/api/settings/authenticate_connector", json={"connector": "slack", "csrf": TOKEN},
+            "/api/settings/authenticate_connector", json={"connector": "slack", "csrf": csrf},
         )
         assert r.status_code == 200
         assert r.json()["error"]
 
 
 class TestOrgConfigUpload:
-    def test_valid_bundle_is_installed(self, client, controller, tmp_path):
-        _authed(client)
+    def test_valid_bundle_is_installed(self, client, controller, sessions, tmp_path):
+        csrf = _authed(client, sessions)
         r = client.post(
             "/api/settings/org_config/upload",
-            data={"csrf": TOKEN},
+            data={"csrf": csrf},
             files={"file": ("org_config.json", b'{"version": 1, "google": {}}', "application/json")},
         )
         assert r.status_code == 200
         assert (sc.org_dir() / "org_config.json").exists()
         assert r.json()["error"] == ""
 
-    def test_non_json_is_rejected_with_an_error_not_installed(self, client):
-        _authed(client)
+    def test_non_json_is_rejected_with_an_error_not_installed(self, client, sessions):
+        csrf = _authed(client, sessions)
         r = client.post(
             "/api/settings/org_config/upload",
-            data={"csrf": TOKEN},
+            data={"csrf": csrf},
             files={"file": ("x.json", b"not json at all", "application/json")},
         )
         assert r.status_code == 200
         assert r.json()["error"]
         assert not (sc.org_dir() / "org_config.json").exists()
 
-    def test_json_without_version_key_is_rejected(self, client):
-        _authed(client)
+    def test_json_without_version_key_is_rejected(self, client, sessions):
+        csrf = _authed(client, sessions)
         r = client.post(
             "/api/settings/org_config/upload",
-            data={"csrf": TOKEN},
+            data={"csrf": csrf},
             files={"file": ("x.json", b'{"google": {}}', "application/json")},
         )
         assert r.json()["error"]
         assert not (sc.org_dir() / "org_config.json").exists()
 
-    def test_installed_file_is_0600(self, client):
-        _authed(client)
+    def test_installed_file_is_0600(self, client, sessions):
+        csrf = _authed(client, sessions)
         client.post(
             "/api/settings/org_config/upload",
-            data={"csrf": TOKEN},
+            data={"csrf": csrf},
             files={"file": ("org_config.json", b'{"version": 1}', "application/json")},
         )
         mode = (sc.org_dir() / "org_config.json").stat().st_mode & 0o777
         assert mode == 0o600
 
-    def test_oversized_upload_is_rejected(self, client, monkeypatch):
+    def test_oversized_upload_is_rejected(self, client, sessions, monkeypatch):
         from privacyfence.web import routes_settings
         monkeypatch.setattr(routes_settings, "MAX_ORG_CONFIG_BYTES", 10)
-        _authed(client)
+        csrf = _authed(client, sessions)
         r = client.post(
             "/api/settings/org_config/upload",
-            data={"csrf": TOKEN},
+            data={"csrf": csrf},
             files={"file": ("x.json", b'{"version": 1, "padding": "xxxxxxxxxxxxxxxxxxxx"}', "application/json")},
         )
         assert r.status_code == 400
 
-    def test_missing_csrf_is_401(self, client):
-        _authed(client)
+    def test_missing_csrf_is_401(self, client, sessions):
+        _authed(client, sessions)
         r = client.post(
             "/api/settings/org_config/upload",
             files={"file": ("x.json", b'{"version": 1}', "application/json")},
@@ -329,12 +347,12 @@ class TestOrgConfigUpload:
 
 
 class TestAuditLogDownload:
-    def test_nothing_to_export_is_404(self, client):
-        _authed(client)
+    def test_nothing_to_export_is_404(self, client, sessions):
+        _authed(client, sessions)
         r = client.get("/api/settings/audit_log/download")
         assert r.status_code == 404
 
-    def test_current_week_activity_downloads_with_content_disposition(self, client, controller):
+    def test_current_week_activity_downloads_with_content_disposition(self, client, controller, sessions):
         from privacyfence.audit_log import AuditEntry, AuditLogger, current_week
 
         log_dir = sc.data_dir() / "logs" / "audit"
@@ -345,7 +363,7 @@ class TestAuditLogDownload:
             connector="gmail", tool="gmail_get_message", tool_name="Read Gmail message",
             summary="s", sender="a@x.com", decision="approved", auto_accept_rule="", latency_seconds=1.0,
         ))
-        _authed(client)
+        _authed(client, sessions)
         r = client.get("/api/settings/audit_log/download")
         assert r.status_code == 200
         assert "attachment" in r.headers.get("content-disposition", "")
@@ -357,30 +375,30 @@ class TestAuditLogDownload:
 
 
 class TestQuitApp:
-    def test_unconfirmed_is_rejected(self, client, monkeypatch):
+    def test_unconfirmed_is_rejected(self, client, sessions, monkeypatch):
         called = []
         monkeypatch.setattr(daemon_main, "request_shutdown", lambda: called.append(True))
-        _authed(client)
-        r = client.post("/api/settings/quit_app", json={"csrf": TOKEN})
+        csrf = _authed(client, sessions)
+        r = client.post("/api/settings/quit_app", json={"csrf": csrf})
         assert r.status_code == 400
         assert called == []
 
-    def test_confirmed_calls_quit(self, client, monkeypatch):
+    def test_confirmed_calls_quit(self, client, sessions, monkeypatch):
         called = []
         monkeypatch.setattr(daemon_main, "request_shutdown", lambda: called.append(True))
-        _authed(client)
-        r = client.post("/api/settings/quit_app", json={"csrf": TOKEN, "confirmed": True})
+        csrf = _authed(client, sessions)
+        r = client.post("/api/settings/quit_app", json={"csrf": csrf, "confirmed": True})
         assert r.status_code == 200
         assert called == [True]
 
-    def test_disabled_by_allow_quit_config(self, controller, monkeypatch):
+    def test_disabled_by_allow_quit_config(self, controller, sessions, monkeypatch):
         from privacyfence.web.routes_settings import create_app as _create_app
         called = []
         monkeypatch.setattr(daemon_main, "request_shutdown", lambda: called.append(True))
-        app = _create_app(controller, token=TOKEN, allow_quit=False)
+        app = _create_app(controller, sessions=sessions, allow_quit=False)
         client = TestClient(app, base_url="http://localhost")
-        _authed(client)
-        r = client.post("/api/settings/quit_app", json={"csrf": TOKEN, "confirmed": True})
+        csrf = _authed(client, sessions)
+        r = client.post("/api/settings/quit_app", json={"csrf": csrf, "confirmed": True})
         assert r.status_code == 403
         assert called == []
 
@@ -396,17 +414,17 @@ class TestNoSubprocessFromHttp:
     Patches subprocess.run to explode, then exercises every route that used
     to (or plausibly could) reach one."""
 
-    def test_no_route_here_calls_subprocess(self, client, monkeypatch):
+    def test_no_route_here_calls_subprocess(self, client, sessions, monkeypatch):
         def _boom(*a, **k):
             raise AssertionError(f"subprocess.run reached from an HTTP route: {a!r}")
 
         monkeypatch.setattr(subprocess, "run", _boom)
-        _authed(client)
+        csrf = _authed(client, sessions)
 
         client.get("/settings")
-        client.post("/api/settings/toggle_pii_detection", json={"csrf": TOKEN})
+        client.post("/api/settings/toggle_pii_detection", json={"csrf": csrf})
         client.post(
-            "/api/settings/org_config/upload", data={"csrf": TOKEN},
+            "/api/settings/org_config/upload", data={"csrf": csrf},
             files={"file": ("x.json", b'{"version": 1}', "application/json")},
         )
         client.get("/api/settings/audit_log/download")

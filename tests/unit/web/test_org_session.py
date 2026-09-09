@@ -54,6 +54,30 @@ class TestOrgSessionStore:
         fake_now[0] += 50  # would be expired from creation, but not from the touch above
         assert store.get(session_id) is not None
 
+    def test_absolute_expired_session_returns_none_and_is_dropped(self, monkeypatch):
+        # SEC-13: hits the absolute cap even though every access was inside
+        # the idle window -- an attacker (or a script) that keeps a session
+        # "active" by polling must not get an unbounded lifetime out of it.
+        store = os_.OrgSessionStore(idle_timeout_seconds=60, absolute_timeout_seconds=100)
+        fake_now = [1000.0]
+        monkeypatch.setattr(os_.time, "time", lambda: fake_now[0])
+        session_id = store.create(Principal(id="alice"))
+
+        fake_now[0] += 50
+        assert store.get(session_id) is not None  # well inside idle window, touches last_seen_at
+        fake_now[0] += 51  # still inside idle window (from the touch above), but past absolute cap
+        assert store.get(session_id) is None
+        assert store.session_count == 0
+
+    def test_session_within_the_absolute_cap_survives(self, monkeypatch):
+        store = os_.OrgSessionStore(idle_timeout_seconds=60, absolute_timeout_seconds=100)
+        fake_now = [1000.0]
+        monkeypatch.setattr(os_.time, "time", lambda: fake_now[0])
+        session_id = store.create(Principal(id="alice"))
+
+        fake_now[0] += 50  # inside both the idle window and the absolute cap
+        assert store.get(session_id) is not None
+
     def test_destroy_removes_the_session(self):
         store = os_.OrgSessionStore()
         session_id = store.create(Principal(id="alice"))
@@ -139,6 +163,23 @@ class TestCsrfAndOrigin:
         }
         assert os_.check_origin(Request(scope)) is False
 
+    def test_check_csrf_compares_via_hmac_compare_digest(self, monkeypatch):
+        # Mirrors web/session_auth.py's own equivalent spy (docs/security-
+        # remediation-plan.md TST-04): pins that this module's check_csrf
+        # keeps using a genuine constant-time compare, not just that it
+        # happens to return the right bool for a matching/mismatched pair.
+        calls = []
+        real_compare_digest = os_.hmac.compare_digest
+        monkeypatch.setattr(
+            os_.hmac, "compare_digest",
+            lambda a, b: calls.append((a, b)) or real_compare_digest(a, b),
+        )
+        request = _request_with_cookie("sess-abc")
+
+        assert os_.check_csrf(request, "sess-abc") is True
+
+        assert calls == [("sess-abc", "sess-abc")]
+
 
 class TestSessionCookieHelpers:
     def test_set_session_cookie_is_secure_httponly_samesite_strict(self):
@@ -149,6 +190,11 @@ class TestSessionCookieHelpers:
         assert "HttpOnly" in set_cookie
         assert "Secure" in set_cookie
         assert "samesite=strict" in set_cookie.lower()
+        # Org mode is HTTPS-mandatory (module docstring), so -- unlike local
+        # mode's deliberate plain-HTTP loopback transport -- Secure here
+        # never risks the browser silently dropping the cookie. Contrast
+        # web/session_auth.py's test_set_session_cookie_omits_secure_in_
+        # local_mode: same flag, opposite mode-appropriate value.
 
     def test_clear_session_cookie_expires_it(self):
         response = Response()

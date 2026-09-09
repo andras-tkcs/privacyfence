@@ -58,6 +58,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from .. import org_identity
 from ..org_identity import IdpConfig
 from ..principal import Principal
+from ..secure_files import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -68,17 +69,39 @@ _AUTHORIZATION_CODE_TTL_SECONDS = 5 * 60
 _ACCESS_TOKEN_TTL_SECONDS = 60 * 60
 _PENDING_AUTHORIZATION_TTL_SECONDS = 5 * 60
 
+# SEC-12 (docs/security-remediation-plan.md, Phase 1 item 1.6): a hard cap
+# on how long one continuous refresh-token *chain* may be used, regardless
+# of how many times it's rotated. Rotation alone (see _mint_tokens'
+# ``refresh_issued_at`` below) isn't an expiry -- a client that keeps
+# refreshing forever never hits one -- so this is checked against the
+# chain's original issuance time, carried forward unchanged across every
+# rotation, not against each individual refresh token's own mint time.
+# 30 days: long enough that an MCP client (Claude Desktop et al.) held open
+# across normal use doesn't force a re-login through the IdP every session,
+# short enough that a refresh token exfiltrated once doesn't stay a usable
+# credential indefinitely the way it did before this fix.
+_REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS = 30 * 24 * 60 * 60
+
 
 class _OrgRefreshToken(RefreshToken):
     """Carries the principal's claims forward across a refresh so
     ``exchange_refresh_token`` can mint a fully-populated access token
     without a second, separate lookup keyed on ``subject`` (which
     wouldn't be enough on its own -- email/display_name/is_admin aren't
-    derivable from a bare subject string)."""
+    derivable from a bare subject string).
+
+    ``issued_at`` (SEC-12) is the refresh-token *chain's* original mint
+    time -- set once, when the chain starts (``exchange_authorization_
+    code``), and carried forward unchanged by every later rotation
+    (``exchange_refresh_token``'s own ``refresh_issued_at`` argument to
+    ``_mint_tokens``), so the absolute-lifetime check in
+    ``load_refresh_token`` bounds the whole chain, not just however long
+    the most recently rotated token has itself existed."""
 
     email: str = ""
     display_name: str = ""
     is_admin: bool = False
+    issued_at: float = 0.0
 
 
 @dataclass
@@ -151,8 +174,7 @@ class OrgOAuthProvider:
 
     def _save_clients_locked(self) -> None:
         raw = {cid: json.loads(info.model_dump_json()) for cid, info in self._clients.items()}
-        self._clients_path.write_text(json.dumps(raw, indent=2, sort_keys=True), encoding="utf-8")
-        self._clients_path.chmod(0o600)
+        atomic_write_json(self._clients_path, raw, indent=2, sort_keys=True)
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         with self._lock:
@@ -271,9 +293,16 @@ class OrgOAuthProvider:
     ) -> _OrgRefreshToken | None:
         with self._lock:
             rt = self._refresh_tokens.get(refresh_token)
-        if rt is None or rt.client_id != client.client_id:
-            return None
-        return rt
+            if rt is None or rt.client_id != client.client_id:
+                return None
+            # SEC-12: absolute lifetime, checked against the chain's
+            # original issuance (see _OrgRefreshToken.issued_at), not this
+            # particular token's own mint time -- same fail-closed-and-
+            # revoke posture as load_access_token's expiry check below.
+            if (time.time() - rt.issued_at) > _REFRESH_TOKEN_ABSOLUTE_LIFETIME_SECONDS:
+                self._revoke_pair_locked(access_token=None, refresh_token_str=refresh_token)
+                return None
+            return rt
 
     async def exchange_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: _OrgRefreshToken, scopes: list[str],
@@ -286,7 +315,7 @@ class OrgOAuthProvider:
             self._revoke_pair_locked(access_token=None, refresh_token_str=refresh_token.token)
         return self._mint_tokens(
             client_id=client.client_id, scopes=scopes or refresh_token.scopes,
-            resource=None, principal=principal,
+            resource=None, principal=principal, refresh_issued_at=refresh_token.issued_at,
         )
 
     # ------------------------------------------------------------------ #
@@ -323,10 +352,16 @@ class OrgOAuthProvider:
 
     def _mint_tokens(
         self, *, client_id: str, scopes: list[str], resource: str | None, principal: Principal,
+        refresh_issued_at: float | None = None,
     ) -> OAuthToken:
         access_token_str = secrets.token_urlsafe(32)
         refresh_token_str = secrets.token_urlsafe(32)
         expires_at = int(time.time()) + _ACCESS_TOKEN_TTL_SECONDS
+        # A fresh chain (exchange_authorization_code) starts its own clock
+        # now; a rotation (exchange_refresh_token) passes the chain's
+        # original issuance through unchanged -- see _OrgRefreshToken's
+        # own docstring for why that's what SEC-12's absolute cap needs.
+        issued_at = time.time() if refresh_issued_at is None else refresh_issued_at
         claims = {"email": principal.email, "display_name": principal.display_name, "is_admin": principal.is_admin}
         with self._lock:
             self._access_tokens[access_token_str] = AccessToken(
@@ -336,7 +371,7 @@ class OrgOAuthProvider:
             self._refresh_tokens[refresh_token_str] = _OrgRefreshToken(
                 token=refresh_token_str, client_id=client_id, scopes=scopes, expires_at=None,
                 subject=principal.id, email=principal.email, display_name=principal.display_name,
-                is_admin=principal.is_admin,
+                is_admin=principal.is_admin, issued_at=issued_at,
             )
             self._refresh_for_access[access_token_str] = refresh_token_str
             self._access_for_refresh[refresh_token_str] = access_token_str

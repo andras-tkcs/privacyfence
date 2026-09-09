@@ -33,13 +33,14 @@ import logging
 import os
 import threading
 from dataclasses import dataclass, field
-from typing import Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+from .secure_files import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -163,13 +164,7 @@ class AppsScriptClient:
             )
 
     def _save_token(self, creds: Credentials) -> None:
-        os.makedirs(os.path.dirname(os.path.abspath(self._token_file)), exist_ok=True)
-        with open(self._token_file, "w", encoding="utf-8") as handle:
-            handle.write(creds.to_json())
-        try:
-            os.chmod(self._token_file, 0o600)
-        except OSError:  # pragma: no cover - best effort on non-POSIX
-            logger.debug("Could not chmod token file (non-fatal)")
+        atomic_write_text(self._token_file, creds.to_json())
 
     def _get_service(self):
         """Build (or reuse) the Apps Script API service resource for this thread."""

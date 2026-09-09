@@ -3,6 +3,15 @@ routes, exercised against an in-process ASGI test client (no real socket).
 See docs/https-connector-refactor-plan.md §13: "routes tested against an
 in-process ASGI/HTTP test client... Auth middleware, CSRF, Host/Origin
 policy... each get explicit negative tests."
+
+SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2): this module's
+own create_app() no longer takes a shared ``token`` -- it authenticates
+against a web/session_auth.py ``LocalSessionStore`` instead (the one-time
+``?bootstrap=`` exchange that actually mints a session lives one layer up,
+in web/server.py's ``_BootstrapMiddleware`` -- see test_server.py for that).
+Every test here that used to authenticate via ``?token=`` now does so the
+same way test_routes_org_approvals.py's own ``_signed_in`` does for
+OrgSessionStore: create a session directly and set the cookie.
 """
 from __future__ import annotations
 
@@ -13,9 +22,8 @@ import pytest
 from starlette.testclient import TestClient
 
 from privacyfence.web.routes_approvals import _inject_shim, create_app
+from privacyfence.web.session_auth import SESSION_COOKIE, LocalSessionStore
 from privacyfence.web_approval_ui import WebApprovalUI
-
-TOKEN = "test-token-0123456789"
 
 
 @pytest.fixture
@@ -24,9 +32,20 @@ def web_ui():
 
 
 @pytest.fixture
-def client(web_ui):
-    app = create_app(web_ui, token=TOKEN)
+def sessions():
+    return LocalSessionStore()
+
+
+@pytest.fixture
+def client(web_ui, sessions):
+    app = create_app(web_ui, sessions=sessions)
     return TestClient(app, base_url="http://localhost")
+
+
+def _signed_in(client: TestClient, sessions: LocalSessionStore) -> str:
+    session_id = sessions.create()
+    client.cookies.set(SESSION_COOKIE, session_id)
+    return session_id
 
 
 def _pending_card(web_ui, **kwargs):
@@ -98,66 +117,86 @@ class TestAuthentication:
         r = client.get("/approvals")
         assert r.status_code == 401
 
-    def test_token_query_param_authenticates_and_sets_a_session_cookie(self, client):
-        r = client.get(f"/approvals?token={TOKEN}")
-        assert r.status_code == 200
-        assert "pf_session" in r.headers.get("set-cookie", "")
-
-    def test_wrong_token_is_rejected(self, client):
-        r = client.get("/approvals?token=not-the-real-token")
-        assert r.status_code == 401
-
-    def test_session_cookie_alone_authenticates_a_later_request(self, client):
-        client.cookies.set("pf_session", TOKEN)
+    def test_valid_session_cookie_authenticates(self, client, sessions):
+        _signed_in(client, sessions)
         r = client.get("/approvals")
         assert r.status_code == 200
 
+    def test_unknown_session_cookie_is_rejected(self, client):
+        client.cookies.set(SESSION_COOKIE, "not-a-real-session-id")
+        r = client.get("/approvals")
+        assert r.status_code == 401
+
+    def test_session_cookie_alone_authenticates_a_later_request(self, client, sessions):
+        _signed_in(client, sessions)
+        r = client.get("/approvals")
+        assert r.status_code == 200
+
+    def test_unauthorized_page_offers_an_on_demand_recovery_command(self, client):
+        # A dead/expired link shouldn't just tell a human to restart
+        # PrivacyFence -- POST /api/bootstrap (web/server.py) exists
+        # precisely so they don't have to, and this page is where that
+        # needs to actually be spelled out (see session_auth.unauthorized_
+        # html's own docstring). The origin in the pasted command has to
+        # match the page the human is actually looking at.
+        r = client.get("/approvals")
+        assert r.status_code == 401
+        assert "api/bootstrap" in r.text
+        assert "http://localhost/api/bootstrap" in r.text
+
 
 class TestListApprovals:
-    def test_nothing_pending(self, client):
-        r = client.get(f"/approvals?token={TOKEN}")
+    def test_nothing_pending(self, client, sessions):
+        _signed_in(client, sessions)
+        r = client.get("/approvals")
         assert "Nothing is waiting" in r.text
 
-    def test_one_pending_card_links_to_it(self, client, web_ui):
+    def test_one_pending_card_links_to_it(self, client, sessions, web_ui):
+        _signed_in(client, sessions)
         t, card, box = _pending_card(web_ui)
-        r = client.get(f"/approvals?token={TOKEN}")
+        r = client.get("/approvals")
         assert f"/approvals/{card.id}" in r.text
         web_ui.resolve(card.id, "deny")
         t.join(timeout=2)
 
-    def test_response_is_never_cached(self, client):
-        r = client.get(f"/approvals?token={TOKEN}")
+    def test_response_is_never_cached(self, client, sessions):
+        _signed_in(client, sessions)
+        r = client.get("/approvals")
         assert r.headers.get("cache-control") == "no-store"
 
-    def test_wrapped_in_the_shared_shell(self, client):
-        r = client.get(f"/approvals?token={TOKEN}")
+    def test_wrapped_in_the_shared_shell(self, client, sessions):
+        _signed_in(client, sessions)
+        r = client.get("/approvals")
         assert "pf-shell-nav" in r.text
         assert 'class="pf-shell-nav-item active" href="/approvals"' in r.text
 
-    def test_notifications_enabled_config_reaches_the_page(self, web_ui):
+    def test_notifications_enabled_config_reaches_the_page(self, web_ui, sessions):
         from privacyfence.web.routes_approvals import create_app
 
-        app = create_app(web_ui, token=TOKEN, notifications_enabled=False)
+        app = create_app(web_ui, sessions=sessions, notifications_enabled=False)
         c = TestClient(app, base_url="http://localhost")
-        r = c.get(f"/approvals?token={TOKEN}")
+        _signed_in(c, sessions)
+        r = c.get("/approvals")
         assert "NOTIFICATIONS_ENABLED = false" in r.text
 
-    def test_pending_card_row_has_a_deny_button_and_review_link(self, client, web_ui):
+    def test_pending_card_row_has_a_deny_button_and_review_link(self, client, sessions, web_ui):
+        _signed_in(client, sessions)
         t, card, box = _pending_card(web_ui)
-        r = client.get(f"/approvals?token={TOKEN}")
+        r = client.get("/approvals")
         assert f'data-deny="{card.id}"' in r.text
         assert f'href="/approvals/{card.id}"' in r.text
         assert ">Allow<" not in r.text
         web_ui.resolve(card.id, "deny")
         t.join(timeout=2)
 
-    def test_two_pending_cards_both_link(self, client, web_ui):
+    def test_two_pending_cards_both_link(self, client, sessions, web_ui):
         # P3: several approvals can be pending at once (§6's retirement of
         # _popup_lock's "one dialog at a time") -- the list must show all of
         # them, not just the most recent.
+        _signed_in(client, sessions)
         t1, card1, box1 = _pending_card(web_ui)
         t2, card2, box2 = _pending_card(web_ui)
-        r = client.get(f"/approvals?token={TOKEN}")
+        r = client.get("/approvals")
         assert f"/approvals/{card1.id}" in r.text
         assert f"/approvals/{card2.id}" in r.text
         web_ui.resolve(card1.id, "deny")
@@ -206,14 +245,16 @@ class TestApprovalsStream:
 
 
 class TestShowApproval:
-    def test_unknown_id_says_no_longer_pending_not_404(self, client):
-        r = client.get(f"/approvals/does-not-exist?token={TOKEN}")
+    def test_unknown_id_says_no_longer_pending_not_404(self, client, sessions):
+        _signed_in(client, sessions)
+        r = client.get("/approvals/does-not-exist")
         assert r.status_code == 200
         assert "no longer pending" in r.text
 
-    def test_pending_card_renders_with_the_bridge_shim_injected(self, client, web_ui):
+    def test_pending_card_renders_with_the_bridge_shim_injected(self, client, sessions, web_ui):
+        _signed_in(client, sessions)
         t, card, box = _pending_card(web_ui, connector="gmail")
-        r = client.get(f"/approvals/{card.id}?token={TOKEN}")
+        r = client.get(f"/approvals/{card.id}")
         assert "window.webkit.messageHandlers.pf" in r.text
         assert f"/api/approvals/{card.id}/decide" in r.text
         assert "Send email" in r.text
@@ -227,26 +268,29 @@ class TestShowApproval:
         web_ui.resolve(card.id, "deny")
         t.join(timeout=2)
 
-    def test_no_longer_pending_page_links_back_to_the_list(self, client):
-        r = client.get(f"/approvals/does-not-exist?token={TOKEN}")
+    def test_no_longer_pending_page_links_back_to_the_list(self, client, sessions):
+        _signed_in(client, sessions)
+        r = client.get("/approvals/does-not-exist")
         assert 'href="/approvals"' in r.text
 
-    def test_shim_navigates_back_to_the_list_on_success_not_innerhtml(self, client, web_ui):
+    def test_shim_navigates_back_to_the_list_on_success_not_innerhtml(self, client, sessions, web_ui):
         # §3 of docs/approval-list-ui-ux.md: a decision navigates back to
         # /approvals via location.replace (so the back button can't walk
         # into a dead card) with a toast stashed in sessionStorage, instead
         # of rewriting the document body in place.
+        _signed_in(client, sessions)
         t, card, box = _pending_card(web_ui)
-        r = client.get(f"/approvals/{card.id}?token={TOKEN}")
+        r = client.get(f"/approvals/{card.id}")
         assert "location.replace('/approvals')" in r.text
         assert "sessionStorage.setItem('pf_toast'" in r.text
         assert "document.body.innerHTML = r.ok" not in r.text
         web_ui.resolve(card.id, "deny")
         t.join(timeout=2)
 
-    def test_shim_handles_the_409_already_decided_case(self, client, web_ui):
+    def test_shim_handles_the_409_already_decided_case(self, client, sessions, web_ui):
+        _signed_in(client, sessions)
         t, card, box = _pending_card(web_ui)
-        r = client.get(f"/approvals/{card.id}?token={TOKEN}")
+        r = client.get(f"/approvals/{card.id}")
         assert "r.status === 409" in r.text
         assert "Already decided elsewhere" in r.text
         web_ui.resolve(card.id, "deny")
@@ -254,12 +298,12 @@ class TestShowApproval:
 
 
 class TestDecide:
-    def test_happy_path_releases_the_blocked_gate_call(self, client, web_ui):
+    def test_happy_path_releases_the_blocked_gate_call(self, client, sessions, web_ui):
         t, card, box = _pending_card(web_ui, accept_all_choices=[("always_allow", "")])
-        client.cookies.set("pf_session", TOKEN)
+        session_id = _signed_in(client, sessions)
         r = client.post(
             f"/api/approvals/{card.id}/decide",
-            json={"action": "resolve", "result": "accept_all", "choice": 0, "csrf": TOKEN},
+            json={"action": "resolve", "result": "accept_all", "choice": 0, "csrf": session_id},
         )
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
@@ -273,9 +317,9 @@ class TestDecide:
         web_ui.resolve(card.id, "deny")
         t.join(timeout=2)
 
-    def test_csrf_not_matching_the_session_cookie_is_rejected(self, client, web_ui):
+    def test_csrf_not_matching_the_session_cookie_is_rejected(self, client, sessions, web_ui):
         t, card, box = _pending_card(web_ui)
-        client.cookies.set("pf_session", TOKEN)
+        _signed_in(client, sessions)
         r = client.post(
             f"/api/approvals/{card.id}/decide",
             json={"action": "resolve", "result": "deny", "csrf": "wrong-value"},
@@ -284,51 +328,51 @@ class TestDecide:
         web_ui.resolve(card.id, "deny")
         t.join(timeout=2)
 
-    def test_second_decide_for_the_same_id_is_rejected_not_silently_applied(self, client, web_ui):
+    def test_second_decide_for_the_same_id_is_rejected_not_silently_applied(self, client, sessions, web_ui):
         # Idempotent: the first accepted decision wins (§7.1). Also what
         # protects against a stale tab and a genuine double-submit.
         t, card, box = _pending_card(web_ui)
-        client.cookies.set("pf_session", TOKEN)
+        session_id = _signed_in(client, sessions)
         first = client.post(
             f"/api/approvals/{card.id}/decide",
-            json={"action": "resolve", "result": "accept", "csrf": TOKEN},
+            json={"action": "resolve", "result": "accept", "csrf": session_id},
         )
         assert first.status_code == 200
         second = client.post(
             f"/api/approvals/{card.id}/decide",
-            json={"action": "resolve", "result": "deny", "csrf": TOKEN},
+            json={"action": "resolve", "result": "deny", "csrf": session_id},
         )
         assert second.status_code == 409
         t.join(timeout=2)
         assert box["result"] == ("accept", None)  # the second POST never overturned the first
 
-    def test_cross_origin_request_is_rejected(self, client, web_ui):
+    def test_cross_origin_request_is_rejected(self, client, sessions, web_ui):
         t, card, box = _pending_card(web_ui)
-        client.cookies.set("pf_session", TOKEN)
+        session_id = _signed_in(client, sessions)
         r = client.post(
             f"/api/approvals/{card.id}/decide",
-            json={"action": "resolve", "result": "deny", "csrf": TOKEN},
+            json={"action": "resolve", "result": "deny", "csrf": session_id},
             headers={"Origin": "https://evil.example.com"},
         )
         assert r.status_code == 403
         web_ui.resolve(card.id, "deny")
         t.join(timeout=2)
 
-    def test_unknown_id_is_rejected_without_touching_the_real_pending_card(self, client, web_ui):
+    def test_unknown_id_is_rejected_without_touching_the_real_pending_card(self, client, sessions, web_ui):
         t, card, box = _pending_card(web_ui)
-        client.cookies.set("pf_session", TOKEN)
+        session_id = _signed_in(client, sessions)
         r = client.post(
             "/api/approvals/not-the-real-id/decide",
-            json={"action": "resolve", "result": "deny", "csrf": TOKEN},
+            json={"action": "resolve", "result": "deny", "csrf": session_id},
         )
         assert r.status_code == 409
         web_ui.resolve(card.id, "accept")
         t.join(timeout=2)
         assert box["result"] == ("accept", None)
 
-    def test_malformed_json_body_is_rejected(self, client, web_ui):
+    def test_malformed_json_body_is_rejected(self, client, sessions, web_ui):
         t, card, box = _pending_card(web_ui)
-        client.cookies.set("pf_session", TOKEN)
+        _signed_in(client, sessions)
         r = client.post(
             f"/api/approvals/{card.id}/decide",
             content=b"not json",

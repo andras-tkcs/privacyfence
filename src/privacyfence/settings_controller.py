@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import threading
 from datetime import datetime, timezone
@@ -38,7 +37,7 @@ from typing import Any, Callable
 
 import yaml
 
-from . import __version__, dialog_window_html, org_mode, web_prompt
+from . import __version__, dialog_window_html, org_bundle_signing, org_mode, web_prompt
 from .app_credentials import telegram_app_credentials
 from .approval_ui import get_approval_ui
 from .audit_log import AuditLogger, current_week
@@ -55,6 +54,7 @@ from .pii_detector import set_pii_category_enabled, set_pii_detection_enabled
 from .privacy_filter import _parse_group as _parse_privacy_group
 from .privacy_filter import _VALID_POLICIES as PRIVACY_POLICIES
 from .privacy_filter import init_privacy_filter
+from .privacy_filter import PrivacyFilterConfigError
 from .resource_grants import (
     GRANT_RESOURCE_TYPES,
     GrantResourceType,
@@ -65,6 +65,7 @@ from .resource_grants import (
     set_grant_entries,
 )
 from .resource_names import get_resolver
+from .secure_files import atomic_write_json, atomic_write_text
 from . import telegram_auth
 from .tasks_client import TasksClient
 from .update_checker import (
@@ -79,7 +80,7 @@ from .slack_client import authorize_interactive as slack_authorize_interactive
 
 logger = logging.getLogger(__name__)
 
-REPO_URL = "https://github.com/andras-tkcs/privacyfence"
+REPO_URL = "https://github.com/privacyfence/privacyfence"
 LICENSE_NAME = "Apache-2.0"
 
 # ---------------------------------------------------------------------------- #
@@ -732,8 +733,9 @@ class SettingsController:
 
     def _save_config(self, cfg: dict) -> None:
         try:
-            with open(self._config_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
+            atomic_write_text(
+                self._config_path, yaml.safe_dump(cfg, default_flow_style=False, allow_unicode=True),
+            )
         except Exception as exc:
             logger.warning("Could not save config: %s", exc)
 
@@ -892,6 +894,16 @@ class SettingsController:
         gets installed. Sets self.error on failure, clears it on success --
         callers push a fresh snapshot() themselves, the same convention
         every other mutating method here follows.
+
+        SEC-05 (full signing): also runs the bundle through
+        org_bundle_signing.verify_and_maybe_pin() before writing anything
+        to disk -- a bundle that doesn't verify against a previously
+        pinned signing key (or, for a "mode": "org" bundle, isn't signed
+        at all) is rejected here rather than being written and only
+        caught the next time daemon_main.load_org_config() runs at
+        startup. See that module's own docstring for the trust-on-first-
+        use model this shares with daemon_main.py's own enforcement of
+        it.
         """
         try:
             data = json.loads(raw)
@@ -905,11 +917,30 @@ class SettingsController:
             )
             return
 
+        trust = org_bundle_signing.verify_and_maybe_pin(data, org_dir())
+        if not trust.ok:
+            self.error = (
+                f"Refusing to install: organization config bundle failed signing-key "
+                f"verification ({trust.detail}). If a legitimate signing-key rotation is "
+                f"expected, an administrator must delete "
+                f"{org_bundle_signing.pinned_public_key_path(org_dir())} first."
+            )
+            return
+        if data.get("mode") == "org" and not trust.signed:
+            self.error = (
+                'That bundle has "mode": "org" but is not signed -- org mode requires a signed '
+                "bundle (build one with scripts/build_org_bundle.py --sign-key ...)."
+            )
+            return
+        if trust.newly_pinned:
+            logger.info(
+                "Organization config bundle signing key trusted for the first time (TOFU) and "
+                "pinned to %s", org_bundle_signing.pinned_public_key_path(org_dir()),
+            )
+
         dest = org_dir() / "org_config.json"
         try:
-            with open(dest, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2)
-            os.chmod(dest, 0o600)
+            atomic_write_json(dest, data, indent=2)
         except OSError as exc:
             self.error = f"Could not install organization config: {exc}"
             return
@@ -1717,7 +1748,20 @@ class SettingsController:
         default_policy: dict[str, str] = {}
         categories: dict[str, list[dict[str, Any]]] = {}
         for group in PRIVACY_GROUP_LABELS:
-            parsed = _parse_privacy_group(cfg.get(group))
+            try:
+                parsed = _parse_privacy_group(cfg.get(group), group=group)
+            except PrivacyFilterConfigError as exc:
+                # init_privacy_filter (SEC-07) already refused to start the
+                # daemon on a malformed group at startup, so reaching this
+                # is only possible if settings.yaml was hand-edited on disk
+                # to something malformed *after* that -- the live enforced
+                # policy (_REGISTRY, still whatever last validated config
+                # loaded) is unaffected either way. Render the settings page
+                # as "allow" for this group rather than 500ing on it, same
+                # defensive posture _load_config() itself already takes for
+                # a config file that fails to parse at all.
+                logger.warning("Could not render current %s settings: %s", group, exc)
+                parsed = {"default_policy": "allow", "categories": {}}
             default_policy[group] = parsed["default_policy"]
             cat_list = []
             for cat_key, cat_label in PRIVACY_CATEGORY_LABELS.get(group, {}).items():

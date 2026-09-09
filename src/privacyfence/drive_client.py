@@ -33,6 +33,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
+from .secure_files import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 # Full Drive scope: read + write + create + move + comment.
@@ -1223,14 +1225,7 @@ class DriveClient:
             )
 
     def _save_token(self, creds: Credentials) -> None:
-        os.makedirs(os.path.dirname(os.path.abspath(self._token_file)), exist_ok=True)
-        with open(self._token_file, "w", encoding="utf-8") as handle:
-            handle.write(creds.to_json())
-        # Tighten permissions - this file is a bearer credential.
-        try:
-            os.chmod(self._token_file, 0o600)
-        except OSError:  # pragma: no cover - best effort on non-POSIX
-            logger.debug("Could not chmod token file (non-fatal)")
+        atomic_write_text(self._token_file, creds.to_json())
 
     def _get_service(self):
         """Build (or reuse) the Drive API service resource for this thread."""
@@ -1454,25 +1449,20 @@ class DriveClient:
             text_colors=text_colors,
         )
 
-    def download_file(
-        self, file_id: str, destination_dir: str = ""
-    ) -> dict[str, Any]:
-        """Download a file to a local directory and return the saved path.
+    def _stream_full_content(self, file_id: str, metadata: Any) -> tuple[bytes, str | None]:
+        """The actual HTTP mechanics shared by ``download_file`` (writes to
+        disk) and ``download_file_bytes`` (returns bytes directly, for
+        org-mode inline/staged delivery -- connectors/drive.py's own
+        ``_download_file``). Returns ``(data, export_mime)``.
 
-        ``destination_dir`` is mandatory -- see ``resolve_download_destination``.
-        Google Workspace documents are exported as text (Docs/Slides → .txt,
-        Sheets → .csv). Binary files are saved with their original extension.
-        Returns a dict with ``path``, ``name``, ``size_bytes``, and
-        ``truncated`` (always False for full downloads).
+        Deliberately not ``get_file_content``: that method exists for a
+        *capped, best-effort* prefetch (PII scan / rich preview before
+        approval, default 100KB) and truncates silently past its own
+        ``max_bytes`` -- neither is acceptable for the file the human just
+        approved downloading, which must arrive complete regardless of
+        size.
         """
-        if not file_id:
-            raise DriveClientError("download_file requires a non-empty file_id")
-
-        metadata = self.get_file_metadata(file_id)
         export_mime = _GOOGLE_DOC_EXPORTS.get(metadata.mime_type)
-        dest_path = resolve_download_destination(metadata, destination_dir)
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-
         try:
             creds = self._load_credentials()
             session = AuthorizedSession(creds)
@@ -1488,14 +1478,33 @@ class DriveClient:
                 )
             with session.get(url, stream=True) as resp:
                 resp.raise_for_status()
-                with open(dest_path, "wb") as fh:
-                    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
-                        if chunk:
-                            fh.write(chunk)
+                chunks = [chunk for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024) if chunk]
         except Exception as exc:
             raise DriveClientError(
                 f"download_file({file_id}) failed: {exc}"
             ) from exc
+        return b"".join(chunks), export_mime
+
+    def download_file(
+        self, file_id: str, destination_dir: str = ""
+    ) -> dict[str, Any]:
+        """Download a file to a local directory and return the saved path.
+
+        ``destination_dir`` is mandatory -- see ``resolve_download_destination``.
+        Google Workspace documents are exported as text (Docs/Slides → .txt,
+        Sheets → .csv). Binary files are saved with their original extension.
+        Returns a dict with ``path``, ``name``, ``size_bytes``, and
+        ``truncated`` (always False for full downloads).
+        """
+        if not file_id:
+            raise DriveClientError("download_file requires a non-empty file_id")
+
+        metadata = self.get_file_metadata(file_id)
+        dest_path = resolve_download_destination(metadata, destination_dir)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        data, _export_mime = self._stream_full_content(file_id, metadata)
+        with open(dest_path, "wb") as fh:
+            fh.write(data)
 
         size = os.path.getsize(dest_path)
         logger.info("download_file %s → %s (%d bytes)", file_id, dest_path, size)
@@ -1505,6 +1514,25 @@ class DriveClient:
             "size_bytes": size,
             "truncated": False,
         }
+
+    def download_file_bytes(self, file_id: str) -> dict[str, Any]:
+        """Org-mode inline/staged delivery entry point (connectors/
+        drive.py's ``_download_file``, docs/org-mode-download-delivery-
+        plan.md Phase 2): the same complete-file fetch ``download_file``
+        does, returned as bytes instead of written to disk --
+        ``download_file``'s own ``destination_dir`` doesn't correspond to
+        anything reachable on an org-mode server. Returns a dict with
+        ``data`` (bytes), ``name``, ``mime_type``, and ``size_bytes``.
+        """
+        if not file_id:
+            raise DriveClientError("download_file_bytes requires a non-empty file_id")
+
+        metadata = self.get_file_metadata(file_id)
+        data, export_mime = self._stream_full_content(file_id, metadata)
+        name = os.path.basename(resolve_download_name(metadata)) or metadata.id or "file"
+        mime_type = export_mime or metadata.mime_type or "application/octet-stream"
+        logger.info("download_file_bytes %s: %d bytes, mime_type=%s", file_id, len(data), mime_type)
+        return {"data": data, "name": name, "mime_type": mime_type, "size_bytes": len(data)}
 
     def fetch_thumbnail(
         self, thumbnail_link: str, max_bytes: int = _THUMBNAIL_MAX_BYTES

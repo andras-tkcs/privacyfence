@@ -158,7 +158,7 @@ sudo -u privacyfence -H bash -c 'pipx install privacyfence --python python3.11'
 # Until then -- org mode is on main but no tag has been cut yet, so install
 # straight from main instead of PyPI:
 sudo -u privacyfence -H bash -c \
-  'pipx install "git+https://github.com/andras-tkcs/privacyfence.git@main" --python python3.11'
+  'pipx install "git+https://github.com/privacyfence/privacyfence.git@main" --python python3.11'
 ```
 
 Switch to the plain `pipx install privacyfence` form (and re-run it to upgrade) once a version has
@@ -264,12 +264,30 @@ more redirect URI on the app registration you'd otherwise create per
 Run this from a clone of the repository **on your own workstation** — `build_org_bundle.py` is
 stdlib-only and needs no PrivacyFence install, per its own docstring, and doing it off-server keeps
 the client secrets you're about to paste in off the machine until the finished, encrypted-in-transit
-bundle is copied over.
+bundle is copied over. Signing (`--sign-key`, next) is the one exception to stdlib-only — it needs
+the `cryptography` package (`pip install cryptography`).
 
 ```bash
-git clone https://github.com/andras-tkcs/privacyfence
+git clone https://github.com/privacyfence/privacyfence
 cd privacyfence   # main already carries org mode's --mode/--server-*/--idp-* flags
+```
 
+**Generate a signing key, once, and keep it.** Org mode requires a signed bundle (SEC-05,
+[`security-and-compliance.md` §3](security-and-compliance.md)) — PrivacyFence refuses to start in
+org mode with an unsigned `org_config.json`. This only needs doing once per organization; reuse the
+same key file for every future rebuild (including `--merge`) so bundles keep verifying against the
+key your servers already trust:
+
+```bash
+python3 scripts/build_org_bundle.py --generate-signing-key ~/org_signing_key.pem
+```
+
+Keep `~/org_signing_key.pem` secret and durable (a password manager or secrets store, not just this
+workstation's disk) — losing it means every server that has already trusted its key (trust-on-first-
+use, on that server's *first* signed bundle install) can't accept an update until an administrator
+deletes that server's pinned `~/.privacyfence/org/org_config_signing_pubkey.txt` by hand.
+
+```bash
 python3 scripts/build_org_bundle.py \
   --mode org \
   --server-issuer-url https://pf.example.com \
@@ -280,6 +298,7 @@ python3 scripts/build_org_bundle.py \
   --idp-client-id <YOUR_IDP_CLIENT_ID>.apps.googleusercontent.com \
   --idp-client-secret <YOUR_IDP_CLIENT_SECRET> \
   --google-client-secret ~/Downloads/client_secret_<...>.json \
+  --sign-key ~/org_signing_key.pem \
   -o org_config.json
 ```
 
@@ -293,8 +312,11 @@ Notes on the flags used:
   `trusted_proxies` list is configured, never by default") — this must be the reverse proxy's own
   address, which is `127.0.0.1` here since Caddy and PrivacyFence share a host. Omit `--google-*` if
   you skipped §4.2.
+- `--sign-key ~/org_signing_key.pem` — required for `--mode org`, see above.
 - If you also built connector bundles for Slack/Salesforce/Atlassian, pass their flags too (see
   each's own setup doc) — `--merge` lets you add them incrementally without re-typing everything.
+  Pass `--sign-key` again on every such rebuild — a `--merge` run without it strips any existing
+  signature rather than shipping one that's gone stale over the changed content.
 
 Copy the result to the server and lock it down (the script already `chmod 600`s it, but ownership
 still needs fixing after the copy):
@@ -492,6 +514,27 @@ other).
   `journalctl -u caddy -f` unless you've configured a separate log file in the Caddyfile.
 - **Updating PrivacyFence**: re-run the `pipx install ... --force` form of whichever install command
   you used in [Step 3](#3-install-privacyfence), then `sudo systemctl restart privacyfence`.
+- **Download/attachment delivery** (`drive_download_file`/`gmail_download_attachment`/
+  `confluence_download_attachment`, `docs/org-mode-download-delivery-plan.md`): there's no local
+  directory Claude and the user share on this server, so these tools deliver a file's bytes one of
+  two ways instead of writing to disk. A file at or under `download_delivery.inline_max_bytes`
+  (default 8MB) in `org_config.json` comes back directly in the tool's result. A larger one is
+  staged for a short time, encrypted at rest, behind a one-time link the user opens in their own
+  signed-in browser tab — `--downloads-link-ttl-seconds` on `build_org_bundle.py` controls how long
+  that link stays claimable (default 300s/5 minutes) before it expires unclaimed. Three flags on
+  `build_org_bundle.py` (rebuild with `--merge` and redeploy exactly as in
+  [Step 5](#5-build-the-organization-config-bundle)) tune this: `--downloads-inline-max-bytes BYTES`
+  (`0` forces every download through a staged link, unconditionally — the setting for "no file
+  content should ever reach Claude's context, full stop"), `--downloads-link-ttl-seconds SECONDS`,
+  and `--downloads-disable-staging` (refuse an oversized download outright rather than ever writing
+  even an encrypted copy of it to this server's disk — the setting for an organization whose
+  confidentiality requirements rule out a shared machine transiently holding a copy of a large file
+  at all, encrypted or not). **Exclude `~/.privacyfence/users/*/downloads/` from any backup/snapshot
+  job you run on this server independently of PrivacyFence.** Its contents are AES-256-GCM
+  ciphertext with the decryption key never written to this server's disk at all (see that plan
+  doc's "Encryption at rest" section), so this is belt-and-suspenders on top of that guarantee, not
+  a substitute for it — but it's a cheap thing to ask your backup tooling for, and it keeps a stale
+  backup snapshot from being a second place a "deleted" staged file's ciphertext lingers.
 
 ---
 
@@ -527,6 +570,18 @@ section (issuer, client_id, client_secret)`**
 `~/.privacyfence/org/org_config.json` (not `~/.privacyfence/org_config.json`) and that
 `build_org_bundle.py` was actually given `--mode org` plus all three `--idp-*` flags — omitting any
 one of them makes the script skip the `idp` section entirely (see [Step 5](#5-build-the-organization-config-bundle)).
+
+**Startup fails with `ConfigurationError: ... has "mode": "org" but is not signed`**
+`org_config.json` was built without `--sign-key` — org mode requires a signed bundle (SEC-05, see
+[Step 5](#5-build-the-organization-config-bundle)). Rebuild it with `--sign-key <path to your signing
+key>` (generate one first with `--generate-signing-key` if you haven't).
+
+**Startup fails with `ConfigurationError: ... failed signing-key verification`**
+This server already trusts a different signing key (pinned the first time it ever saw a signed
+bundle) than the one `org_config.json` was just signed with — either you signed with the wrong key
+file, or this really is a key rotation. If the rotation is intentional, an administrator must delete
+`~/.privacyfence/org/org_config_signing_pubkey.txt` on this server first, then reinstall the
+newly-signed bundle to re-pin it.
 
 **"Invalid Host header" (plain-text 400) instead of the sign-in page**
 The Host header Caddy forwards doesn't match `server.issuer_url`'s hostname in `org_config.json` —

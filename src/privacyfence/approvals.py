@@ -100,6 +100,22 @@ DEFAULT_HOLD_WINDOW_SECONDS = 30.0
 DEFAULT_PENDING_TTL_SECONDS = 15 * 60.0
 DEFAULT_LEDGER_TTL_SECONDS = 5 * 60.0
 DEFAULT_MAX_PENDING = 50
+# SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): DEFAULT_MAX_
+# PENDING alone is a single shared budget across every principal a
+# registry serves. In org mode (one registry, many principals -- see
+# module docstring) that means one noisy or malicious principal issuing a
+# burst of distinct gated calls can fill the entire registry and lock
+# every other principal's own gated calls into "too many approvals are
+# already pending" -- a denial-of-service against everyone else sharing
+# the daemon, not just against the caller doing it. This is the per-
+# principal share of that same budget: low enough that no single principal
+# can exhaust DEFAULT_MAX_PENDING alone, checked first in
+# register_or_coalesce() so a principal hits their own limit before ever
+# threatening the shared one. DEFAULT_MAX_PENDING stays in force
+# unchanged as the secondary, whole-registry backstop it always was --
+# local mode's single implicit principal ("local") is bounded by both caps
+# at once, which is harmless since it's the only principal there is.
+DEFAULT_MAX_PENDING_PER_PRINCIPAL = 20
 
 # Every UI-step decision a card/confirmation can resolve to -- the same
 # vocabulary approval_popup.py's native bridge and approval_window_html.py's
@@ -113,11 +129,15 @@ CONFIRM_RESULTS = ("confirm", "cancel")
 
 
 class TooManyPendingApprovalsError(RuntimeError):
-    """Raised by register_or_coalesce() when the per-registry cap
-    (``max_pending``) is already reached -- fail-closed rather than queueing
-    (docs/https-connector-refactor-plan.md §7.1): "reject further gated
-    calls with a 'too many pending approvals' error... the natural backstop
-    against a runaway agent"."""
+    """Raised by register_or_coalesce() when either cap is already reached
+    -- fail-closed rather than queueing (docs/https-connector-refactor-
+    plan.md §7.1): "reject further gated calls with a 'too many pending
+    approvals' error... the natural backstop against a runaway agent". The
+    per-principal cap (``max_pending_per_principal``) is checked first and
+    is the one that matters day to day in org mode (SEC-15, docs/security-
+    remediation-plan.md Phase 1 item 1.8); the whole-registry cap
+    (``max_pending``) is the secondary backstop it always was -- see
+    DEFAULT_MAX_PENDING_PER_PRINCIPAL's own comment for why both exist."""
 
 
 def canonical_key(connector: str, tool: str, args: dict[str, Any] | None) -> str:
@@ -251,12 +271,14 @@ class PendingApprovalRegistry:
         pending_ttl: float = DEFAULT_PENDING_TTL_SECONDS,
         ledger_ttl: float = DEFAULT_LEDGER_TTL_SECONDS,
         max_pending: int = DEFAULT_MAX_PENDING,
+        max_pending_per_principal: int = DEFAULT_MAX_PENDING_PER_PRINCIPAL,
         base_url: str | None = None,
     ) -> None:
         self.hold_window = hold_window
         self.pending_ttl = pending_ttl
         self.ledger_ttl = ledger_ttl
         self.max_pending = max_pending
+        self.max_pending_per_principal = max_pending_per_principal
         self.base_url = base_url
         self._lock = threading.Lock()
         self._pending: dict[str, PendingApproval] = {}
@@ -300,9 +322,13 @@ class PendingApprovalRegistry:
         onto it (§6's "New coalescing case") -- the caller must not show a
         second card, only await the existing one.
 
-        Raises TooManyPendingApprovalsError if the cap is reached and this
-        is a genuinely new key (never raised for a coalescing hit -- that
-        doesn't grow the pending set).
+        Raises TooManyPendingApprovalsError if either cap is reached and
+        this is a genuinely new key (never raised for a coalescing hit --
+        that doesn't grow the pending set for either cap). The per-
+        principal cap (SEC-15) is checked first, since it's the one meant
+        to actually bind day to day; the whole-registry cap is the
+        secondary backstop -- see DEFAULT_MAX_PENDING_PER_PRINCIPAL's own
+        comment.
         """
         principal_id = current_principal().id
         key = (principal_id, dedupe_key)
@@ -313,6 +339,16 @@ class PendingApprovalRegistry:
                 existing = self._pending.get(existing_id)
                 if existing is not None and not existing.is_finalized():
                     return existing, False
+            live_for_principal = sum(
+                1 for a in self._pending.values()
+                if not a.is_finalized() and a.principal_id == principal_id
+            )
+            if live_for_principal >= self.max_pending_per_principal:
+                raise TooManyPendingApprovalsError(
+                    f"Too many approvals are already pending for this principal "
+                    f"({self.max_pending_per_principal}) -- decide some or wait for them to "
+                    "expire before issuing more."
+                )
             live = sum(1 for a in self._pending.values() if not a.is_finalized())
             if live >= self.max_pending:
                 raise TooManyPendingApprovalsError(

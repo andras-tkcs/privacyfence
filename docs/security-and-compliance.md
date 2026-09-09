@@ -102,6 +102,19 @@ and confirm which OAuth scopes are requested per connector (documented per-servi
 `docs/atlassian-setup.md`); those scopes are the actual ceiling on what any connector can ever
 read or write, independent of PrivacyFence's own gating logic.
 
+**Bundle integrity.** Because `org_config.json` carries real credentials (and, in org mode, this
+daemon's own IdP/authorization-server trust configuration), a silent replacement of it is as
+dangerous as a compromise of IT's own build process. Every daemon startup logs the bundle's
+sha256 to both the application log and the audit trail, so a tampered file is detectable by
+comparing hashes even on an install that hasn't adopted the rest of this. Signing is additionally
+available: `scripts/build_org_bundle.py --generate-signing-key`/`--sign-key` sign the bundle with
+an Ed25519 key IT keeps; the first signed bundle any install ever sees has its key trusted and
+pinned on that basis (trust-on-first-use, the same model SSH host keys use — see
+`src/privacyfence/org_bundle_signing.py`), and every bundle after that — installed via PrivacyFence
+Settings or dropped onto disk by hand — must verify against that pinned key or is rejected outright,
+including a downgrade to an unsigned bundle. Org mode requires a signed bundle; local mode's
+adoption of signing is optional.
+
 The Calendar connector's optional room-lookup feature is a concrete example of that ceiling being
 kept as narrow as possible: `calendar_list_rooms` needs Google Workspace's admin-level directory
 scope to discover rooms at all, but that scope never touches the OAuth client every employee
@@ -170,10 +183,11 @@ should not be read as PrivacyFence treating writes as safe.
 
 **Note for reviewers evaluating the web settings surface (`/settings`, on by default in local mode,
 `web.settings.enabled` — see [Web surfaces](TECHNICAL_REFERENCE.md#web-surfaces-approvals-settings)
-in the Technical Reference):** it is reachable only with the same `web_token` every other local-mode
-web route already requires (§8 — persisted on disk and reused across daemon restarts, a known
-limitation flagged there), and every mutating request additionally carries a CSRF double-submit
-token and an `Origin` check. Within that authenticated session, the set of actions a request can
+in the Technical Reference):** it is reachable only within an authenticated `pf_session` (§8's
+"Local-mode token semantics" note — a short-lived, single-use bootstrap link exchanged for an
+independent, expiring session, not a persistent secret carried in the URL), and every mutating
+request additionally carries a CSRF double-submit token (the session id itself) and an `Origin`
+check. Within that authenticated session, the set of actions a request can
 invoke is an **explicit allowlist** — an unrecognized action name is rejected before any lookup
 happens at all, and each allowed action's arguments are validated against its real parameter types
 (a malformed argument is a 400, not passed through). Nothing reachable from this surface — or from
@@ -247,6 +261,32 @@ narrower calls still deny rather than silently proceed.
   anywhere (e.g. to a SIEM) and not append-integrity-protected against tampering by whoever has write
   access to that server; centralized forwarding and tamper-evidence are tracked as SEC-23 in
   [`security-remediation-plan.md`](security-remediation-plan.md), not implemented yet.
+- **Download/attachment delivery (`drive_download_file`, `gmail_download_attachment`,
+  `confluence_download_attachment`) is mode-conditional, not "never sent to Claude" everywhere.**
+  In **local mode**, these tools write the approved file straight to a local directory Claude and
+  the human share, and Claude's own tool result never carries the bytes — the human's approval
+  gates access, and the file itself only ever reaches Claude if Claude separately reads it back off
+  disk. In **org mode** there is no local directory Claude and the human share (the daemon runs
+  headless on a server), so the same approved bytes are delivered one of two ways, decided by file
+  size against a configurable `inline_max_bytes` cap (default 8MB, see
+  `docs/org-mode-download-delivery-plan.md`): a file at or under the cap comes back **directly in
+  the tool result** — by design, this is the intended transport, not a leak, and it means the
+  content does reach the model's context for anything under that cap; a larger file is instead
+  **staged, encrypted at rest with a key never persisted on the server**, behind a one-time link the
+  human opens in their own signed-in browser tab, so its bytes never enter Claude's context at all.
+  An organization that wants org mode's pre-existing "content never reaches Claude" posture applied
+  unconditionally can set `inline_max_bytes: 0`, forcing every download through the staged-link
+  path regardless of size; an organization with stricter confidentiality requirements that doesn't
+  want even an encrypted, short-TTL copy of a large file transiently on the shared server's disk can
+  set `allow_disk_staging: false` and accept that oversized downloads simply fail with a clear error
+  instead. The staged-link path's own guarantee has one honest limit: the file is encrypted at rest
+  (a compromised disk, backup, or forensic "deletion" recovery all yield ciphertext, not plaintext),
+  but plaintext necessarily exists briefly in the daemon's own process memory around
+  decrypt-and-stream, same as any encryption-at-rest scheme — this protects against disk/backup
+  exposure, not a live compromise of the daemon process itself. Every approval gate's own preview
+  reflects this honestly and specifically (which of the two paths applies, and the size involved),
+  and which path was actually used is itself recorded per-decision in the audit log's `delivery`
+  field.
 
 ---
 
@@ -313,44 +353,70 @@ oversight measure**, sitting in front of the AI system rather than being one:
 | Control | Implementation |
 |---|---|
 | Authentication to connected services | OAuth2 (or Telethon/MTProto for Telegram), per user, per connector — no shared service accounts |
-| Authentication to PrivacyFence itself | **Local mode:** possession of a random bearer token written to a local file is the whole authorization model — see the "Local-mode token semantics" note below for exactly what that does and doesn't provide. **Org mode:** each person signs in via OIDC against the organization's own IdP (§2); the resulting server-side session is an unguessable, HttpOnly/Secure/SameSite=Strict cookie with a 30-minute sliding idle timeout, held in memory only (a session does not survive a daemon restart — signing in again is the accepted cost, see `web/org_session.py`) |
+| Authentication to PrivacyFence itself | **Local mode:** possession of a random bearer token written to a local file is the whole authorization model — see the "Local-mode token semantics" note below for exactly what that does and doesn't provide. **Org mode:** each person signs in via OIDC against the organization's own IdP (§2); the resulting server-side session is an unguessable, HttpOnly/Secure/SameSite=Strict cookie with a 30-minute sliding idle timeout and a 24-hour absolute cap from sign-in regardless of activity, held in memory only (a session does not survive a daemon restart — signing in again is the accepted cost, see `web/org_session.py`); an MCP client's OAuth refresh token carries the same absolute-lifetime cap (30 days from its original issuance, unaffected by rotation) alongside its own rotate-on-use behavior (see `web/oauth_provider.py`) |
 | Least privilege | Per-connector, per-operation gating (`auto`/`review`/`popup`); auto-accept rules can be scoped down to a single folder, spreadsheet tab, channel, or task list |
 | PII detection gate | Local regex heuristic (Hungarian/English/German) over `review` (read) dialog content only; a match requires an extra explicit confirmation before Allow once takes effect. Toggleable per user (PrivacyFence Settings / `pii_detection.enabled`) |
 | Transport to Claude | **Local mode:** loopback-bound (`localhost`) `/mcp` Streamable HTTP endpoint, authenticated by a shared bearer token (`~/.privacyfence/mcp_token`) required on every request; Claude Desktop's stdio shim carries no credentials of its own and only relays it. **Org mode:** `/mcp` over HTTPS, authenticated by a real OAuth 2.1 authorization server (dynamic client registration, PKCE, tokens bound to the OIDC-verified principal) instead of one shared secret |
-| Web approval/settings surface | **Local mode** (opt-in for `/settings`, always-on for `/approvals`): loopback-bound (`localhost`) embedded HTTP server; a shared session token (`~/.privacyfence/web_token`) required on every request, CSRF double-submit + `Origin` check on every mutation, an explicit action allowlist (not `getattr`) behind `/settings`, and no code path reachable from an HTTP request ever runs a subprocess on the host. **Org mode:** a separate, principal-scoped `/approvals`/`/security` surface (§2) authenticated by the OIDC-backed session above, not the shared token; a write decision additionally requires a fresh WebAuthn step-up when the organization has turned that on. `/settings` is not mounted in org mode at all yet (see §4) |
+| Web approval/settings surface | **Local mode** (opt-in for `/settings`, always-on for `/approvals`): loopback-bound (`localhost`) embedded HTTP server; every request requires an authenticated `pf_session` cookie — minted by exchanging a short-lived, single-use bootstrap code, never a persistent secret carried in the URL (see "Local-mode token semantics" below) — CSRF double-submit + `Origin` check on every mutation, an explicit action allowlist (not `getattr`) behind `/settings`, and no code path reachable from an HTTP request ever runs a subprocess on the host. **Org mode:** a separate, principal-scoped `/approvals`/`/security` surface (§2) authenticated by the OIDC-backed session above, not a local secret; a write decision additionally requires a fresh WebAuthn step-up when the organization has turned that on. `/settings` is not mounted in org mode at all yet (see §4) |
 | Process isolation | The Desktop-only shim (untrusted-facing, no credentials, no tool-schema knowledge) and the daemon (holds credentials) are separate processes; only the daemon can reach external APIs |
 | Secrets at rest | Local OS-level storage / local files under `credentials/`, org-mode credentials under a per-principal directory on the org-mode server; never committed to source control (`.gitignore`'d), never transmitted off-device. See "Storage format and permissions" below for exactly what protects these files today, and what doesn't yet |
 | Auditability | Every decision logged with outcome (accepted/denied/auto_accepted), locally, in a human-readable format (JSONL + Excel) |
 | Code signing / notarization | The macOS `.app` release is code-signed with a Developer ID Application certificate and notarized by Apple; Gatekeeper accepts it with no manual steps (see [Technical Reference](TECHNICAL_REFERENCE.md#installation)). Org mode is deployed from source/PyPI onto a server IT controls, so Gatekeeper/notarization doesn't apply there — the equivalent control is your organization's own provenance for the server it stands up (e.g. installing a pinned, reviewed release rather than an unreviewed checkout, per §9) |
 | Third-party dependencies | Standard OAuth/SDK libraries per connector (google-auth, slack_sdk, telethon, atlassian-python-api); no PrivacyFence-operated backend dependency |
 
-**Local-mode token semantics — a known limitation, not yet fixed.** `mcp_token` and `web_token` are
-each generated once, written to a file under `~/.privacyfence/`, and then **reused unchanged across
-every subsequent daemon restart** — they are not rotated per launch, and (for `web_token`) the
-bootstrap URL the daemon logs on startup carries the token itself in the query string
-(`http://localhost:8765/settings?token=...`), which is also written to the local log file. This is
-weaker than a document describing PrivacyFence should claim it isn't: a token that leaks once (e.g.
-from a log file, shell history, or a shared screen) stays valid until someone manually deletes the
-token file and restarts the daemon — there is no expiry, and no way to revoke just that one exposure
-without rotating the file by hand. It is still bounded by the fact that reaching the token at all
-requires access to that specific machine's filesystem or its logs, and it does not by itself grant
-access to any connected service (each connector still requires its own separate OAuth grant). Fixing
-this — a short-lived bootstrap flow, tokens no longer carried in a URL or logged, and rotation on
-upgrade — is tracked as SEC-06 in [`security-remediation-plan.md`](security-remediation-plan.md) and
-is not yet implemented; treat the paragraph above, not the "per-launch" framing an earlier version of
-this document used, as the current state.
+**Local-mode token semantics — the post-SEC-06 bootstrap flow.** Two persistent secrets, each
+generated once and written 0600 to a file under `~/.privacyfence/`, still anchor local mode's whole
+authorization model — but since SEC-06 (Phase 1 item 1.2 in
+[`security-remediation-plan.md`](security-remediation-plan.md)) they no longer play the role an
+earlier version of this document described, and neither is ever carried in a URL or written to the
+log file:
 
-**Storage format and permissions — also not fully hardened yet.** Each credential/token file is
-written in plain text and then `chmod`'d to `0600` *after* the write completes (not written
-atomically via a temp-file-and-rename, and not created with restrictive permissions from the start);
-a failure to apply that `chmod` — e.g. an unusual filesystem — is caught and merely logged at debug
-level, not treated as fatal. The directories these files live in (`~/.privacyfence` and its
-subdirectories) are created with the process's default umask, not deliberately restricted to `0700`.
-In practice this means the directory tree's own permissions, not anything PrivacyFence actively
-enforces beyond the individual file `chmod`, are what stand between another local account on the
-same machine and these files. Moving to atomic, already-`0600` writes and enforcing/warning on
-directory permissions is tracked as SEC-09 in
-[`security-remediation-plan.md`](security-remediation-plan.md).
+- **`mcp_token`** is unaffected by SEC-06 and remains the whole authorization model for `/mcp`:
+  possession of it, presented as an `Authorization: Bearer` header on every request (Claude Desktop's
+  stdio-to-HTTP shim relays it but holds no credentials of its own), is what lets Claude reach the
+  daemon at all. It is generated once and reused unchanged across restarts, same as before.
+- **`web_token`** no longer authenticates a browser directly and is never sent to one. Its only
+  remaining job is authorizing `POST /api/bootstrap` — via an `Authorization: Bearer` header, never a
+  query string — to mint a fresh bootstrap code on demand, without restarting the daemon.
+
+What a browser actually sees is a **bootstrap code**: a random, single-use value, valid for 10
+minutes, that the daemon mints and logs at every startup as a full link
+(`http://localhost:8765/approvals?bootstrap=<code>`, and similarly for `/settings`) — the only thing
+this flow ever puts in a URL or a log line. Opening that link consumes the code immediately (a
+replay, a second click, or a link that has simply expired all fail the same way, with no
+distinguishing signal), and on success mints an independent, random session id
+(`web/session_auth.py`'s `LocalSessionStore`), set as an `HttpOnly`/`SameSite=Strict` `pf_session`
+cookie — the same value the CSRF double-submit check (§4) compares against. That session has a
+30-minute sliding idle timeout, renewed on every authenticated request, and a 24-hour absolute cap
+from creation regardless of activity; it lives in memory only and does not survive a daemon restart.
+Once a session lapses, getting back in means either restarting the daemon (which logs a fresh
+bootstrap link) or, without restarting, `POST /api/bootstrap` with the persistent `web_token` as a
+bearer header to mint a new code on demand.
+
+`web_token` is additionally rotated automatically whenever the installed version changes — including
+the very first startup after upgrading to this fix, which dead-ends any `?token=` link, shell-history
+entry, or log line an older, pre-SEC-06 build had already produced, since that value no longer means
+anything to the new code. Net effect versus the design this section used to describe: nothing
+long-lived is ever carried in a URL or written to the log file, a leaked bootstrap link is a single,
+time-boxed attempt rather than a standing credential, and a session established from it has a real
+ceiling instead of lasting forever. What hasn't changed: reaching either secret still requires
+filesystem or log access to that specific machine, and neither secret by itself grants access to any
+connected service (each connector still requires its own separate OAuth grant).
+
+**Storage format and permissions.** Every credential/token/config file is written through a shared
+helper (`secure_files.py`, SEC-09 in [`security-remediation-plan.md`](security-remediation-plan.md))
+that writes to a fresh
+`O_CREAT|O_EXCL`-created temp file in the same directory — already at `0600` from the instant it
+exists, never created with the process's default umask even briefly — then `fsync`s and
+atomically `os.replace`s it into place. A reader can only ever see the old complete file or the new
+complete file, never a partial write from a crash or a concurrent daemon instance. The directories
+these files live in (`~/.privacyfence` and its subdirectories — `data_dir()`/`org_dir()`/
+`user_dir()`) are created, and re-tightened on every resolution if they already existed at looser
+permissions (e.g. from a pre-SEC-09 install), to `0700` the same way. A failure to apply either the
+file or directory permissions — e.g. an unusual filesystem — is logged at `warning`, not silently
+swallowed at `debug` the way it was before this fix. Daemon startup additionally audits
+`data_dir()`/`org_dir()`/`user_dir()`'s actual on-disk permissions: local mode logs a warning and
+keeps starting if any of them grants group/other access, organization mode refuses to start.
 
 ---
 
@@ -366,7 +432,7 @@ in §§2–8.
 |---|---|---|
 | Certified information security framework (ISO 27001, SOC 2, etc.) | Not established | These certifications attest to controls around *operated infrastructure* — the thing being certified is an organization's data centers, access management, incident processes, etc. PrivacyFence has none of that to certify: there is no PrivacyFence-operated infrastructure at all (§2). A certification program doesn't map onto software that runs entirely on the employee's own machine. |
 | Business Continuity Plan | None | A BCP protects continuity of a *service*. There is no PrivacyFence-operated service whose outage could disrupt your organization — if the maintainer became unreachable tomorrow, already-installed copies keep running locally exactly as before; nothing in PrivacyFence's core function depends on ongoing vendor availability beyond the pre-existing OAuth relationships you already have with Google/Slack/Salesforce/Atlassian, plus the optional, disable-able daily update check (§2). Continuity risk here is really *source availability* risk, and it is mitigated by the code being open source: your organization can audit, fork, or internally maintain a pinned version independent of the original maintainer. |
-| Risk response process / SLA | None | There is no support contract. Suspected security issues go to **privacyfence@tkcs.name** or a public GitHub issue (§10 below) and are handled best-effort, not against a committed response time. Organizations that need a guaranteed patch turnaround should treat that as a real gap to plan around (e.g., pin to an internally reviewed release rather than auto-updating, and assign an internal owner able to patch or roll back if a report doesn't land in time) — not assume it away. |
+| Risk response process / SLA | None | There is no support contract. Suspected security issues go to **info@privacyfence.eu** or a public GitHub issue (§10 below) and are handled best-effort, not against a committed response time. Organizations that need a guaranteed patch turnaround should treat that as a real gap to plan around (e.g., pin to an internally reviewed release rather than auto-updating, and assign an internal owner able to patch or roll back if a report doesn't land in time) — not assume it away. |
 
 **Why this doesn't add Information Security Risk in itself:** these three gaps describe the
 *absence of vendor governance overhead*, not a technical vulnerability. The technical risk profile
@@ -397,7 +463,7 @@ to that acceptance:
 
 ## 10. Vulnerability reporting
 
-Report suspected security issues to **privacyfence@tkcs.name** rather than filing a public GitHub
+Report suspected security issues to **info@privacyfence.eu** rather than filing a public GitHub
 issue. Include reproduction steps and, where relevant, which connector and gate configuration was
 involved.
 

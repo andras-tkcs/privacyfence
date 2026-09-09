@@ -84,7 +84,7 @@ class TestExchangeCode:
             "access_token": "at-1", "refresh_token": "rt-1", "expires_in": 3600,
             "expires_at": 9999999999, "scope": "scope-a", "token_type": "Bearer",
         }
-        with patch("google_auth_oauthlib.flow.Flow.fetch_token", _fake_fetch_token(token)) as fetch:
+        with patch("google_auth_oauthlib.flow.Flow.fetch_token", _fake_fetch_token(token)):
             creds = google_oauth.exchange_code(wrapped, ["scope-a"], REDIRECT_URI, "auth-code", "verifier-abc")
 
         assert creds.token == "at-1"
@@ -134,5 +134,5 @@ class TestSaveCredentials:
         def raise_chmod(*a, **kw):
             raise OSError("no chmod here")
 
-        monkeypatch.setattr(google_oauth.os, "chmod", raise_chmod)
+        monkeypatch.setattr("os.chmod", raise_chmod)
         google_oauth.save_credentials(str(tmp_path / "token.json"), creds)  # must not raise

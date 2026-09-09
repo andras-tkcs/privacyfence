@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .secure_files import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 # How long the on-disk whole-account chat-name snapshot (see
@@ -409,10 +411,7 @@ class TelegramPrivacyFenceClient:
             "chats": {str(cid): name for cid, name in self._chat_name_cache.items()},
         }
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(self._chat_cache_file)), exist_ok=True)
-            with open(self._chat_cache_file, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
-            os.chmod(self._chat_cache_file, 0o600)  # DM chat names are real people's names
+            atomic_write_json(self._chat_cache_file, payload)  # DM chat names are real people's names
         except OSError as exc:
             logger.warning("Could not save Telegram chat directory cache (non-fatal): %s", exc)
 

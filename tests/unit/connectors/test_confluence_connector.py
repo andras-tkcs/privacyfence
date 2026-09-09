@@ -535,6 +535,103 @@ class TestDownloadAttachment:
         assert result == {"path": "/tmp/photo.png", "name": "photo.png", "size_bytes": 1024}
 
 
+class TestOrgModeDownloadDelivery:
+    """docs/org-mode-download-delivery-plan.md, Phase 2: in org mode,
+    confluence_download_attachment never writes to this daemon's own disk
+    -- a small attachment's bytes come back inline, a larger one is staged
+    behind a one-time link."""
+
+    def _attachment(self, **overrides):
+        defaults = dict(
+            name="report.pdf", media_type="application/octet-stream", size=1024, attachment_id="att-1",
+        )
+        defaults.update(overrides)
+        return ConfluenceAttachment(**defaults)
+
+    @pytest.fixture(autouse=True)
+    def _isolated_data_dir(self, tmp_path, monkeypatch):
+        from privacyfence import paths
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+    def _org_connector(self, *, inline_max_bytes=1_000, allow_disk_staging=True, link_ttl_seconds=300.0):
+        from privacyfence.org_mode import DownloadDeliveryConfig
+
+        connector, client = make_connector()
+        connector.download_mode = "org"
+        connector.download_config = DownloadDeliveryConfig(
+            inline_max_bytes=inline_max_bytes, allow_disk_staging=allow_disk_staging,
+            link_ttl_seconds=link_ttl_seconds,
+        )
+        connector.download_base_url = "https://pf.example.com"
+        return connector, client
+
+    async def test_local_mode_return_shape_is_unchanged(self, gated_call_spy):
+        connector, client = make_connector()
+        client.get_page.return_value = make_page()
+        client.list_attachments.return_value = [self._attachment()]
+        client.download_attachment.return_value = {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+
+        result = await connector.call(
+            "confluence_download_attachment",
+            {"page_id": "p1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        assert result == {"path": "/tmp/report.pdf", "name": "report.pdf", "size_bytes": 1024}
+        client.download_attachment.assert_called_once_with("p1", "att-1", "report.pdf", "/tmp")
+        assert gated_call_spy[0]["delivery"] == "local_disk"
+
+    async def test_small_attachment_is_delivered_inline(self, gated_call_spy):
+        connector, client = self._org_connector(inline_max_bytes=1_000)
+        client.get_page.return_value = make_page()
+        client.list_attachments.return_value = [self._attachment(size=20)]
+        client.fetch_attachment_bytes.return_value = b"attachment bytes!!!"
+
+        result = await connector.call(
+            "confluence_download_attachment",
+            {"page_id": "p1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        assert result["delivery"] == "inline"
+        import base64
+        assert base64.b64decode(result["content_base64"]) == b"attachment bytes!!!"
+        client.download_attachment.assert_not_called()
+
+        kwargs = gated_call_spy[0]
+        assert "Yes" in kwargs["new_info"]["Content returned to Claude"]
+        assert kwargs["delivery"] == "inline_base64"
+
+    async def test_large_attachment_is_staged_behind_a_one_time_link(self, gated_call_spy):
+        from privacyfence.download_staging import get_download_staging_store
+
+        connector, client = self._org_connector(inline_max_bytes=10)
+        client.get_page.return_value = make_page()
+        client.list_attachments.return_value = [self._attachment(size=5000)]
+        client.fetch_attachment_bytes.return_value = b"x" * 5000
+
+        result = await connector.call(
+            "confluence_download_attachment",
+            {"page_id": "p1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+        )
+
+        assert result["delivery"] == "link"
+        assert result["download_url"].startswith("https://pf.example.com/downloads/")
+        assert get_download_staging_store().pending_count == 1
+        assert gated_call_spy[0]["delivery"] == "staged_link"
+
+    async def test_oversized_attachment_with_staging_disabled_is_refused_before_any_fetch(self, gated_call_spy):
+        connector, client = self._org_connector(inline_max_bytes=10, allow_disk_staging=False)
+        client.get_page.return_value = make_page()
+        client.list_attachments.return_value = [self._attachment(size=5000)]
+
+        with pytest.raises(RuntimeError, match="disk staging is disabled"):
+            await connector.call(
+                "confluence_download_attachment",
+                {"page_id": "p1", "attachment_name": "report.pdf", "destination_dir": "/tmp"},
+            )
+
+        client.fetch_attachment_bytes.assert_not_called()
+
+
 class TestAttachmentPiiScanWiring:
     """confluence_download_attachment fetches prefetch-worthy attachments
     (text/PDF/DOCX/PPTX, in addition to images) and extracts text via

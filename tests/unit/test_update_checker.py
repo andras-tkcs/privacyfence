@@ -126,7 +126,7 @@ class TestFetchLatestRelease:
             response.raise_for_status.return_value = None
             response.json.return_value = {
                 "tag_name": "v2.2.0",
-                "html_url": "https://github.com/andras-tkcs/privacyfence/releases/tag/v2.2.0",
+                "html_url": "https://github.com/privacyfence/privacyfence/releases/tag/v2.2.0",
                 "prerelease": False,
             }
             return response
@@ -138,7 +138,7 @@ class TestFetchLatestRelease:
         assert captured["url"] == uc.GITHUB_RELEASES_LATEST_URL
         assert release == {
             "tag_name": "v2.2.0",
-            "html_url": "https://github.com/andras-tkcs/privacyfence/releases/tag/v2.2.0",
+            "html_url": "https://github.com/privacyfence/privacyfence/releases/tag/v2.2.0",
             "prerelease": False,
         }
 

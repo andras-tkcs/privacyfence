@@ -191,6 +191,26 @@ from .resource_grants import apply_grant_removal, apply_grant_upsert, describe_g
 
 logger = logging.getLogger(__name__)
 
+
+class GateDeniedError(RuntimeError):
+    """Raised by ``gated_call()``/``propose_rule_change()``/
+    ``_deny_unattended()`` for a call denied by policy or by the user's own
+    decision -- "denied", never "failed". Composed only of static text (see
+    each raise site below): unlike the bare ``RuntimeError(str(exc))`` every
+    connector's own ``_fetch``-style helper raises to wrap a ``*ClientError``
+    (gmail_client.py and friends -- see that pattern in connectors/*.py),
+    this type never carries a third party's own exception text. SEC-10
+    (docs/security-remediation-plan.md Phase 1.7): safe_errors.py's
+    public_message() relies on exactly this distinction -- a bare
+    ``RuntimeError`` is *not* trusted to reach an MCP client verbatim, but a
+    named subclass (this one, plus approvals.TooManyPendingApprovalsError
+    and connector_registry.TooManyPrincipalsError, both reviewed the same
+    way) is. Don't raise plain ``RuntimeError(...)`` in this module for that
+    reason -- use this instead so a future call site here gets the same
+    trust by construction rather than by accident.
+    """
+
+
 # Thin delegations to the pluggable ApprovalUI seam (approval_ui.py), kept as
 # plain module-level functions -- rather than called as get_approval_ui().
 # show_read_popup(...) inline at each call site below -- so this module
@@ -628,6 +648,13 @@ async def gated_call(
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
+    delivery: str = "",  # "local_disk" | "inline_base64" | "staged_link" -- docs/org-mode-
+        # download-delivery-plan.md's Phase 3: which transport actually moved (or would move)
+        # this call's file bytes, recorded on the audit entry alongside the ordinary accept/
+        # deny decision. "" (every call site before this phase, and every non-download tool)
+        # means "not applicable" -- this is deliberately not inferred from anything else gated_
+        # call already has, since only the three download/attachment tools know their own
+        # delivery mode. See audit_log.AuditEntry.delivery's own docstring.
 ) -> Any:
     created_at = time.time()
     request_id = uuid.uuid4().hex[:12]
@@ -766,7 +793,7 @@ async def gated_call(
             decision=decision, auto_accept_rule=auto_accept_rule, pii_detected=pii_detected,
             pii_categories=audit_pii_categories,
             pii_match_details=_pii_match_details_for_audit(audit_pii_matches, decision),
-            claude_reason=claude_reason, decided_at=decided_at,
+            claude_reason=claude_reason, decided_at=decided_at, delivery=delivery,
         )
 
     try:
@@ -882,7 +909,7 @@ async def gated_call(
 
             if decision == "deny":
                 audit(decision="rejected", auto_accept_rule="", pii_detected=bool(pii_categories), decided_at=decided_at)
-                raise RuntimeError("Request denied by user")
+                raise GateDeniedError("Request denied by user")
 
             if decision == "accept_all":
                 audit(
@@ -1023,7 +1050,7 @@ async def gated_call(
                 decision="rejected", auto_accept_rule="", pii_detected=bool(upload_pii_categories),
                 decided_at=decided_at,
             )
-            raise RuntimeError("Request denied by user")
+            raise GateDeniedError("Request denied by user")
     except asyncio.CancelledError:
         # The bridge asked the daemon to give up on this request (see
         # ipc.py's "cancel" method) -- an expected, named outcome, not a
@@ -1077,7 +1104,7 @@ async def propose_rule_change(
     identical rule/grant already exists -- confirming again is cheap,
     silently no-op'ing a request Claude explicitly made is more surprising.
 
-    Raises RuntimeError if the user declines, or if called on an unattended
+    Raises GateDeniedError if the user declines, or if called on an unattended
     connection (see is_unattended()) -- mirroring gated_call's own "deny ==
     exception" contract so a declined proposal surfaces to Claude as a clear
     tool error rather than a result it has to remember to check.
@@ -1111,7 +1138,7 @@ async def propose_rule_change(
             tool_name="", summary=summary, sender="", decision="denied_unattended",
             auto_accept_rule="", pii_detected=False, claude_reason=reason,
         )
-        raise RuntimeError(
+        raise GateDeniedError(
             "Request denied: this connection is in an unattended session, so a config change "
             "can't be confirmed without a human present."
         )
@@ -1124,7 +1151,7 @@ async def propose_rule_change(
             tool_name="", summary=summary, sender="", decision="rejected",
             auto_accept_rule="", pii_detected=False, claude_reason=reason,
         )
-        raise RuntimeError("Request denied by user")
+        raise GateDeniedError("Request denied by user")
 
     if target == "rule":
         if operation == "remove":
@@ -1184,7 +1211,7 @@ def _deny_unattended(audit, connector: str, tool: str, *, pii_categories: list[s
         "Unattended session: denying %s/%s without prompting -- no auto-accept rule matched%s",
         connector, tool, " (or the PII gate overrode one that did)" if pii_categories else "",
     )
-    raise RuntimeError(
+    raise GateDeniedError(
         "Request denied: this connection is in an unattended session and no auto-accept rule "
         "matches this call, so it can't be approved without a human present."
     )
@@ -1242,6 +1269,7 @@ def _default_details(raw_data: Any) -> str:
 def _audit(
     *, created_at, request_id, connector, tool, tool_name, summary, sender, decision, auto_accept_rule,
     pii_detected=False, pii_categories=None, pii_match_details="", claude_reason="", decided_at=None,
+    delivery="",
 ) -> None:
     try:
         get_audit_logger().record(AuditEntry(
@@ -1260,6 +1288,7 @@ def _audit(
             pii_categories=pii_categories or [],
             pii_match_details=pii_match_details,
             claude_reason=claude_reason,
+            delivery=delivery,
             # Set only when this decision came from the deferred-approval
             # ledger (a real human click that happened separately from --
             # and possibly long after -- the invocation now releasing on the

@@ -1,0 +1,45 @@
+version: 2
+
+# SEC-19 (docs/security-remediation-plan.md, Phase 2.4). Three ecosystems,
+# matching the three places this repo declares a dependency version:
+# pyproject.toml (the daemon), mcpb/shim/package.json (the .mcpb shim), and
+# the SHA-pinned `uses:` lines in .github/workflows/*.yml themselves (see
+# those files' own comments on why they're pinned to a commit instead of a
+# tag). A PR from any of these three updates only the manifest/pin — it does
+# not regenerate requirements/*.lock.txt, which is a derived file; the
+# `lockfile-freshness` job in dependency-audit.yml catches a merged bump
+# that leaves the lock file stale before it reaches main, and
+# scripts/update_dependency_locks.sh is how a human (or a follow-up commit
+# on the Dependabot PR) brings it back in sync.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      # Actions bump together in one PR -- they're independent third-party
+      # projects, not a coupled dependency graph, so there's nothing a
+      # per-action PR buys over reviewing one batch.
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # pyproject.toml pins runtime deps with a floor (">=") and a handful of
+    # explicit ceilings whose reasons are documented inline there (mcp,
+    # webauthn, starlette, uvicorn) -- Dependabot respects an existing
+    # upper bound and won't propose crossing it, so those comments stay the
+    # real gate on a major bump either way.
+    groups:
+      python-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/mcpb/shim"
+    schedule:
+      interval: "weekly"
+    groups:
+      shim-dependencies:
+        patterns: ["*"]

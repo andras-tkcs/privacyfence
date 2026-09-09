@@ -75,6 +75,7 @@ from webauthn.helpers.structs import (
 
 from . import paths
 from .principal import Principal
+from .secure_files import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -163,11 +164,7 @@ def has_credentials(principal: Principal) -> bool:
 
 def _save_credentials(principal: Principal, creds: list[WebAuthnCredential]) -> None:
     path = _credentials_path(principal)
-    path.write_text(json.dumps({"credentials": [c.to_dict() for c in creds]}), encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:  # pragma: no cover -- best effort on non-POSIX
-        logger.debug("Could not chmod WebAuthn credentials file (non-fatal)")
+    atomic_write_json(path, {"credentials": [c.to_dict() for c in creds]})
 
 
 def add_credential(principal: Principal, credential: WebAuthnCredential) -> None:

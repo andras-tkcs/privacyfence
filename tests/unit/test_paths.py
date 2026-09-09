@@ -7,6 +7,7 @@ covered explicitly.
 """
 from __future__ import annotations
 
+import stat
 import sys
 from pathlib import Path
 
@@ -76,6 +77,32 @@ class TestDataDir:
         assert result == tmp_path / ".privacyfence"
         assert result.is_dir()
 
+    def test_created_at_0700_not_the_process_umask(self, monkeypatch, tmp_path):
+        """SEC-09: this directory holds every credential/token file this
+        install has, so its own permissions matter regardless of what an
+        individual file's chmod does."""
+        monkeypatch.setattr(paths, "is_bundled", lambda: True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        result = paths.data_dir()
+
+        assert stat.S_IMODE(result.stat().st_mode) == 0o700
+
+    def test_re_tightens_a_pre_existing_directory_with_looser_permissions(self, monkeypatch, tmp_path):
+        """A pre-SEC-09 install's data_dir() may already exist at whatever
+        the umask left it with (e.g. a shared 0755) -- every subsequent
+        resolution must tighten it, not just the first one that creates
+        it."""
+        monkeypatch.setattr(paths, "is_bundled", lambda: True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        loose = tmp_path / ".privacyfence"
+        loose.mkdir()
+        loose.chmod(0o755)
+
+        result = paths.data_dir()
+
+        assert stat.S_IMODE(result.stat().st_mode) == 0o700
+
     def test_installed_package_resolves_under_home_and_creates_it(self, monkeypatch, tmp_path):
         # A real (non-editable) `pip install privacyfence` -- unbundled
         # (is_bundled() False, no PyInstaller involved) but still not a
@@ -102,6 +129,13 @@ class TestOrgDir:
 
         assert result == tmp_path / "org"
         assert result.is_dir()
+
+    def test_created_at_0700(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        result = paths.org_dir()
+
+        assert stat.S_IMODE(result.stat().st_mode) == 0o700
 
 
 class TestSafePrincipalId:
@@ -150,6 +184,7 @@ class TestUserDir:
 
         assert result == tmp_path / "users" / "alice@example.com"
         assert result.is_dir()
+        assert stat.S_IMODE(result.stat().st_mode) == 0o700
 
     def test_two_principals_get_different_directories(self, monkeypatch, tmp_path):
         monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
@@ -167,6 +202,30 @@ class TestUserDir:
 
         with pytest.raises(ValueError):
             paths.user_dir(Principal(id=bad_id))
+
+
+class TestDownloadsDir:
+    """docs/org-mode-download-delivery-plan.md, Phase 1."""
+
+    def test_is_a_downloads_subdirectory_of_user_dir_and_is_created(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        result = paths.downloads_dir(Principal(id="alice"))
+
+        assert result == tmp_path / "users" / "alice" / "downloads"
+        assert result.is_dir()
+        assert stat.S_IMODE(result.stat().st_mode) == 0o700
+
+    def test_local_principal_gets_downloads_under_data_dir_itself(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        assert paths.downloads_dir(Principal(id="local")) == tmp_path / "downloads"
+
+    def test_defaults_to_current_principal(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        with principal_scope(Principal(id="bob")):
+            assert paths.downloads_dir() == tmp_path / "users" / "bob" / "downloads"
 
 
 class TestBundleMacosDir:

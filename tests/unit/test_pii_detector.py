@@ -11,7 +11,6 @@ values) as PII on every popup.
 """
 from __future__ import annotations
 
-from privacyfence import pii_detector
 from privacyfence.pii_detector import (
     _card_grouping_valid,
     _iban_valid,

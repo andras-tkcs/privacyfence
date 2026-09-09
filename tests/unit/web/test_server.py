@@ -1,13 +1,13 @@
 """Tests for web/server.py -- the Host allowlist and security-header
-middleware, and the shared local-mode token. See
-docs/https-connector-refactor-plan.md §10.5 for the control table this
-covers (Host allowlist against DNS rebinding, CSP/X-Frame-Options,
-Cache-Control -- the last one is per-route, tested in
-test_routes_approvals.py instead).
+middleware, the shared local-mode token, and the SEC-06 bootstrap flow
+(docs/security-remediation-plan.md, Phase 1 item 1.2) that replaces it as
+what a browser actually presents. See docs/https-connector-refactor-plan.md
+§10.5 for the control table this covers (Host allowlist against DNS
+rebinding, CSP/X-Frame-Options, Cache-Control -- the last one is per-route,
+tested in test_routes_approvals.py instead).
 """
 from __future__ import annotations
 
-from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
@@ -19,26 +19,41 @@ from privacyfence.web.server import (
     build_app,
     load_or_create_token,
 )
+from privacyfence.web.session_auth import SESSION_COOKIE, BootstrapStore, LocalSessionStore
 from privacyfence.web_approval_ui import WebApprovalUI
 
 TOKEN = "test-token-0123456789"
 
 
+def _signed_in(client: TestClient, sessions: LocalSessionStore) -> str:
+    """Mirrors test_routes_org_approvals.py's own ``_signed_in`` for
+    OrgSessionStore -- creates a real session directly (bypassing the HTTP
+    bootstrap exchange, which TestBootstrapFlow below exercises on its
+    own) and sets it as the cookie, for tests that only care about what
+    happens *after* authentication."""
+    session_id = sessions.create()
+    client.cookies.set(SESSION_COOKIE, session_id)
+    return session_id
+
+
 class TestHostAllowlist:
     def _client(self):
-        app = build_app(WebApprovalUI(), token=TOKEN, allowed_hosts=frozenset({"localhost"}))
-        return TestClient(app, base_url="http://localhost")
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, allowed_hosts=frozenset({"localhost"}))
+        client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
+        return client
 
     def test_allowed_host_passes_through(self):
-        r = self._client().get(f"/approvals?token={TOKEN}")
+        r = self._client().get("/approvals")
         assert r.status_code == 200
 
     def test_disallowed_host_is_rejected_before_reaching_any_route(self):
-        r = self._client().get(f"/approvals?token={TOKEN}", headers={"Host": "evil.example.com"})
+        r = self._client().get("/approvals", headers={"Host": "evil.example.com"})
         assert r.status_code == 400
 
     def test_port_suffix_on_the_host_header_is_ignored_for_matching(self):
-        r = self._client().get(f"/approvals?token={TOKEN}", headers={"Host": "localhost:9999"})
+        r = self._client().get("/approvals", headers={"Host": "localhost:9999"})
         assert r.status_code == 200
 
 
@@ -50,7 +65,6 @@ class TestPrincipalScopeMiddleware:
     job)."""
 
     async def _whoami_app(self, scope, receive, send) -> None:
-        request = Request(scope, receive)
         response = JSONResponse({"principal_id": current_principal().id})
         await response(scope, receive, send)
 
@@ -86,10 +100,12 @@ class TestPrincipalScopeMiddleware:
             seen.append(1)
             return Principal(id="alice")
 
-        app = build_app(WebApprovalUI(), token=TOKEN, principal_resolver=resolver)
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, principal_resolver=resolver)
         client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
 
-        r = client.get(f"/approvals?token={TOKEN}")
+        r = client.get("/approvals")
 
         assert r.status_code == 200
         assert seen  # the custom resolver was actually consulted
@@ -97,25 +113,29 @@ class TestPrincipalScopeMiddleware:
 
 class TestSecurityHeaders:
     def _client(self):
-        app = build_app(WebApprovalUI(), token=TOKEN)
-        return TestClient(app, base_url="http://localhost")
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions)
+        client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
+        return client
 
     def test_content_security_policy_is_present_and_locked_down(self):
-        r = self._client().get(f"/approvals?token={TOKEN}")
+        r = self._client().get("/approvals")
         csp = r.headers.get("content-security-policy", "")
         assert "default-src 'none'" in csp
         assert "frame-ancestors 'none'" in csp
 
     def test_frame_options_deny(self):
-        r = self._client().get(f"/approvals?token={TOKEN}")
+        r = self._client().get("/approvals")
         assert r.headers.get("x-frame-options") == "DENY"
 
     def test_content_type_options_nosniff(self):
-        r = self._client().get(f"/approvals?token={TOKEN}")
+        r = self._client().get("/approvals")
         assert r.headers.get("x-content-type-options") == "nosniff"
 
     def test_headers_are_present_even_on_an_error_response(self):
-        r = self._client().get("/approvals")  # unauthenticated -> 401
+        app = build_app(WebApprovalUI(), token=TOKEN)
+        r = TestClient(app, base_url="http://localhost").get("/approvals")  # unauthenticated -> 401
         assert r.status_code == 401
         assert r.headers.get("x-frame-options") == "DENY"
 
@@ -138,6 +158,48 @@ class TestToken:
         monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
         token = load_or_create_token()
         assert len(token) >= 32
+
+    # -- SEC-06: rotated whenever the installed version changes -------------- #
+
+    def test_survives_a_restart_with_no_version_change(self, tmp_path, monkeypatch):
+        from privacyfence import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        first = load_or_create_token()
+        second = load_or_create_token()
+        assert first == second
+        version_file = tmp_path / "web_token_version"
+        assert version_file.exists()
+        assert oct(version_file.stat().st_mode)[-3:] == "600"
+
+    def test_rotates_when_the_installed_version_changes(self, tmp_path, monkeypatch):
+        from privacyfence import paths
+        from privacyfence.web import server as server_module
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        monkeypatch.setattr(server_module, "__version__", "1.0.0")
+        first = load_or_create_token()
+
+        monkeypatch.setattr(server_module, "__version__", "2.0.0")
+        second = load_or_create_token()
+
+        assert first != second
+
+    def test_a_pre_sec_06_token_with_no_version_marker_is_rotated_once(self, tmp_path, monkeypatch):
+        # Every install from before this fix wrote web_token but never
+        # web_token_version -- the first startup under this version must
+        # not trust that old value forever just because the file exists.
+        from privacyfence import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        (tmp_path / "web_token").write_text("pre-sec-06-token", encoding="utf-8")
+
+        token = load_or_create_token()
+
+        assert token != "pre-sec-06-token"
+        # ...and it's now pinned to this version, so it survives a second
+        # call within the same install exactly like any other token would.
+        assert load_or_create_token() == token
 
 
 class TestWebServerConstruction:
@@ -166,6 +228,129 @@ class TestWebServerConstruction:
             mcp_dispatcher=McpDispatcher(lambda: {}), mcp_token="mcp-tok",
         )
         assert server.mcp_url == "http://localhost:1234/mcp"
+
+
+# --------------------------------------------------------------------------- #
+# SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2): the
+# ?bootstrap=<code> one-time exchange that replaces the old ?token= link,
+# and WebServer.mint_bootstrap_url()'s own wrapper around it.
+# --------------------------------------------------------------------------- #
+
+class TestBootstrapFlow:
+    def _app(self):
+        sessions = LocalSessionStore()
+        bootstrap = BootstrapStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, bootstrap=bootstrap)
+        return app, sessions, bootstrap
+
+    def test_valid_code_mints_a_session_and_redirects_with_no_query_string(self):
+        app, _sessions, bootstrap = self._app()
+        client = TestClient(app, base_url="http://localhost", follow_redirects=False)
+        code = bootstrap.mint()
+
+        r = client.get(f"/approvals?bootstrap={code}")
+
+        assert r.status_code == 303
+        assert r.headers["location"] == "/approvals"
+        assert "pf_session" in r.headers.get("set-cookie", "")
+
+    def test_code_is_single_use(self):
+        app, _sessions, bootstrap = self._app()
+        client = TestClient(app, base_url="http://localhost", follow_redirects=False)
+        code = bootstrap.mint()
+        client.get(f"/approvals?bootstrap={code}")
+        client.cookies.clear()
+
+        r = client.get(f"/approvals?bootstrap={code}")
+
+        assert "pf_session" not in r.headers.get("set-cookie", "")
+
+    def test_unknown_code_mints_no_session(self):
+        app, _sessions, _bootstrap = self._app()
+        client = TestClient(app, base_url="http://localhost", follow_redirects=False)
+
+        r = client.get("/approvals?bootstrap=not-a-real-code")
+
+        assert r.status_code == 303
+        assert r.headers["location"] == "/approvals"
+        assert "pf_session" not in r.headers.get("set-cookie", "")
+        follow = client.get(r.headers["location"])
+        assert follow.status_code == 401
+
+    def test_following_the_redirect_reaches_an_authenticated_page(self):
+        app, _sessions, bootstrap = self._app()
+        client = TestClient(app, base_url="http://localhost", follow_redirects=True)
+        code = bootstrap.mint()
+
+        r = client.get(f"/approvals?bootstrap={code}")
+
+        assert r.status_code == 200
+        assert "Nothing is waiting" in r.text
+
+    def test_the_old_token_query_param_no_longer_authenticates(self):
+        # SEC-06's whole point: ?token=<the persistent secret> is not
+        # honored by any route any more, only ?bootstrap=<one-time code>.
+        app, _sessions, _bootstrap = self._app()
+        client = TestClient(app, base_url="http://localhost")
+
+        r = client.get(f"/approvals?token={TOKEN}")
+
+        assert r.status_code == 401
+
+
+class TestBootstrapMintEndpoint:
+    """POST /api/bootstrap -- minting a fresh bootstrap code on demand,
+    once a previous session/code has already expired, without restarting
+    the daemon. The raw local secret is presented as a Bearer header,
+    never a query string."""
+
+    def _app(self):
+        bootstrap = BootstrapStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, bootstrap=bootstrap)
+        return app, bootstrap
+
+    def test_correct_bearer_secret_mints_a_usable_code(self):
+        app, _bootstrap = self._app()
+        client = TestClient(app, base_url="http://localhost", follow_redirects=False)
+
+        r = client.post("/api/bootstrap", headers={"Authorization": f"Bearer {TOKEN}"})
+
+        assert r.status_code == 200
+        code = r.json()["bootstrap"]
+        follow = client.get(f"/approvals?bootstrap={code}")
+        assert "pf_session" in follow.headers.get("set-cookie", "")
+
+    def test_missing_bearer_header_is_rejected(self):
+        app, _bootstrap = self._app()
+        r = TestClient(app, base_url="http://localhost").post("/api/bootstrap")
+        assert r.status_code == 401
+
+    def test_wrong_secret_is_rejected(self):
+        app, _bootstrap = self._app()
+        r = TestClient(app, base_url="http://localhost").post(
+            "/api/bootstrap", headers={"Authorization": "Bearer wrong-secret"},
+        )
+        assert r.status_code == 401
+
+    def test_secret_in_a_query_string_is_not_accepted(self):
+        # verify_bearer_secret only ever reads the Authorization header --
+        # SEC-06 is specifically about getting this secret out of URLs.
+        app, _bootstrap = self._app()
+        r = TestClient(app, base_url="http://localhost").post(f"/api/bootstrap?token={TOKEN}")
+        assert r.status_code == 401
+
+
+class TestWebServerBootstrap:
+    def test_mint_bootstrap_url_embeds_a_fresh_code_under_the_given_path(self):
+        server = WebServer(WebApprovalUI(), host="localhost", port=1234, token=TOKEN)
+        url = server.mint_bootstrap_url("/approvals")
+        assert url.startswith("http://localhost:1234/approvals?bootstrap=")
+
+    def test_each_call_mints_a_different_code(self):
+        server = WebServer(WebApprovalUI(), host="localhost", port=1234, token=TOKEN)
+        first = server.mint_bootstrap_url("/approvals")
+        second = server.mint_bootstrap_url("/approvals")
+        assert first != second
 
 
 # --------------------------------------------------------------------------- #
@@ -228,8 +413,10 @@ class TestAudienceSeparation:
     def _app(self):
         from privacyfence.web.mcp_dispatch import McpDispatcher
 
+        self.sessions = LocalSessionStore()
         return build_app(
-            WebApprovalUI(), token=TOKEN, mcp_dispatcher=McpDispatcher(lambda: {}), mcp_token=self.MCP_TOKEN,
+            WebApprovalUI(), token=TOKEN, sessions=self.sessions,
+            mcp_dispatcher=McpDispatcher(lambda: {}), mcp_token=self.MCP_TOKEN,
         )
 
     def test_mcp_rejects_the_approval_surfaces_own_token_as_bearer_auth(self):
@@ -250,10 +437,11 @@ class TestAudienceSeparation:
 
     def test_approvals_decide_rejects_the_mcp_token_as_csrf(self):
         client = TestClient(self._app(), base_url="http://localhost")
-        # A valid *session cookie* (from the approval surface's own token)
-        # but the *MCP* token presented as the CSRF value -- the double-
-        # submit check must still fail, since these are different secrets.
-        client.cookies.set("pf_session", TOKEN)
+        # A valid *session cookie* (a real local-mode session, not the raw
+        # secret) but the *MCP* token presented as the CSRF value -- the
+        # double-submit check must still fail, since these are different
+        # secrets.
+        _signed_in(client, self.sessions)
         resp = client.post(
             "/api/approvals/some-id/decide",
             json={"result": "deny", "csrf": self.MCP_TOKEN},
@@ -265,8 +453,8 @@ class TestAudienceSeparation:
 # --------------------------------------------------------------------------- #
 # P4 (docs/https-connector-refactor-plan.md §16): /settings and
 # /api/state/stream folded into the same combined app, sharing the
-# approval surface's own token/session -- see build_app()'s own docstring
-# for why this is the deliberate contrast with MCP's separate audience.
+# approval surface's own session -- see build_app()'s own docstring for why
+# this is the deliberate contrast with MCP's separate audience.
 # --------------------------------------------------------------------------- #
 
 def _controller(tmp_path, monkeypatch):
@@ -293,9 +481,10 @@ def _controller(tmp_path, monkeypatch):
 class TestSettingsFoldedIntoTheCombinedApp:
     def test_settings_page_shares_the_approval_surfaces_session(self, tmp_path, monkeypatch):
         controller = _controller(tmp_path, monkeypatch)
-        app = build_app(WebApprovalUI(), token=TOKEN, controller=controller)
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, controller=controller)
         client = TestClient(app, base_url="http://localhost")
-        client.cookies.set("pf_session", TOKEN)
+        _signed_in(client, sessions)
 
         r = client.get("/settings")
 
@@ -303,9 +492,10 @@ class TestSettingsFoldedIntoTheCombinedApp:
         assert "PrivacyFence — Settings" in r.text
 
     def test_no_controller_means_no_settings_route(self):
-        app = build_app(WebApprovalUI(), token=TOKEN)
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions)
         client = TestClient(app, base_url="http://localhost")
-        client.cookies.set("pf_session", TOKEN)
+        _signed_in(client, sessions)
 
         r = client.get("/settings")
 

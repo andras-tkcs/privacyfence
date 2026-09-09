@@ -51,6 +51,7 @@ from starlette.types import ASGIApp
 from .. import __version__ as PRIVACYFENCE_VERSION
 from ..connector import Connector
 from ..principal import principal_scope
+from ..safe_errors import public_message
 from . import mcp_tools
 from .mcp_auth import StaticTokenVerifier, principal_from_access_token
 from .mcp_dispatch import McpDispatcher
@@ -130,8 +131,15 @@ def build_mcp_server(dispatcher: McpDispatcher) -> MCPServer:
             except Exception as exc:  # noqa: BLE001 -- surfaced to the client as a tool error, not a
                 # transport-level failure, exactly like ipc_server.py's own
                 # `{"id": ..., "error": str(exc)}` response to a "call" request.
+                # SEC-10: the full exception (redacted for local logging by
+                # SecretRedactingFormatter, installed on the root logger by
+                # daemon_main.setup_logging) goes to the log; the client
+                # only ever sees safe_errors.public_message(exc) -- a fixed
+                # generic message unless exc's type is on the reviewed
+                # allowlist, since a connector or OAuth failure can wrap a
+                # third-party exception carrying a token or auth code.
                 logger.info("Tool call %s failed: %s", name, exc)
-                return mcp_tools.error_result(str(exc))
+                return mcp_tools.error_result(public_message(exc))
         return mcp_tools.to_call_tool_result(result)
 
     return server
@@ -165,7 +173,7 @@ async def _dispatch_meta_tool(
     if name == mcp_tools.LIST_RULES_TOOL.name:
         return dispatcher.list_rules(reason)
     if name == mcp_tools.PROPOSE_RULE_CHANGE_TOOL.name:
-        return await dispatcher.propose_rule_change(arguments)
+        return await dispatcher.propose_rule_change(session_key, arguments)
     if name == mcp_tools.BEGIN_UNATTENDED_SESSION_TOOL.name:
         return dispatcher.begin_unattended_session(session_key, reason)
     if name == mcp_tools.END_UNATTENDED_SESSION_TOOL.name:

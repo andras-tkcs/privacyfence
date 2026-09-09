@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .secure_files import secure_mkdir
+
 if TYPE_CHECKING:
     from .principal import Principal
 
@@ -72,20 +74,22 @@ def data_dir() -> Path:
     web/MCP tokens, the instance lock) -- see user_dir() for a specific
     principal's own storage root, which is what most callers actually want
     for anything that's per-user data.
+
+    Created (or re-tightened, on an upgrade from a pre-SEC-09 install) to
+    ``0700`` via ``secure_mkdir`` -- see that function's own docstring and
+    ``docs/security-and-compliance.md``'s "Storage format and permissions"
+    section for what this closes.
     """
     if is_bundled() or _is_installed_package():
         d = Path.home() / ".privacyfence"
     else:
         d = Path(__file__).parent.parent.parent
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return secure_mkdir(d)
 
 
 def org_dir() -> Path:
     """Directory holding the installed organization config bundle."""
-    d = data_dir() / "org"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return secure_mkdir(data_dir() / "org")
 
 
 def user_dir(principal: "Principal | None" = None) -> Path:
@@ -114,9 +118,21 @@ def user_dir(principal: "Principal | None" = None) -> Path:
         return data_dir()
     if not _is_safe_principal_id(principal.id):
         raise ValueError(f"Unsafe principal id for filesystem storage: {principal.id!r}")
-    d = data_dir() / "users" / principal.id
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return secure_mkdir(data_dir() / "users" / principal.id)
+
+
+def downloads_dir(principal: "Principal | None" = None) -> Path:
+    """Per-principal staging area for org-mode download delivery (docs/
+    org-mode-download-delivery-plan.md, Phase 1): ``user_dir(principal) /
+    "downloads"``, created on demand exactly like ``org_dir()``. Holds only
+    AES-256-GCM-encrypted ciphertext (download_staging.py's own
+    ``DownloadStagingStore`` never derives or stores the decryption key
+    anywhere on disk -- see that module's docstring), so this directory's
+    contents are worthless without the one-time token that produced them.
+    Reuses ``user_dir()``'s own directory-safety logic (``_is_safe_
+    principal_id``) rather than adding any new path-construction code
+    here."""
+    return secure_mkdir(user_dir(principal) / "downloads")
 
 
 def bundle_macos_dir() -> Path | None:

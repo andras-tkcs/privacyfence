@@ -1330,7 +1330,7 @@ the only download you need:
 **Requirements:** Python 3.11+, macOS
 
 ```bash
-git clone https://github.com/andras-tkcs/privacyfence
+git clone https://github.com/privacyfence/privacyfence
 cd privacyfence
 python -m venv .venv && source .venv/bin/activate
 pip install -e .

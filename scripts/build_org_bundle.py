@@ -13,7 +13,10 @@ release build — see docs/telegram-setup.md and src/privacyfence/app_credential
 
 Only pass the flags for services you've set up; a connector is offered to
 users only if its section is present in the bundle. Stdlib only — no
-PrivacyFence install required to run this.
+PrivacyFence install required to run this -- except --sign-key/
+--generate-signing-key (SEC-05 full signing, below), which need the
+`cryptography` package (pip install cryptography) specifically, not a
+full PrivacyFence install.
 
 --enable-unattended-sessions turns on privacyfence_begin_unattended_session
 for every install of this bundle — a deliberate per-organization choice, see
@@ -32,11 +35,87 @@ Example:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+def _canonical_payload_bytes(bundle: dict[str, Any]) -> bytes:
+    """Mirrors src/privacyfence/org_bundle_signing.py's own
+    ``_canonical_payload_bytes`` exactly -- the two MUST stay byte-for-
+    byte identical, or a bundle signed here will fail to verify there.
+    Not imported from that module because this script is meant to be
+    runnable standalone (see module docstring) without a PrivacyFence
+    install; only ``cryptography`` needs to be pip-installed separately
+    to use --sign-key/--generate-signing-key at all.
+    """
+    payload = {k: v for k, v in bundle.items() if k != "signature"}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _require_cryptography():
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            NoEncryption,
+            PrivateFormat,
+            PublicFormat,
+            load_pem_private_key,
+        )
+    except ImportError as exc:
+        raise SystemExit(
+            "--sign-key/--generate-signing-key need the `cryptography` package: "
+            "pip install cryptography"
+        ) from exc
+    return ed25519, Encoding, NoEncryption, PrivateFormat, PublicFormat, load_pem_private_key
+
+
+def _generate_signing_key(path: str) -> int:
+    ed25519, Encoding, NoEncryption, PrivateFormat, PublicFormat, _load = _require_cryptography()
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    out = Path(path)
+    out.write_bytes(private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+    try:
+        out.chmod(0o600)
+    except OSError:  # pragma: no cover - best effort on non-POSIX
+        pass
+    pub_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    ).decode("ascii")
+    print(f"Wrote Ed25519 signing private key to {out} -- keep this file secret.")
+    print(f"Public key (embedded in every bundle you sign with it): {pub_b64}")
+    print(
+        "Pass this file to every future build_org_bundle.py run (including --merge) via "
+        "--sign-key so all your bundles keep verifying against the same key -- the first signed "
+        "bundle each install sees pins that key and rejects anything that doesn't verify against "
+        "it afterwards, unsigned bundles included. Losing this key means every install that has "
+        "already pinned it can't accept an update until an administrator deletes their pinned "
+        "org_config_signing_pubkey.txt by hand."
+    )
+    return 0
+
+
+def _sign_bundle(bundle: dict[str, Any], sign_key_path: str) -> dict[str, Any]:
+    ed25519, Encoding, _NoEncryption, _PrivateFormat, PublicFormat, load_pem_private_key = _require_cryptography()
+    with open(sign_key_path, "rb") as fh:
+        private_key = load_pem_private_key(fh.read(), password=None)
+    if not isinstance(private_key, ed25519.Ed25519PrivateKey):
+        raise SystemExit(
+            f"{sign_key_path} is not an Ed25519 private key "
+            "(generate one with --generate-signing-key)."
+        )
+    signed = dict(bundle)
+    signed.pop("signature", None)
+    signed["signing_public_key"] = base64.b64encode(
+        private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    ).decode("ascii")
+    signature = private_key.sign(_canonical_payload_bytes(signed))
+    signed["signature"] = base64.b64encode(signature).decode("ascii")
+    return signed
 
 
 def _load_google_client_secret(path: str) -> dict[str, Any]:
@@ -208,17 +287,68 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly turn unattended sessions back off (useful with --merge).",
     )
 
+    downloads = parser.add_argument_group(
+        "Download delivery (org mode, docs/org-mode-download-delivery-plan.md)",
+    )
+    downloads.add_argument(
+        "--downloads-inline-max-bytes", type=int, metavar="BYTES", default=None,
+        help="drive_download_file/gmail_download_attachment/confluence_download_attachment: "
+             "files at or under this size are returned directly in the tool result instead of "
+             "written to destination_dir (meaningless in local mode). Default: 8000000 (8MB). "
+             "0 forces every download through a one-time staged link instead.",
+    )
+    downloads.add_argument(
+        "--downloads-link-ttl-seconds", type=float, metavar="SECONDS", default=None,
+        help="How long a staged-download link stays claimable before it expires. Default: 300 "
+             "(5 minutes).",
+    )
+    downloads.add_argument(
+        "--downloads-disable-staging", action="store_true",
+        help="Refuse (rather than stage to disk, encrypted) a download too large for "
+             "--downloads-inline-max-bytes. Off by default -- see the plan doc's \"Org-level "
+             "opt-out\" section for when to turn this on.",
+    )
+
+    signing = parser.add_argument_group(
+        "Bundle signing (SEC-05 full signing, src/privacyfence/org_bundle_signing.py)",
+    )
+    signing.add_argument(
+        "--generate-signing-key", metavar="PATH",
+        help="Generate a new Ed25519 signing keypair, write the private key (PEM, PKCS8) to "
+             "PATH with 0600 permissions, print its public key, and exit without building a "
+             "bundle. Run this once per organization and keep PATH secret -- pass it to "
+             "--sign-key on every future run (including --merge) so all your bundles keep "
+             "verifying against the same key. Needs the `cryptography` package.",
+    )
+    signing.add_argument(
+        "--sign-key", metavar="PATH",
+        help="Sign the bundle with the Ed25519 private key at PATH (from "
+             "--generate-signing-key). Required for --mode org -- PrivacyFence refuses to start "
+             "in org mode with an unsigned bundle. Optional but recommended otherwise. Needs the "
+             "`cryptography` package.",
+    )
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.generate_signing_key:
+        return _generate_signing_key(args.generate_signing_key)
+
     out_path = Path(args.output)
     bundle: dict[str, Any] = {}
     if args.merge and out_path.exists():
         with open(out_path, encoding="utf-8") as fh:
             bundle = json.load(fh)
+    # Any existing signature was over the bundle as it stood at that
+    # earlier signing -- it's stale the moment anything below changes it,
+    # and even when nothing changes, whether to re-affirm it is exactly
+    # what --sign-key (re-)signing below decides. Never carry a
+    # signature/key forward implicitly.
+    bundle.pop("signature", None)
+    bundle.pop("signing_public_key", None)
 
     bundle["version"] = 1
     if args.org_name:
@@ -288,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         bundle.pop("server", None)
         bundle.pop("idp", None)
         bundle.pop("step_up", None)
+        bundle.pop("download_delivery", None)
     elif any([
         args.server_issuer_url, args.idp_issuer, args.idp_client_id, args.idp_client_secret,
         args.server_tls_cert, args.server_tls_key, args.server_trusted_proxies, args.idp_step_up_acr_values,
@@ -314,11 +445,38 @@ def main(argv: list[str] | None = None) -> int:
             step_up_section["rp_name"] = args.step_up_rp_name
         bundle["step_up"] = step_up_section
 
+    if (
+        args.downloads_inline_max_bytes is not None
+        or args.downloads_link_ttl_seconds is not None
+        or args.downloads_disable_staging
+    ):
+        if bundle.get("mode") != "org":
+            raise SystemExit(
+                "--downloads-* flags require --mode org (or --merge against an existing org-mode bundle)."
+            )
+        downloads_section: dict[str, Any] = dict(bundle.get("download_delivery") or {})
+        if args.downloads_inline_max_bytes is not None:
+            downloads_section["inline_max_bytes"] = args.downloads_inline_max_bytes
+        if args.downloads_link_ttl_seconds is not None:
+            downloads_section["link_ttl_seconds"] = args.downloads_link_ttl_seconds
+        if args.downloads_disable_staging:
+            downloads_section["allow_disk_staging"] = False
+        bundle["download_delivery"] = downloads_section
+
     services = [k for k in ("google", "slack", "salesforce", "atlassian") if k in bundle]
     if not services and "unattended_sessions" not in bundle and "mode" not in bundle:
         raise SystemExit(
             "No service, --mode, or --enable/disable-unattended-sessions flags given — nothing to write."
         )
+
+    if bundle.get("mode") == "org" and not args.sign_key:
+        raise SystemExit(
+            "This bundle has \"mode\": \"org\" -- PrivacyFence refuses to start in org mode with "
+            "an unsigned bundle. Pass --sign-key <path to your Ed25519 private key> (generate one "
+            "first with --generate-signing-key if you haven't yet)."
+        )
+    if args.sign_key:
+        bundle = _sign_bundle(bundle, args.sign_key)
 
     out_path.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
     try:
@@ -332,12 +490,21 @@ def main(argv: list[str] | None = None) -> int:
         summary += f", mode={bundle['mode']}"
     if "step_up" in bundle:
         summary += f", step_up.enabled={bundle['step_up'].get('enabled', False)}"
+    if "download_delivery" in bundle:
+        summary += f", download_delivery.allow_disk_staging={bundle['download_delivery'].get('allow_disk_staging', True)}"
+    summary += f", signed={'signature' in bundle}"
     print(f"Wrote {out_path} with: {summary}")
     if bundle.get("mode") == "org":
         print(
             f"Org mode: register {args.server_issuer_url}/oauth/idp/callback and "
             f"{args.server_issuer_url}/oauth/idp/login-callback as redirect URIs for client_id "
             f"{args.idp_client_id!r} with your IdP, if you haven't already."
+        )
+    if "signature" in bundle:
+        print(
+            "This bundle is signed. The first install that reads it will trust and pin its "
+            "signing key (trust-on-first-use) -- every bundle installed on that machine "
+            "afterwards, including any future unsigned one, must verify against that same key."
         )
     print(
         'Distribute this file to your users. They install it via "Install/Update '
