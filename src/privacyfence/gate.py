@@ -648,6 +648,13 @@ async def gated_call(
     my_email: str = "",
     session_created_ids: set | None = None,
     args: dict | None = None,
+    delivery: str = "",  # "local_disk" | "inline_base64" | "staged_link" -- docs/org-mode-
+        # download-delivery-plan.md's Phase 3: which transport actually moved (or would move)
+        # this call's file bytes, recorded on the audit entry alongside the ordinary accept/
+        # deny decision. "" (every call site before this phase, and every non-download tool)
+        # means "not applicable" -- this is deliberately not inferred from anything else gated_
+        # call already has, since only the three download/attachment tools know their own
+        # delivery mode. See audit_log.AuditEntry.delivery's own docstring.
 ) -> Any:
     created_at = time.time()
     request_id = uuid.uuid4().hex[:12]
@@ -786,7 +793,7 @@ async def gated_call(
             decision=decision, auto_accept_rule=auto_accept_rule, pii_detected=pii_detected,
             pii_categories=audit_pii_categories,
             pii_match_details=_pii_match_details_for_audit(audit_pii_matches, decision),
-            claude_reason=claude_reason, decided_at=decided_at,
+            claude_reason=claude_reason, decided_at=decided_at, delivery=delivery,
         )
 
     try:
@@ -1262,6 +1269,7 @@ def _default_details(raw_data: Any) -> str:
 def _audit(
     *, created_at, request_id, connector, tool, tool_name, summary, sender, decision, auto_accept_rule,
     pii_detected=False, pii_categories=None, pii_match_details="", claude_reason="", decided_at=None,
+    delivery="",
 ) -> None:
     try:
         get_audit_logger().record(AuditEntry(
@@ -1280,6 +1288,7 @@ def _audit(
             pii_categories=pii_categories or [],
             pii_match_details=pii_match_details,
             claude_reason=claude_reason,
+            delivery=delivery,
             # Set only when this decision came from the deferred-approval
             # ledger (a real human click that happened separately from --
             # and possibly long after -- the invocation now releasing on the

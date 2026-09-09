@@ -261,6 +261,32 @@ narrower calls still deny rather than silently proceed.
   anywhere (e.g. to a SIEM) and not append-integrity-protected against tampering by whoever has write
   access to that server; centralized forwarding and tamper-evidence are tracked as SEC-23 in
   [`security-remediation-plan.md`](security-remediation-plan.md), not implemented yet.
+- **Download/attachment delivery (`drive_download_file`, `gmail_download_attachment`,
+  `confluence_download_attachment`) is mode-conditional, not "never sent to Claude" everywhere.**
+  In **local mode**, these tools write the approved file straight to a local directory Claude and
+  the human share, and Claude's own tool result never carries the bytes — the human's approval
+  gates access, and the file itself only ever reaches Claude if Claude separately reads it back off
+  disk. In **org mode** there is no local directory Claude and the human share (the daemon runs
+  headless on a server), so the same approved bytes are delivered one of two ways, decided by file
+  size against a configurable `inline_max_bytes` cap (default 8MB, see
+  `docs/org-mode-download-delivery-plan.md`): a file at or under the cap comes back **directly in
+  the tool result** — by design, this is the intended transport, not a leak, and it means the
+  content does reach the model's context for anything under that cap; a larger file is instead
+  **staged, encrypted at rest with a key never persisted on the server**, behind a one-time link the
+  human opens in their own signed-in browser tab, so its bytes never enter Claude's context at all.
+  An organization that wants org mode's pre-existing "content never reaches Claude" posture applied
+  unconditionally can set `inline_max_bytes: 0`, forcing every download through the staged-link
+  path regardless of size; an organization with stricter confidentiality requirements that doesn't
+  want even an encrypted, short-TTL copy of a large file transiently on the shared server's disk can
+  set `allow_disk_staging: false` and accept that oversized downloads simply fail with a clear error
+  instead. The staged-link path's own guarantee has one honest limit: the file is encrypted at rest
+  (a compromised disk, backup, or forensic "deletion" recovery all yield ciphertext, not plaintext),
+  but plaintext necessarily exists briefly in the daemon's own process memory around
+  decrypt-and-stream, same as any encryption-at-rest scheme — this protects against disk/backup
+  exposure, not a live compromise of the daemon process itself. Every approval gate's own preview
+  reflects this honestly and specifically (which of the two paths applies, and the size involved),
+  and which path was actually used is itself recorded per-decision in the audit log's `delivery`
+  field.
 
 ---
 

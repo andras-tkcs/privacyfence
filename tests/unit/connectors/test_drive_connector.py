@@ -702,6 +702,127 @@ class TestDownloadFile:
         assert kwargs["preview_bytes"] == b"\xff\xd8thumb"
 
 
+class TestOrgModeDownloadDelivery:
+    """docs/org-mode-download-delivery-plan.md, Phase 2: in org mode,
+    drive_download_file never writes to this daemon's own disk -- a small
+    file's bytes come back inline (base64, in the tool result), a larger
+    one is staged behind a one-time link. Local mode (TestDownloadFile
+    above) is untouched -- see test_local_mode_return_shape_is_unchanged
+    below for the explicit pin."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_data_dir(self, tmp_path, monkeypatch):
+        from privacyfence import paths
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+    def _org_connector(self, *, inline_max_bytes=100, allow_disk_staging=True, link_ttl_seconds=300.0):
+        from privacyfence.org_mode import DownloadDeliveryConfig
+
+        connector, client = make_connector()
+        connector.download_mode = "org"
+        connector.download_config = DownloadDeliveryConfig(
+            inline_max_bytes=inline_max_bytes, allow_disk_staging=allow_disk_staging,
+            link_ttl_seconds=link_ttl_seconds,
+        )
+        connector.download_base_url = "https://pf.example.com"
+        return connector, client
+
+    async def test_local_mode_return_shape_is_unchanged(self, gated_call_spy):
+        """Regression pin: local mode's drive_download_file must keep
+        calling DriveClient.download_file (the disk-writing path) and
+        returning exactly its dict shape, byte-identical to before Phase 2
+        -- connector.download_mode defaults to "local" (make_connector's
+        own default), so this is the pre-Phase-2 behavior with no org-mode
+        wiring involved at all."""
+        connector, client = make_connector()
+        client.get_file_metadata.return_value = make_file(name="f.pdf", mime_type="application/pdf", size=100)
+        client.download_file.return_value = {"name": "f.pdf", "path": "/tmp/f.pdf", "size_bytes": 100}
+
+        result = await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        assert result == {"name": "f.pdf", "path": "/tmp/f.pdf", "size_bytes": 100}
+        client.download_file.assert_called_once_with("f1", "/tmp")
+        client.download_file_bytes.assert_not_called()
+        assert gated_call_spy[0]["delivery"] == "local_disk"
+
+    async def test_small_file_is_delivered_inline(self, gated_call_spy):
+        connector, client = self._org_connector(inline_max_bytes=1_000)
+        client.get_file_metadata.return_value = make_file(name="f.pdf", mime_type="application/pdf", size=50)
+        client.download_file_bytes.return_value = {
+            "data": b"hello file bytes", "name": "f.pdf", "mime_type": "application/pdf", "size_bytes": 17,
+        }
+
+        result = await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        assert result["delivery"] == "inline"
+        assert result["name"] == "f.pdf"
+        assert result["mime_type"] == "application/pdf"
+        assert result["size_bytes"] == 17
+        import base64
+        assert base64.b64decode(result["content_base64"]) == b"hello file bytes"
+        client.download_file.assert_not_called()
+        # Nothing staged to disk for an inline delivery.
+        from privacyfence.download_staging import get_download_staging_store
+        assert get_download_staging_store().pending_count == 0
+
+        kwargs = gated_call_spy[0]
+        assert "Yes" in kwargs["new_info"]["Content returned to Claude"]
+        assert "Saved to" not in kwargs["new_info"]
+        assert kwargs["delivery"] == "inline_base64"
+
+    async def test_large_file_is_staged_behind_a_one_time_link(self, gated_call_spy):
+        from privacyfence.download_staging import get_download_staging_store
+
+        connector, client = self._org_connector(inline_max_bytes=10)
+        client.get_file_metadata.return_value = make_file(name="big.bin", mime_type="application/octet-stream", size=5_000)
+        client.download_file_bytes.return_value = {
+            "data": b"x" * 5000, "name": "big.bin", "mime_type": "application/octet-stream", "size_bytes": 5000,
+        }
+
+        result = await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        assert result["delivery"] == "link"
+        assert result["name"] == "big.bin"
+        assert result["size_bytes"] == 5000
+        assert result["download_url"].startswith("https://pf.example.com/downloads/")
+        assert "content_base64" not in result
+        assert get_download_staging_store().pending_count == 1
+
+        kwargs = gated_call_spy[0]
+        assert "None" in kwargs["new_info"]["Content returned to Claude"]
+        assert "one-time link" in kwargs["new_info"]["Content returned to Claude"]
+        assert kwargs["delivery"] == "staged_link"
+
+    async def test_oversized_file_with_staging_disabled_is_refused_before_any_fetch(self, gated_call_spy):
+        connector, client = self._org_connector(inline_max_bytes=10, allow_disk_staging=False)
+        client.get_file_metadata.return_value = make_file(name="big.bin", mime_type="application/octet-stream", size=5_000)
+
+        with pytest.raises(RuntimeError, match="disk staging is disabled"):
+            await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+
+        client.download_file_bytes.assert_not_called()
+
+    async def test_small_file_with_staging_disabled_still_delivers_inline(self, gated_call_spy):
+        connector, client = self._org_connector(inline_max_bytes=1_000, allow_disk_staging=False)
+        client.get_file_metadata.return_value = make_file(name="f.pdf", mime_type="application/pdf", size=50)
+        client.download_file_bytes.return_value = {
+            "data": b"ok", "name": "f.pdf", "mime_type": "application/pdf", "size_bytes": 2,
+        }
+
+        result = await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+        assert result["delivery"] == "inline"
+
+    async def test_inline_max_bytes_zero_always_stages(self, gated_call_spy):
+        connector, client = self._org_connector(inline_max_bytes=0)
+        client.get_file_metadata.return_value = make_file(name="f.pdf", mime_type="application/pdf", size=0)
+        client.download_file_bytes.return_value = {
+            "data": b"", "name": "f.pdf", "mime_type": "application/pdf", "size_bytes": 0,
+        }
+
+        result = await connector.call("drive_download_file", {"file_id": "f1", "destination_dir": "/tmp"})
+        assert result["delivery"] == "link"
+
+
 class TestWriteToolsGateAndPreview:
     async def test_write_file_content_preview_excludes_full_content(self, gated_call_spy):
         connector, client = make_connector()

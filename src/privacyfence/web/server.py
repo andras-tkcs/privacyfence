@@ -85,6 +85,7 @@ from ..settings_controller import SettingsController, set_main_dispatcher
 from ..web_approval_ui import WebApprovalUI
 from . import org_session
 from . import routes_connect
+from . import routes_downloads
 from . import routes_org_identity
 from . import state_stream as _state_stream
 from .mcp_auth import load_or_create_mcp_token
@@ -579,6 +580,12 @@ def _build_org_app(
         lifespans.append(mcp_lifespan(session_manager))
 
     extra_routes.extend(mount_org_oauth(org.provider, issuer_url=org.issuer_url))
+    # docs/org-mode-download-delivery-plan.md, Phase 1: mounted
+    # unconditionally here (every _build_org_app call is already org mode)
+    # -- needs nothing from org.connector_registry, only org.sessions,
+    # same reasoning /approvals'/security's own unconditional mount below
+    # gives for needing only web_ui/org.org_config.
+    extra_routes.extend(routes_downloads.build_routes(sessions=org.sessions))
     # P8 (docs/https-connector-refactor-plan.md §9.3): only mounted once a
     # real ConnectorRegistry exists to evict on a successful authorization
     # -- see OrgAuth's own docstring. daemon_main.py's real org-mode boot

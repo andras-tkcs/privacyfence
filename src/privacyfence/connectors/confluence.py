@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 from dataclasses import asdict
@@ -12,8 +13,11 @@ from typing import Any
 from ..audit_log import AuditEntry, current_week, get_audit_logger
 from ..confluence_client import ConfluenceClient, ConfluenceClientError, resolve_attachment_destination
 from ..connector import Connector, ToolParam, ToolSpec
+from ..download_staging import get_download_staging_store
 from ..gate import current_reason, gated_call
 from ..html_to_text import html_to_markdown
+from ..org_mode import DownloadDeliveryConfig
+from ..principal import current_principal
 from ..privacy_filter import apply_list, apply_text
 from ..text_extraction import extract_text, is_prefetch_worthy, preview_blocks_for
 
@@ -32,6 +36,11 @@ class ConfluenceConnector(Connector):
     def __init__(self, client: ConfluenceClient) -> None:
         self._confluence = client
         self.my_email: str = ""
+        # docs/org-mode-download-delivery-plan.md, Phase 2 -- see
+        # connectors/drive.py's own DriveConnector.__init__ comment.
+        self.download_mode: str = "local"
+        self.download_config: DownloadDeliveryConfig | None = None
+        self.download_base_url: str = ""
 
     @property
     def client(self) -> ConfluenceClient:
@@ -114,16 +123,23 @@ class ConfluenceConnector(Connector):
             ToolSpec(
                 name="confluence_download_attachment",
                 description=(
-                    "Download a Confluence page attachment's content to a "
-                    "local directory and return the saved file path. Identify "
-                    "the attachment by the name returned from "
-                    "confluence_list_attachments. destination_dir is required "
-                    "-- there is no default, so choose deliberately: pass "
-                    "~/Downloads (or another path the user asked for) when "
-                    "this attachment is a deliverable the user should find "
-                    "afterward, or your own working/scratch directory when "
-                    "you're only downloading it to read or process it "
-                    "yourself. Requires user approval."
+                    "Download a Confluence page attachment's content. "
+                    "Identify the attachment by the name returned from "
+                    "confluence_list_attachments. On a local install: saved "
+                    "to destination_dir, and the saved file path is returned "
+                    "-- destination_dir is required, there is no default, so "
+                    "choose deliberately: pass ~/Downloads (or another path "
+                    "the user asked for) when this attachment is a "
+                    "deliverable the user should find afterward, or your own "
+                    "working/scratch directory when you're only downloading "
+                    "it to read or process it yourself. On an organization-"
+                    "managed install: destination_dir is ignored (there is no "
+                    "local filesystem you and the human share) -- a small "
+                    "attachment's bytes come back directly in this tool's "
+                    "result so you can read or hand it to the human "
+                    "yourself; a larger one comes back as a one-time link "
+                    "the human opens in their own signed-in browser tab "
+                    "instead. Requires user approval."
                 ),
                 params=[
                     ToolParam("page_id", "str"),
@@ -369,13 +385,22 @@ class ConfluenceConnector(Connector):
         if attachment is None:
             raise RuntimeError(f"No attachment named {attachment_name!r} on page {page_id}")
         dest_path = resolve_attachment_destination(attachment.name, destination_dir)
+        cfg = self.download_config or DownloadDeliveryConfig()
+        # Phase 3 audit trail -- see connectors/drive.py's own `delivery`
+        # comment for the reasoning.
+        delivery = (
+            "local_disk" if self.download_mode != "org"
+            else "inline_base64" if cfg.fits_inline(attachment.size)
+            else "staged_link"
+        )
         # Title/Space are known for free via confluence_list_pages/
         # confluence_search; Attachment/Type/Size are known for free via
         # confluence_list_attachments -- same knowledge-boundary reasoning
         # as gmail_download_attachment (see claude-knowledge-boundary.md's
-        # Gmail worked example). The only genuinely new facts from approving
-        # this call are that no file content reaches Claude, and where it'll
-        # be saved.
+        # Gmail worked example). The only genuinely new fact from approving
+        # this call is *how* the attachment reaches Claude -- see
+        # connectors/drive.py's _download_file for the same mode/delivery-
+        # conditional reasoning.
         preview = {
             "Title": page.title or page_id,
             "Space": page.space_key or "(unknown)",
@@ -383,11 +408,31 @@ class ConfluenceConnector(Connector):
             "Type": attachment.media_type,
             "Size": f"{attachment.size:,} bytes",
         }
-        new_info = {
-            "Content returned to Claude": "None — file bytes are never sent",
-            "Will save to": dest_path,
-        }
-        details = "The attachment above will be downloaded to the destination shown."
+        if self.download_mode == "org":
+            if cfg.fits_inline(attachment.size):
+                new_info = {
+                    "Content returned to Claude": (
+                        f"Yes — file bytes are included in the tool result (attachment is "
+                        f"{attachment.size:,} bytes, under this org's {cfg.inline_max_bytes:,}-byte "
+                        "inline-delivery limit)"
+                    ),
+                }
+            else:
+                new_info = {
+                    "Content returned to Claude": (
+                        "None — a one-time link is generated for you to open in your own browser"
+                    ),
+                }
+        else:
+            new_info = {
+                "Content returned to Claude": "None — file bytes are never sent",
+                "Will save to": dest_path,
+            }
+        details = (
+            "The attachment above will be delivered as described above."
+            if self.download_mode == "org"
+            else "The attachment above will be downloaded to the destination shown."
+        )
 
         # Confluence's attachment download link has no partial/range fetch --
         # previewing or PII-scanning means fully fetching the attachment
@@ -442,7 +487,10 @@ class ConfluenceConnector(Connector):
             preview_blocks=preview_blocks_for(details, pii_scan_text),
             my_email=self.my_email,
             args={"page_id": page_id, "attachment_name": attachment_name},
+            delivery=delivery,
         )
+        if self.download_mode == "org":
+            return await self._deliver_org_attachment(page_id, attachment, fetched_bytes, cfg)
         if fetched_bytes is not None:
             # Already fetched above for the preview/scan -- reuse it instead
             # of fetching the same attachment from Confluence a second time.
@@ -453,6 +501,60 @@ class ConfluenceConnector(Connector):
             self._confluence.download_attachment,
             page_id, attachment.attachment_id, attachment.name, destination_dir,
         )
+
+    async def _deliver_org_attachment(
+        self, page_id: str, attachment: Any, fetched_bytes: bytes | None, cfg: DownloadDeliveryConfig,
+    ) -> Any:
+        """org mode's own delivery, once approval is granted -- see
+        connectors/drive.py's _deliver_org_download for the shared
+        inline/staged/refuse shape. ``fetched_bytes`` reuses the pre-
+        approval prefetch when it already happened, instead of fetching
+        the same attachment from Confluence a second time -- but that
+        prefetch cap (5MB) is smaller than a typical inline_max_bytes
+        (default 8MB), so a fresh fetch is still sometimes needed here."""
+        if not cfg.allow_disk_staging and not cfg.fits_inline(attachment.size):
+            raise RuntimeError(
+                f"This attachment is {attachment.size:,} bytes, over this organization's "
+                f"{cfg.inline_max_bytes:,}-byte inline-delivery limit, and disk staging is disabled "
+                "for this organization -- there is no way to deliver it through this tool. Ask the "
+                "user for a narrower export or a different way to share it."
+            )
+
+        data = fetched_bytes if fetched_bytes is not None else await self._fetch(
+            self._confluence.fetch_attachment_bytes, page_id, attachment.attachment_id,
+        )
+        size_bytes = len(data)
+
+        if cfg.fits_inline(size_bytes):
+            return {
+                "delivery": "inline",
+                "name": attachment.name,
+                "mime_type": attachment.media_type,
+                "size_bytes": size_bytes,
+                "content_base64": base64.b64encode(data).decode("ascii"),
+            }
+
+        if not cfg.allow_disk_staging:
+            raise RuntimeError(
+                f"\"{attachment.name}\" is {size_bytes:,} bytes, over this organization's "
+                f"{cfg.inline_max_bytes:,}-byte inline-delivery limit, and disk staging is disabled "
+                "for this organization -- there is no way to deliver it through this tool. Ask the "
+                "user for a narrower export or a different way to share it."
+            )
+
+        token = await asyncio.to_thread(
+            get_download_staging_store().stage, current_principal(), data, attachment.name, attachment.media_type,
+            ttl_seconds=cfg.link_ttl_seconds,
+        )
+        return {
+            "delivery": "link",
+            "name": attachment.name,
+            "size_bytes": size_bytes,
+            "download_url": f"{self.download_base_url}/downloads/{base64.urlsafe_b64encode(token).decode('ascii')}",
+            "expires_at": datetime.fromtimestamp(
+                time.time() + cfg.link_ttl_seconds, tz=timezone.utc,
+            ).isoformat(),
+        }
 
     async def _create_page(
         self,

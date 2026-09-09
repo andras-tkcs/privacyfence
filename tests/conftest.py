@@ -9,7 +9,9 @@ means clearing every principal's cached instance, not just the local one,
 so a test that used principal_scope() directly doesn't leak into the next
 test either. approval_ui and web_approval_ui stay true process-wide
 singletons by design (see principal.py's own docstring on why) --
-still reset the same way as before this phase.
+still reset the same way as before this phase. download_staging is the
+same shape as approval_ui/web_approval_ui (one registry serves every
+principal internally, per its own module docstring), reset the same way.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from privacyfence import (
     auto_accept,
     audit_log,
     daemon_main,
+    download_staging,
     pii_detector,
     privacy_filter,
     resource_names,
@@ -37,6 +40,7 @@ def _reset() -> None:
     privacy_filter._REGISTRY.reset()
     resource_names._REGISTRY.reset()
     web_approval_ui._INSTANCE = None
+    download_staging._INSTANCE = None
     settings_controller._main_dispatch = None
     state_stream._loop = None
     # daemon_main._shutdown_event (P10): a test that calls request_shutdown()

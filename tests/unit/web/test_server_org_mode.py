@@ -196,6 +196,28 @@ class TestApprovalsAndSecuritySurfaceOrgMode:
         assert r.status_code == 409
 
 
+class TestDownloadsSurfaceOrgMode:
+    """docs/org-mode-download-delivery-plan.md, Phase 1: /downloads/{token}
+    is mounted unconditionally in org mode (like /approvals/security --
+    needs nothing from OrgAuth.connector_registry), and not mounted at all
+    in local mode."""
+
+    def test_downloads_route_is_mounted_with_no_connector_registry(self, tmp_path, monkeypatch):
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER, follow_redirects=False)
+        # No session cookie -- proves the route exists (302 to /login, not
+        # 404) without needing a real staged token.
+        r = client.get("/downloads/abc")
+        assert r.status_code == 302
+        assert r.headers["location"] == "/login"
+
+    def test_downloads_route_is_absent_in_local_mode(self, tmp_path):
+        app = build_app(WebApprovalUI(), token="t", allowed_hosts=frozenset({"testserver"}))
+        client = TestClient(app, base_url="http://testserver")
+        assert client.get("/downloads/abc").status_code == 404
+
+
 class TestWebServerOrgMode:
     def test_base_url_is_the_configured_issuer_url_not_the_bind_address(self, tmp_path, monkeypatch):
         org = _org_auth(tmp_path, monkeypatch)
