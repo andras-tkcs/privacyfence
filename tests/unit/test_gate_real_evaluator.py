@@ -27,7 +27,6 @@ real-evaluator regression test in test_gate.py::TestApprovedObjectTypesNeverPops
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace
 

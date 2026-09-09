@@ -161,3 +161,42 @@ jobs:
       # version here would just be redundant CI time).
       - name: Run test suite (100% pass rate required)
         run: pytest -v --ignore=tests/integration/test_shim_mcp_contract.py
+
+  # docs/security-remediation-plan.md, Phase 2 item 2.3 (TST-07). Separate
+  # job (not a step tacked onto `test` above) so a lint failure is reported
+  # on its own line in the checks list, and so it doesn't need the Node/npm
+  # setup or shim build the `test` job carries for pytest's sake.
+  static-analysis:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install -e ".[test,lint]"
+
+      # Blocking: see [tool.ruff]/[tool.ruff.lint] in pyproject.toml for
+      # exactly which rules this enforces and why.
+      - name: Lint (ruff)
+        run: ruff check .
+
+      # Non-blocking for now (see [tool.mypy] in pyproject.toml) --
+      # `continue-on-error` keeps the finding visible as a failed step in
+      # the Actions UI without failing the job, so it can be tightened to
+      # blocking per-module without a workflow change once modules are
+      # clean.
+      - name: Type-check (mypy, informational)
+        continue-on-error: true
+        run: mypy src/privacyfence
+
+      # Non-blocking for now (see [tool.bandit] in pyproject.toml) -- same
+      # reasoning as mypy above.
+      - name: Security lint (bandit, informational)
+        continue-on-error: true
+        run: bandit -c pyproject.toml -r src
