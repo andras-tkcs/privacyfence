@@ -9,7 +9,7 @@ description = "Privacy proxy between Claude (MCP) and your personal data, with a
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Andras Takacs", email = "privacyfence@tkcs.name" }]
+authors = [{ name = "Andras Takacs", email = "info@privacyfence.eu" }]
 dependencies = [
     "google-auth>=2.23.0",
     "google-auth-oauthlib>=1.1.0",
