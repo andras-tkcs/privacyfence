@@ -33,7 +33,6 @@ import logging
 import os
 import threading
 from dataclasses import dataclass, field
-from typing import Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
