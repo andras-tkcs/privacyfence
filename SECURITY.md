@@ -29,18 +29,21 @@ release is still useful to know about.
 **Please do not open a public GitHub issue for a suspected security vulnerability.** Report it
 privately instead, using one of:
 
-1. **Email: privacyfence@tkcs.name** (the channel [`docs/security-and-compliance.md` §10](docs/security-and-compliance.md#10-vulnerability-reporting)
-   already documents for reviewers). This is the primary channel and the one guaranteed to work
-   today — see the GitHub private reporting note below.
-2. **GitHub private vulnerability reporting** — see status below.
+1. **GitHub private vulnerability reporting** — from this repository's
+   [Security tab](https://github.com/andras-tkcs/privacyfence/security), click **"Report a
+   vulnerability"**. This is the preferred channel: it opens a private advisory thread scoped to
+   just you and the maintainer, with structured fields for affected versions and severity — see
+   status below.
+2. **Email: privacyfence@tkcs.name** (the channel [`docs/security-and-compliance.md` §10](docs/security-and-compliance.md#10-vulnerability-reporting)
+   already documents for reviewers). Use this if you'd rather not use a GitHub account, or as a
+   fallback if the button below is ever unavailable.
 
 ### GitHub private vulnerability reporting status
 
-This repository does **not** currently have GitHub's private vulnerability reporting feature
-(Security tab → "Report a vulnerability") enabled. If you check the repository's Security tab and
-find that button available, GitHub reporting works too and is fine to use instead of email; until
-then, use the email address above rather than assuming the button will appear. This section will be
-updated if that changes.
+This repository has GitHub's private vulnerability reporting feature **enabled**. The
+[Security tab](https://github.com/andras-tkcs/privacyfence/security) carries a "Report a
+vulnerability" button that opens a private draft security advisory directly with the maintainer —
+use it as the primary channel per above. Email remains available as an alternative.
 
 ### What to include
 
