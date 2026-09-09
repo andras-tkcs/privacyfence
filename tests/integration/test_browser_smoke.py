@@ -285,7 +285,7 @@ class TestBootstrapLogin:
             fresh_page = other.new_page()
             fresh_page.goto(url)
             fresh_page.wait_for_load_state("load")
-            assert fresh_page.get_by_text("Not authorized.").is_visible()
+            assert fresh_page.get_by_text("Not authorized").is_visible()
         finally:
             other.close()
 
@@ -293,7 +293,7 @@ class TestBootstrapLogin:
         server, _web_ui = local_server
         page.goto(f"{server.base_url}/approvals")
         page.wait_for_load_state("load")
-        assert page.get_by_text("Not authorized.").is_visible()
+        assert page.get_by_text("Not authorized").is_visible()
 
 
 # --------------------------------------------------------------------- #
