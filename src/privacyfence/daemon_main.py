@@ -97,6 +97,7 @@ from .auto_accept import (
 from .pii_detector import init_pii_detection
 from .privacy_filter import check_consistency_warnings, init_privacy_filter
 from .resource_grants import build_effective_rules, migrate_rules_to_grants
+from .safe_errors import SecretRedactingFormatter
 from .secure_files import (
     InsecurePermissionsError,
     atomic_write_bytes,
@@ -445,7 +446,14 @@ def setup_logging(config: dict[str, Any]) -> None:
     log_file = _resolve_path(log_cfg.get("file", "logs/privacyfence.log"))
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    fmt = logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
+    # SEC-10 (docs/security-remediation-plan.md Phase 1.7): every logger in
+    # the process inherits the root logger's handlers, so this is the one
+    # place that needs to redact token-shaped substrings for the whole
+    # daemon rather than at each individual `except Exception` -- see
+    # safe_errors.py's module docstring for what this catches and why the
+    # MCP-boundary public-message allowlist (routes_mcp.py) is a separate,
+    # stricter layer rather than relying on this alone.
+    fmt = SecretRedactingFormatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
     handlers: list[logging.Handler] = [
         logging.FileHandler(log_file, encoding="utf-8"),
         logging.StreamHandler(sys.stderr),
@@ -570,6 +578,10 @@ def _maybe_start_web_server(
         pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
         ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
         max_pending=int(approvals_config.get("max_pending", 50)),
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): see
+        # approvals.DEFAULT_MAX_PENDING_PER_PRINCIPAL's own comment for why
+        # this exists alongside max_pending above.
+        max_pending_per_principal=int(approvals_config.get("max_pending_per_principal", 20)),
     )
     web_ui = init_web_approval_ui(registry=registry)
     init_approval_ui(web_ui)
@@ -673,6 +685,10 @@ def _start_org_web_server(
         pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
         ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
         max_pending=int(approvals_config.get("max_pending", 50)),
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): see
+        # approvals.DEFAULT_MAX_PENDING_PER_PRINCIPAL's own comment for why
+        # this exists alongside max_pending above.
+        max_pending_per_principal=int(approvals_config.get("max_pending_per_principal", 20)),
     )
     web_ui = init_web_approval_ui(registry=approval_registry)
     # WebApprovalUI is unconditionally the ApprovalUI here, same as local

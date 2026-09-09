@@ -962,6 +962,20 @@ class TestSetupLogging:
         daemon_main.setup_logging({})
         assert (tmp_path / "logs" / "privacyfence.log").exists()
 
+    def test_a_secret_logged_anywhere_is_redacted_in_the_log_file(self, tmp_path):
+        # SEC-10 (docs/security-remediation-plan.md Phase 1.7): the root
+        # logger's formatter is safe_errors.SecretRedactingFormatter, so
+        # this holds for every logger in the process, not just routes_mcp.py's
+        # own tool-call-failure log line.
+        log_file = tmp_path / "privacyfence.log"
+        daemon_main.setup_logging({"logging": {"file": str(log_file)}})
+        logging.getLogger("privacyfence.some_module").warning(
+            "Upstream call failed: refresh_token=abcdefgh12345678"
+        )
+        contents = log_file.read_text()
+        assert "abcdefgh12345678" not in contents
+        assert "[REDACTED]" in contents
+
 
 # ---------------------------------------------------------------------------- #
 # _maybe_start_web_server -- since P10 (see docs/https-connector-refactor-
@@ -1079,6 +1093,7 @@ class TestMaybeStartWebServer:
                     "approvals": {
                         "hold_window_seconds": 5, "pending_ttl_seconds": 60,
                         "ledger_ttl_seconds": 30, "max_pending": 3,
+                        "max_pending_per_principal": 2,
                     },
                 },
             },
@@ -1090,6 +1105,23 @@ class TestMaybeStartWebServer:
         assert registry.pending_ttl == 60
         assert registry.ledger_ttl == 30
         assert registry.max_pending == 3
+        assert registry.max_pending_per_principal == 2
+
+    def test_max_pending_per_principal_defaults_when_not_configured(self, monkeypatch, tmp_path):
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): an
+        # install that never sets this key still gets the lower per-
+        # principal cap, not an unbounded one.
+        from privacyfence.approvals import DEFAULT_MAX_PENDING_PER_PRINCIPAL
+        from privacyfence.web_approval_ui import get_web_approval_ui
+        self._no_bind(monkeypatch, tmp_path)
+
+        daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}}}, self._connector_host(),
+            unattended_sessions_enabled=False,
+        )
+
+        registry = get_web_approval_ui().deferred_registry
+        assert registry.max_pending_per_principal == DEFAULT_MAX_PENDING_PER_PRINCIPAL
 
     def test_mcp_dispatcher_sees_the_connector_hosts_live_connector_set(self, monkeypatch, tmp_path):
         self._no_bind(monkeypatch, tmp_path)
@@ -1284,6 +1316,21 @@ class TestMaybeStartWebServerOrgMode:
         )
         registry = get_web_approval_ui().deferred_registry
         assert registry.approval_url("abc") == f"{result.base_url}/approvals/abc"
+
+    def test_org_mode_registry_gets_the_per_principal_approval_cap(self, monkeypatch, tmp_path):
+        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8):
+        # this is the mode the cap actually matters in -- one registry
+        # shared by every principal -- so it must be wired through org
+        # mode's own registry construction, not just local mode's.
+        from privacyfence.web_approval_ui import get_web_approval_ui
+
+        self._no_bind(monkeypatch, tmp_path)
+        daemon_main._maybe_start_web_server(
+            {"web": {"mcp": {"enabled": True}, "approvals": {"max_pending_per_principal": 7}}},
+            self._connector_host(), unattended_sessions_enabled=False, org_config=self._org_config(),
+        )
+        registry = get_web_approval_ui().deferred_registry
+        assert registry.max_pending_per_principal == 7
 
     def test_org_mode_without_idp_section_raises(self, monkeypatch, tmp_path):
         # SEC-04's "org-mode-incomplete-IdP-or-server" case.
