@@ -56,6 +56,16 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[test]"
 
+      # tests/integration/test_browser_smoke.py (TST-06, docs/security-
+      # remediation-plan.md Phase 2 item 2.5) drives this Chromium build
+      # directly via the `playwright` package installed above --
+      # `--with-deps` also installs the OS-level shared libraries the
+      # ubuntu-latest runner image doesn't ship by default. Chromium only:
+      # this suite never touches Firefox/WebKit, so there's nothing to gain
+      # from downloading either.
+      - name: Install Playwright browsers
+        run: playwright install --with-deps chromium
+
       - name: Install shim dependencies
         run: npm ci
         working-directory: mcpb/shim
