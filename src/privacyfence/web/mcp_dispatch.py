@@ -310,23 +310,35 @@ class McpDispatcher:
                 return statuses
             await asyncio.sleep(self._AWAIT_APPROVAL_POLL_SECONDS)
 
-    @staticmethod
-    async def propose_rule_change(params: dict) -> dict:
-        return await propose_rule_change(
-            target=params["target"],
-            operation=params["operation"],
-            reason=params.get("reason", ""),
-            operation_key=params.get("operation_key", ""),
-            rule_name=params.get("rule_name", ""),
-            value=params.get("value"),
-            old_value=params.get("old_value"),
-            connector=params.get("connector", ""),
-            config_key=params.get("config_key", ""),
-            resource_id=params.get("resource_id", ""),
-            name=params.get("name"),
-            tab=params.get("tab"),
-            capabilities=params.get("capabilities"),
-        )
+    async def propose_rule_change(self, session_key: Hashable, params: dict) -> dict:
+        # TST-02 regression: this used to be a @staticmethod that called
+        # gate.propose_rule_change() with no unattended_scope() around it at
+        # all -- unlike call() above, which always wraps a connector
+        # dispatch in unattended_scope(session_key in self._unattended_
+        # sessions). That meant privacyfence_propose_auto_accept_rule_change
+        # never saw itself as unattended even after this exact session had
+        # called privacyfence_begin_unattended_session, and it fell through
+        # to a real (never-to-be-answered) show_rule_confirmation_popup()
+        # instead of the immediate denial its own tool description promises
+        # ("If ... this connection is in an unattended session, the call
+        # throws"). Needs session_key threaded through from
+        # routes_mcp._dispatch_meta_tool for is_unattended() to see it.
+        with unattended_scope(session_key in self._unattended_sessions):
+            return await propose_rule_change(
+                target=params["target"],
+                operation=params["operation"],
+                reason=params.get("reason", ""),
+                operation_key=params.get("operation_key", ""),
+                rule_name=params.get("rule_name", ""),
+                value=params.get("value"),
+                old_value=params.get("old_value"),
+                connector=params.get("connector", ""),
+                config_key=params.get("config_key", ""),
+                resource_id=params.get("resource_id", ""),
+                name=params.get("name"),
+                tab=params.get("tab"),
+                capabilities=params.get("capabilities"),
+            )
 
     # ------------------------------------------------------------------ #
     # Unattended sessions -- ported from IPCServer.begin/end_unattended_

@@ -64,6 +64,15 @@ manual steps. It includes:
   socket, same posture as the approval routes above. `TestAudienceSeparation` in
   `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
   approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
+- `tests/unit/web/test_mcp_tools.py` — added at security-remediation-plan.md phase 1.9 (TST-02):
+  `mcp_tools.py`'s own `ToolSpec`-to-`Tool`/`CallToolResult` schema translation (untested by either
+  file above, which exercise dispatch and wire framing, not this mapping layer), plus end-to-end
+  coverage over the real `/mcp` transport for three narrow behaviors: an unattended session denying
+  `privacyfence_propose_auto_accept_rule_change` before any confirmation popup can be shown (a real
+  gap this phase found and fixed — see `McpDispatcher.propose_rule_change`'s own comment in
+  `mcp_dispatch.py`), `privacyfence_begin_unattended_session` refusing when disabled by
+  configuration, and `privacyfence_list_auto_accept_rules` always leaving an audit entry for its own
+  disclosure.
 - `mcpb/shim/test/*.test.ts` (`npm test`, run from `mcpb/shim/`) — the .mcpb shim's own suite (D11 in
   `docs/https-connector-refactor-plan.md` §12): daemon discovery/launch (`daemon.test.ts`, against
   `mcp_url` file discovery) and the stdio<->Streamable HTTP message proxy (`proxy.test.ts`,
