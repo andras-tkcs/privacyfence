@@ -98,6 +98,7 @@ from .auto_accept import (
 from .pii_detector import init_pii_detection
 from .privacy_filter import check_consistency_warnings, init_privacy_filter
 from .resource_grants import build_effective_rules, migrate_rules_to_grants
+from .safe_errors import SecretRedactingFormatter
 from .connectors.apps_script import AppsScriptConnector
 from .connectors.calendar import CalendarConnector
 from .connectors.confluence import ConfluenceConnector
@@ -403,7 +404,14 @@ def setup_logging(config: dict[str, Any]) -> None:
     log_file = _resolve_path(log_cfg.get("file", "logs/privacyfence.log"))
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    fmt = logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
+    # SEC-10 (docs/security-remediation-plan.md Phase 1.7): every logger in
+    # the process inherits the root logger's handlers, so this is the one
+    # place that needs to redact token-shaped substrings for the whole
+    # daemon rather than at each individual `except Exception` -- see
+    # safe_errors.py's module docstring for what this catches and why the
+    # MCP-boundary public-message allowlist (routes_mcp.py) is a separate,
+    # stricter layer rather than relying on this alone.
+    fmt = SecretRedactingFormatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
     handlers: list[logging.Handler] = [
         logging.FileHandler(log_file, encoding="utf-8"),
         logging.StreamHandler(sys.stderr),
