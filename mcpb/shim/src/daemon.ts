@@ -21,7 +21,17 @@ import { MCP_URL_FILE } from "./protocol.js";
 const CONNECT_TIMEOUT_MS = 10_000; // time to wait for daemon startup
 const CONNECT_INTERVAL_MS = 400;
 const PATIENT_RETRY_INTERVAL_MS = 2_000; // polling interval once the initial window has elapsed
-const DEFAULT_APP_PATH = "/Applications/PrivacyFenceApp.app/Contents/MacOS/privacyfence-app";
+
+// Where the installer puts privacyfence-app on each platform (docs/windows-
+// support-plan.md Phase 4.2's %ProgramFiles%\PrivacyFence\ install dir on
+// Windows; build_dmg.sh's Contents/MacOS/ on macOS). Extend with a Linux
+// default (e.g. /usr/bin/privacyfence-app) once docs/linux-local-deb-
+// packaging-plan.md's A2.4 lands here too.
+const DEFAULT_APP_PATH_BY_PLATFORM: Partial<Record<NodeJS.Platform, string>> = {
+  darwin: "/Applications/PrivacyFenceApp.app/Contents/MacOS/privacyfence-app",
+  win32: "C:\\Program Files\\PrivacyFence\\privacyfence-app.exe",
+};
+const DEFAULT_APP_PATH = DEFAULT_APP_PATH_BY_PLATFORM.darwin as string;
 
 function isExecutable(candidate: string): boolean {
   try {
@@ -48,6 +58,8 @@ export interface FindDaemonCmdOptions {
   pathEnv?: string;
   /** Defaults to the real PrivacyFenceApp.app path; overridable for tests. */
   defaultAppPath?: string;
+  /** Defaults to process.platform; overridable for tests. */
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -55,12 +67,15 @@ export interface FindDaemonCmdOptions {
  * bridge/src/daemon.ts's findDaemonCmd: the shim ships inside the .mcpb,
  * never as a sibling of privacyfence-app on disk, so this normally only
  * matters as a fallback -- the daemon should already be running via its
- * LaunchAgent by the time Claude Desktop spawns the shim.
+ * LaunchAgent (macOS) or Task Scheduler task (Windows, docs/windows-
+ * support-plan.md Phase 3) by the time Claude Desktop spawns the shim.
  */
 export function findDaemonCmd(opts: FindDaemonCmdOptions = {}): string[] {
   const scriptPath = opts.scriptPath ?? process.argv[1] ?? process.execPath;
   const pathEnv = opts.pathEnv ?? process.env.PATH ?? "";
-  const defaultAppPath = opts.defaultAppPath ?? DEFAULT_APP_PATH;
+  const platform = opts.platform ?? process.platform;
+  const defaultAppPath =
+    opts.defaultAppPath ?? DEFAULT_APP_PATH_BY_PLATFORM[platform] ?? DEFAULT_APP_PATH;
 
   const here = path.dirname(path.resolve(scriptPath));
   const sibling = path.join(here, "privacyfence-app");
@@ -72,11 +87,14 @@ export function findDaemonCmd(opts: FindDaemonCmdOptions = {}): string[] {
   if (isExecutable(defaultAppPath)) return [defaultAppPath];
 
   // Development fallback: run the daemon as a Python module. Relies on a
-  // `python3` already on PATH with privacyfence installed (e.g. an
-  // activated venv) -- see bridge/src/daemon.ts's identical fallback for
-  // why this can't reuse an interpreter path the way the old Python bridge
-  // did.
-  return ["python3", "-m", "privacyfence.daemon_main"];
+  // Python interpreter already on PATH with privacyfence installed (e.g.
+  // an activated venv) -- see bridge/src/daemon.ts's identical fallback
+  // for why this can't reuse an interpreter path the way the old Python
+  // bridge did. Windows Python installs commonly expose only `python`, not
+  // a `python3` alias (the reverse of most POSIX distros), so try that
+  // name first there.
+  const pythonCmd = platform === "win32" ? "python" : "python3";
+  return [pythonCmd, "-m", "privacyfence.daemon_main"];
 }
 
 /**

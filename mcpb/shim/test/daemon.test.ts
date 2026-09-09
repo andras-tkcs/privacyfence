@@ -41,6 +41,36 @@ describe("findDaemonCmd", () => {
     });
     assert.deepEqual(cmd, ["python3", "-m", "privacyfence.daemon_main"]);
   });
+
+  // Windows branch (docs/windows-support-plan.md Phase 7 / B6 in docs/
+  // windows-linux-support-plan.md) -- `platform` is injectable specifically
+  // so these can run on any CI host, not just a real Windows one.
+  it("falls back to python -m privacyfence.daemon_main (not python3) on win32", () => {
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "pf-shim-daemon-win32-"));
+    const cmd = findDaemonCmd({
+      scriptPath: path.join(emptyDir, "shim.js"),
+      pathEnv: emptyDir, // nothing named privacyfence-app here
+      defaultAppPath: "C:\\definitely\\does\\not\\exist\\privacyfence-app.exe",
+      platform: "win32",
+    });
+    assert.deepEqual(cmd, ["python", "-m", "privacyfence.daemon_main"]);
+  });
+
+  it("uses the Windows Program Files default app path when platform is win32 and no defaultAppPath override is given", () => {
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "pf-shim-daemon-win32-default-"));
+    // No defaultAppPath override: the real Windows default
+    // (C:\Program Files\PrivacyFence\privacyfence-app.exe) definitely
+    // doesn't exist on this (non-Windows) test host either, so this still
+    // exercises the platform-conditional default falling through to the
+    // python fallback -- confirming the default itself, not just that an
+    // override is honored, is platform-conditional.
+    const cmd = findDaemonCmd({
+      scriptPath: path.join(emptyDir, "shim.js"),
+      pathEnv: emptyDir,
+      platform: "win32",
+    });
+    assert.deepEqual(cmd, ["python", "-m", "privacyfence.daemon_main"]);
+  });
 });
 
 describe("socketConnectable", () => {
