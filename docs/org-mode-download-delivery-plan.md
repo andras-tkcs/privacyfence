@@ -17,33 +17,46 @@ download link) from the discussion that preceded this doc. **Local mode is untou
 every phase below is additive and gated on `org_mode.resolve_mode(org_config) == "org"`, so a local
 install stays byte-identical.
 
-## The trade-off this plan makes explicit, up front
+## What these tools are actually for, and what that means for priority
 
-`drive_client.py`'s `download_file` and its two siblings were written around a deliberate privacy
-invariant: file bytes never enter Claude's context at all, only a path and metadata do (see the
-`connectors/drive.py` comment above, and `docs/coding-and-testing-guidelines.md` §1.5's "preview
-dicts carry metadata only" rule, which this satisfies today for the file's *content* by never
-routing it through the model in the first place). **Option #1 (inline base64 in the tool result)
-necessarily breaks that invariant for org mode** — the whole point is that the model's own MCP
-client is the transport back to the human, so the bytes pass through the model's context to get
-there. Option #3 (staged file + authenticated link the human's browser fetches directly) preserves
-the original invariant exactly — Claude only ever sees a URL, never file content — at the cost of
-needing an authenticated route and being unusable for a non-browser MCP client.
+Revised from the first draft of this plan after feedback: the point of `drive_download_file` and its
+two siblings is to get a file's bytes to Claude so it can process them — that's the only reason
+"download" is a tool at all rather than just a `drive_get_file_metadata` call. In local mode, writing
+the file to `destination_dir` and letting Claude read it back off disk with its own file tools is
+just *how* that transport happens to be implemented — the disk write is a mechanism, not the goal.
+The `connectors/drive.py` comment calling out "no file content ever reaches Claude for this tool" is
+true only in the narrow sense that this *specific MCP call's return value* stays metadata-only; it is
+not a real content boundary, since nothing stops Claude from opening the file it just downloaded a
+second later. **The actual privacy boundary PrivacyFence enforces is the approval gate that runs
+before the download happens at all** — the human reviews the preview and decides whether the file
+should be released to Claude, once, before any bytes move. What happens to those bytes afterward
+(disk write Claude reads back vs. bytes returned directly in the tool result) is a transport detail,
+not a second privacy boundary layered on top.
 
-Given that, this plan treats **#3 as the default/primary path** and **#1 as a bounded fallback**,
-not two equally-weighted options:
+That reframes the priority between the two options: **inline delivery (#1) is the direct,
+correct fulfillment of what the tool is for** — get the already-approved bytes to Claude — not a
+UX-driven fallback bolted on next to a "real" mechanism. It should be the default path for anything
+that reasonably fits in an MCP response, with the size cap set by transport/practicality limits, not
+by a privacy argument for keeping it small.
 
-- Small files (below a configurable cap) get delivered inline (#1) *only* because forcing every
-  small attachment through a browser click is worse UX for something like a 40KB PDF, and the
-  exposure (file content the human already approved via the existing gate, now also visible to the
-  model) is bounded by size.
-- Everything else — and everything at all, for an org that wants the stricter original posture back
-  — goes through the staged link (#3).
-- The choice and its size cap are both configurable per-org (§3 below) so an org that wants the
-  original "never touches Claude" guarantee unconditionally can set the inline cap to `0`.
+**Staging (#3) becomes the fallback for one reason only: files too large for the MCP response**, not
+a preferred posture. And it comes with a cost this plan needs to take seriously rather than wave
+through with a TTL: it means the org-mode **server**, which has never held a copy of these files
+before (today's bug means org-mode downloads just fail — nothing lands anywhere), starts
+transiently caching real file content — attachments, Drive docs, Confluence files, potentially
+"strictly confidential" per the org's own classification — on a shared machine that may be
+administered by IT staff who are not supposed to be a party to the content itself, that gets backed
+up by infrastructure the PrivacyFence project doesn't control, and that could be compromised
+independently of any PrivacyFence bug. A TTL and single-claim delete bound the *exposure window*,
+but they don't address "was the plaintext ever recoverable from this server's disk at all." Phase 1
+below hardens staging specifically against that: the file is encrypted at rest with a key that is
+**never stored anywhere on the server** — only inside the one-time URL — so a compromised disk,
+backup snapshot, or forensic recovery after "deletion" yields ciphertext, not the confidential file.
+See Phase 1, "Encryption at rest" below.
 
-This is a security posture change from what `docs/security-and-compliance.md` documents today and
-must be called out there, not just in code comments — see Phase 4.
+This is still a security posture change from what `docs/security-and-compliance.md` documents today
+(inline delivery does put file content through the model's context, which the current doc doesn't
+anticipate) and must be called out there, not just in code comments — see Phase 4.
 
 ---
 
@@ -61,31 +74,67 @@ and merged on its own without touching any connector's live behavior.
    `approvals.py`'s `PendingApprovalRegistry` shape (same TTL-sweep pattern, same "ephemeral state
    lost on daemon restart is acceptable" posture — an interrupted download just means the human
    re-runs the tool call).
-   - `StagedDownload` dataclass: `token: str`, `principal_id: str`, `path: Path`, `name: str`,
+   - `StagedDownload` dataclass: `lookup_id: str`, `principal_id: str`, `path: Path`, `name: str`,
      `size_bytes: int`, `mime_type: str`, `created_at: float`, `expires_at: float`,
-     `claimed_at: float | None`.
+     `claimed_at: float | None`. Deliberately **no key material** on this dataclass or anywhere else
+     server-side — see "Encryption at rest" below.
    - `DownloadStagingStore`:
-     - `stage(principal: Principal, data: bytes, name: str, mime_type: str, *, ttl_seconds: float) -> StagedDownload` —
-       token via `secrets.token_urlsafe(32)` (unguessable, unlike `uuid4` used for approval IDs
-       elsewhere — this token is a bearer credential for file content, so it gets the stronger
-       generator). Writes under `paths.downloads_dir(principal) / f"{token}-{safe_name}"`, reusing
-       the existing `os.path.basename(...) or "file"` sanitization pattern
-       (`docs/coding-and-testing-guidelines.md` §1.6) for `safe_name`.
-     - `claim(token: str, principal_id: str) -> tuple[StagedDownload, bytes] | None` — returns
-       `None` on missing/expired/wrong-principal token (the wrong-principal check is
-       defense-in-depth; the route's own auth is the primary guard — see Phase 2). Reads the file,
-       deletes it from disk, and removes the registry entry on a successful claim (files are
-       single-use; nothing meant to be downloaded once should still be sitting on the server after
-       it was). Marks `claimed_at` rather than deleting immediately if you'd rather keep a short
-       grace window for a client retry after a network blip — start with immediate delete-on-claim
-       (simpler, matches "one-time link" framing in the tool description) and revisit only if QA
-       against `qa-environment-setup.md` surfaces retry issues.
+     - `stage(principal: Principal, data: bytes, name: str, mime_type: str, *, ttl_seconds: float) -> str` —
+       returns the **token** (not a `StagedDownload`) that becomes the download URL; the registry
+       itself never holds this value. Generate `token = secrets.token_bytes(32)`; derive
+       `lookup_id = hashlib.sha256(token).hexdigest()` (registry key and on-disk filename component)
+       and an encryption key via HKDF from `token` (`cryptography.hazmat.primitives.kdf.hkdf.HKDF`,
+       already a runtime dependency per `org_bundle_signing.py`/`pyproject.toml`'s
+       `cryptography>=41.0.0` — no new dependency). Encrypt `data` with AES-256-GCM under that
+       derived key and write the ciphertext under
+       `paths.downloads_dir(principal) / lookup_id` (filename carries no plaintext name — `name` is
+       stored only in the in-memory `StagedDownload`, needed for the `Content-Disposition` header at
+       claim time, not sensitive on its own). Sanitize `name` the same
+       `os.path.basename(...) or "file"` way as everywhere else
+       (`docs/coding-and-testing-guidelines.md` §1.6) before storing it.
+     - `claim(token: bytes, principal_id: str) -> bytes | None` — recompute `lookup_id =
+       sha256(token)`, look up the registry entry; `None` on missing/expired/wrong-principal (the
+       wrong-principal check is defense-in-depth; the route's own cookie auth is the primary guard —
+       see Phase 2). On a hit: re-derive the same key from `token`, decrypt the file, delete both the
+       ciphertext and the registry entry (single-use — nothing meant to be downloaded once should
+       still exist on the server after it was), and return the plaintext bytes for the route to
+       stream out. Start with immediate delete-on-claim rather than a retry grace window (simpler,
+       matches "one-time link" framing) and revisit only if QA against `qa-environment-setup.md`
+       surfaces retry issues.
      - A `_sweep_expired_locked()` matching `approvals.py`'s `_expire_stale_locked()`, called
        opportunistically on `stage`/`claim` (no separate timer thread) — deletes both the registry
-       entry and the orphaned file for anything past `expires_at` that was never claimed.
+       entry and the orphaned ciphertext file for anything past `expires_at` that was never claimed.
      - Module-level singleton (`_INSTANCE` + `get_download_staging_store()`) like `audit_log.py`'s
        and `auto_accept.py`'s own singletons — **must** get a reset added to `tests/conftest.py`'s
        autouse fixture (coding-and-testing-guidelines §2.3) or state leaks across tests.
+
+   **Encryption at rest — the answer to "the org server becomes a cache of confidential files."**
+   The decryption key is derived entirely from the 256-bit `token`, which the server generates,
+   uses once inline in the response URL, and **never persists** — not in the registry, not in a log
+   line, not in the audit trail (Phase 3 logs that a staged download was served, never the token
+   itself). The only place the token exists after `stage()` returns is inside the tool-call result
+   Claude receives and relays, and inside the human's browser URL bar/history for as long as the
+   link is live. That means:
+   - A snapshot of the server's disk, a backup, or a forensic recovery of a "deleted" file all yield
+     only AES-GCM ciphertext — worthless without the token, which was never written to persistent
+     storage on the server at all.
+   - This does **not** protect against a compromise of the live daemon process itself (plaintext
+     necessarily exists in memory for the moment between decrypt and streaming to the response, same
+     as any encryption-at-rest scheme) — state this caveat plainly in Phase 4's docs rather than
+     overselling the guarantee.
+   - Document in `docs/org-mode-setup-guide.md` (Phase 4) that `~/.privacyfence/users/*/downloads/`
+     should be **excluded from any server backup/snapshot job** the admin sets up independently of
+     PrivacyFence — belt-and-suspenders given the ciphertext-only guarantee above, and cheap to ask
+     for.
+
+   **Org-level opt-out.** Add `DownloadDeliveryConfig.allow_disk_staging: bool` (default `True`)
+   alongside the size/TTL knobs in item 4 below. When `False`, a file too large for inline delivery
+   is refused outright (`RuntimeError` surfaced to Claude explaining why, with the file's actual
+   size, so the human can ask for a narrower export/range instead) rather than ever being written to
+   the server's disk, encrypted or not. This is the setting for an org whose confidentiality
+   requirements mean "no copy of this file touches the shared server, full stop" — encryption
+   mitigates the caching risk, but doesn't eliminate every reason an org might reject the idea of a
+   shared machine transiently holding their most sensitive documents at all.
 
 3. **`src/privacyfence/web/routes_downloads.py`** (new): one route, `GET /downloads/{token}`,
    mounted only when `mode == "org"` (mirrors the `web/server.py` comment about mounting
@@ -93,45 +142,67 @@ and merged on its own without touching any connector's live behavior.
    sessions)` exactly as `routes_connect.py` does — no new auth mechanism.
    - Resolve principal from the `pf_org_session` cookie; 401/redirect-to-`/login` if absent, same as
      every other org-mode browser route.
-   - `store.claim(token, principal.id)`; `404` if `None` (covers missing, expired, and
-     wrong-principal in one branch — deliberately not distinguishing "expired" from "not yours" in
-     the response, so the endpoint doesn't leak which case applies to an attacker guessing tokens).
-   - On success: stream the bytes back with `Content-Disposition: attachment; filename="<name>"`
-     and the stored `mime_type`, and write one audit-log entry (`kind="download_claimed"` or similar
-     — see Phase 3) since this is the moment file content actually left the server.
+   - `{token}` in the URL is the raw 256-bit token (base64url-encoded), not `lookup_id` — the route
+     decodes it and passes the raw bytes to `store.claim(token, principal.id)`, which does the
+     `sha256` lookup and AES-GCM decrypt described in Phase 1's staging design. `404` if `None`
+     (covers missing, expired, and wrong-principal in one branch — deliberately not distinguishing
+     "expired" from "not yours" in the response, so the endpoint doesn't leak which case applies to
+     an attacker guessing tokens).
+   - On success: stream the decrypted bytes back with `Content-Disposition: attachment;
+     filename="<name>"` and the stored `mime_type`, and write one audit-log entry
+     (`kind="download_claimed"` or similar — see Phase 3, and note it logs that a claim happened,
+     never the token) since this is the moment file content actually left the server.
    - **CSRF/cross-site GET note**: this is a state-changing GET (it deletes the file on success), the
      same shape of risk `org_session.check_origin` exists to cover for other org-mode routes. Add an
      `check_origin(request)` check here too, tolerant of it failing open only the way
      `routes_connect.py` already tolerates it (check that file's own handling before copying the
-     pattern) — token unguessability (`secrets.token_urlsafe(32)`, never logged, only ever
-     transmitted once inside a tool result) is the primary defense either way, `check_origin` is
-     belt-and-suspenders.
+     pattern) — token unguessability (`secrets.token_bytes(32)`, never logged, never persisted
+     server-side, only ever transmitted once inside a tool result) is the primary defense either
+     way, `check_origin` is belt-and-suspenders.
 
 4. **Config knobs** in `org_mode.py`, following `StepUpConfig.from_org_config`'s existing pattern
    for an optional org-config section with defaults:
-   - `DownloadDeliveryConfig.inline_max_bytes` (default `1_000_000` — deliberately smaller than the
-     existing `_ATTACHMENT_PREFETCH_MAX_BYTES` / `_UPLOAD_PREVIEW_MAX_BYTES` 5MB constants already in
-     the three connectors, since *this* cap gates what reaches the model's context, not just a
-     PII-scan prefetch).
-   - `DownloadDeliveryConfig.link_ttl_seconds` (default `900` — 15 minutes, long enough to switch to
-     a browser tab and click, short enough that a leaked link in a log or transcript is stale fast).
-   - Setting `inline_max_bytes: 0` disables inline delivery entirely for that org (every download
-     goes through the staged link) — this is the knob an org picks to keep the original "never
-     touches Claude" guarantee unconditionally, per the trade-off section above.
-   - `scripts/build_org_bundle.py` gets two matching optional flags
-     (`--downloads-inline-max-bytes`, `--downloads-link-ttl-seconds`); omitting them keeps today's
-     bundles valid with no re-signing forced, same as `StepUpConfig`'s own optionality.
+   - `DownloadDeliveryConfig.inline_max_bytes` (default proposed at **8_000_000** — deliberately
+     *larger* than the existing `_ATTACHMENT_PREFETCH_MAX_BYTES` / `_UPLOAD_PREVIEW_MAX_BYTES` 5MB
+     constants, reflecting that inline is now the primary transport, not a small-file convenience —
+     see "What these tools are actually for" above. The real ceiling here is practical MCP
+     Streamable HTTP response size and base64's ~33% inflation, not a privacy argument for staying
+     small; confirm this against whatever request/response body limits `web/server.py`'s ASGI stack
+     already enforces before finalizing the default (open question #1 below).
+   - `DownloadDeliveryConfig.link_ttl_seconds` (default `300` — 5 minutes, shorter than the first
+     draft's 15: staging now means an encrypted-but-real copy of the file exists on the server for
+     this long, so the window is set by how fast a human can open the link, not by generous
+     UX slack).
+   - `DownloadDeliveryConfig.allow_disk_staging` (default `True`, see Phase 1's "org-level opt-out")
+     — when `False`, oversized files are refused rather than ever staged to disk.
+   - Setting `inline_max_bytes: 0` forces every download through the staged link — the knob an org
+     picks if it wants no file content ever reaching Claude's context, unconditionally.
+   - `scripts/build_org_bundle.py` gets three matching optional flags
+     (`--downloads-inline-max-bytes`, `--downloads-link-ttl-seconds`, `--downloads-disable-staging`);
+     omitting them keeps today's bundles valid with no re-signing forced, same as `StepUpConfig`'s
+     own optionality.
 
 5. **Tests** (`tests/unit/test_download_staging.py`, `tests/unit/web/test_routes_downloads.py`):
-   - Stage → claim round-trip returns the right bytes/name/mime type; file is gone from disk after.
-   - Expired token → `claim` returns `None`; orphaned file swept.
-   - Wrong-principal claim → `None`, even before expiry.
+   - Stage → claim round-trip returns the right plaintext bytes/name/mime type; ciphertext file is
+     gone from disk after.
+   - **The file on disk is never plaintext** — a dedicated test reads the raw bytes written under
+     `paths.downloads_dir(...)` during a `stage()` call (before claiming) and asserts they do not
+     equal, or contain as a substring, the original plaintext. This is the one test that actually
+     proves the encryption-at-rest design works, not just that the API round-trips.
+   - Claiming with a token that never occurred (right length, random bytes) → `None`, same as an
+     expired one — proves there's no oracle distinguishing "wrong token" from "expired token" from
+     the registry's own behavior.
+   - Expired token → `claim` returns `None`; orphaned ciphertext file swept.
+   - Wrong-principal claim → `None`, even before expiry, even with the correct token.
    - Route: no cookie → unauthenticated response; valid cookie + valid token → 200 with correct
      headers and the file deleted afterward; valid cookie + someone else's token → 404; valid cookie
      + already-claimed token → 404.
    - Route only mounted in org mode — assert it's absent from the local-mode app (mirrors how
      `test_server_org_mode.py` presumably already asserts other org-only routes' presence/absence;
      check that file for the exact assertion style before writing a new one).
+   - `allow_disk_staging=False` + an oversized file → the connector-level call raises/returns a
+     clear error and `download_staging.py`'s `stage()` is never invoked (belongs alongside Phase 2's
+     connector tests, listed here as a reminder it needs coverage on both sides of that boundary).
 
 Nothing in Phase 1 is reachable from any tool yet — safe to merge standalone.
 
@@ -157,14 +228,18 @@ identical shape, so write Drive first and the other two are close ports.
   - `"org"`: fetch bytes via the client's existing internal byte-fetch path (`drive_client.py`
     already has `_download`/`get_file_content` used for the PII-scan prefetch above this call —
     reuse the same call rather than adding a second HTTP round trip) instead of ever calling
-    `open(dest_path, "wb")`. Then:
-    - `size_bytes <= self.download_config.inline_max_bytes` (and `inline_max_bytes > 0`): return
-      `{"delivery": "inline", "name": name, "mime_type": mime_type, "size_bytes": size_bytes,
-      "content_base64": base64.b64encode(data).decode("ascii")}`.
-    - otherwise: `staged = get_download_staging_store().stage(principal, data, name, mime_type,
+    `open(dest_path, "wb")`. Then, inline-first (this is the primary path, not a special case):
+    - `size_bytes <= self.download_config.inline_max_bytes`: return `{"delivery": "inline", "name":
+      name, "mime_type": mime_type, "size_bytes": size_bytes, "content_base64":
+      base64.b64encode(data).decode("ascii")}`.
+    - else, if `self.download_config.allow_disk_staging`: `token =
+      get_download_staging_store().stage(principal, data, name, mime_type,
       ttl_seconds=self.download_config.link_ttl_seconds)`; return `{"delivery": "link", "name":
-      name, "size_bytes": size_bytes, "download_url": f"{self.download_base_url}/downloads/
-      {staged.token}", "expires_at": _iso(staged.expires_at)}`.
+      name, "size_bytes": size_bytes, "download_url":
+      f"{self.download_base_url}/downloads/{urlsafe_b64encode(token)}", "expires_at": _iso(...)}`.
+    - else (oversized and staging disabled for this org): raise `DriveClientError` (caught and
+      re-raised as `RuntimeError` at the connector boundary per §1.4) naming the file's actual size
+      and that this org has disk staging disabled — never write anything to disk in this branch.
   - `destination_dir` stays a tool parameter (existing MCP clients/tests don't break), but becomes
     **ignored, with a note in the tool description**, when `download_mode == "org"` — it was never
     meaningful there in the first place; nothing in org mode should keep asking the model to guess a
@@ -232,16 +307,24 @@ would only be recoverable by cross-referencing tool-call args, which isn't what 
 
 ## Phase 4 — Docs
 
-- **`docs/security-and-compliance.md`**: the table/rows describing "file bytes are never sent to
-  Claude" need a mode-conditional rewrite — state plainly that this holds unconditionally in local
-  mode and in org mode's staged-link path, but not in org mode's inline path below
-  `inline_max_bytes`, and that an org can restore the unconditional guarantee by setting
-  `inline_max_bytes: 0`. This is exactly the kind of deliberate-trade-off documentation
-  `security-remediation-plan.md`'s own Phase 0 (DOC-01) treats as a release-blocker-grade fix, not
-  an afterthought — don't let this land as a code comment only.
+- **`docs/security-and-compliance.md`**: the row(s) describing "file bytes are never sent to Claude"
+  need a mode-conditional rewrite — state plainly that in org mode, downloaded file content *does*
+  reach Claude's context by design for anything at or under `inline_max_bytes` (that's the whole
+  point of the tool, per "What these tools are actually for" above — this is not a leak, it's the
+  intended transport), and that an org can force the pre-existing "never touches Claude"
+  posture unconditionally by setting `inline_max_bytes: 0`. Also document the staged-link path's own
+  posture honestly: encrypted at rest with a key never persisted server-side, single-use, short TTL
+  — a real mitigation, not an absolute guarantee (plaintext exists briefly in the daemon's own
+  process memory around decrypt/stream, same as any encryption-at-rest scheme; this protects against
+  disk/backup exposure, not a live process compromise). This is exactly the kind of
+  deliberate-trade-off documentation `security-remediation-plan.md`'s own Phase 0 (DOC-01) treats as
+  a release-blocker-grade fix, not an afterthought — don't let this land as a code comment only.
 - **`docs/org-mode-setup-guide.md`**: short new subsection (under "10. Day-to-day admin" or its own
-  numbered section) explaining the two delivery paths from an admin's point of view, and the two new
-  `build_org_bundle.py` flags from Phase 1.
+  numbered section) explaining the two delivery paths from an admin's point of view, the three new
+  `build_org_bundle.py` flags from Phase 1, and an explicit instruction to exclude
+  `~/.privacyfence/users/*/downloads/` from any server-side backup/snapshot job the admin runs —
+  belt-and-suspenders given encryption-at-rest already makes that directory's contents unreadable
+  without the corresponding token.
 - **`docs/file-type-support.md`**: check whether it documents the existing 5MB prefetch caps; if so,
   add the new `inline_max_bytes` cap alongside them so the size-limit story stays in one place.
 
@@ -265,13 +348,32 @@ done (100% test pass, every gated tool call still audited, no content in a previ
 
 ## Open questions to confirm before starting Phase 2
 
-1. **Default `inline_max_bytes`.** This plan proposes 1MB as a conservative starting point (smaller
-   than the existing 5MB prefetch caps). Confirm that's the right default rather than something
-   org-size-dependent, or 0 (staged-link-only by default, opt-in to inline).
+1. **Default `inline_max_bytes`.** This plan now proposes 8MB, larger than the existing 5MB prefetch
+   caps, on the reasoning that inline is the primary transport and the limiting factor is MCP
+   response/transport size rather than a privacy argument for staying small (see "What these tools
+   are actually for" above). Confirm the actual ceiling `web/server.py`'s ASGI stack and the
+   Streamable HTTP session tolerate comfortably before picking a final number — this should be set
+   from a real transport limit, not a round number.
 2. **Claim semantics.** Immediate delete-on-first-successful-claim (proposed above) vs. a short
    grace window allowing one retry after a network blip — worth deciding before writing the route's
-   tests, since the test assertions differ.
-3. **Whether Phase 3's `AuditEntry` change is additive-only** (safe to fold into 2.1–2.3) or touches
+   tests, since the test assertions differ. Given staged files are now plaintext-on-disk for zero
+   extra time beyond one claim, immediate delete seems clearly right; flagged only because it forces
+   a "the human's browser tab timed out, now what" UX decision (probably: re-run the tool call, a
+   fresh link costs nothing).
+3. **`allow_disk_staging` default.** Proposed default `True` (encryption-at-rest is the primary
+   mitigation; staging still happens for oversized files by default). An org with stricter
+   confidentiality requirements sets it `False` and accepts that large files simply can't be
+   downloaded through org mode at all yet. Confirm `True` is the right out-of-the-box default rather
+   than shipping this conservative-by-default (`False`) and making orgs opt in to any server-side
+   caching, even encrypted.
+4. **HKDF/AES-GCM library specifics.** `cryptography`'s `hazmat` APIs are already used by
+   `org_bundle_signing.py` for Ed25519 signing/verification — confirm the same package's
+   `hashes`/`hkdf`/`aead` (`AESGCM`) modules are the right primitives to reuse here rather than
+   introducing a second crypto approach, and settle on nonce handling (a fresh random 96-bit nonce
+   per file, stored alongside the ciphertext since it isn't secret, is the standard AES-GCM pattern —
+   call this out explicitly in the Phase 1 PR's own module docstring per
+   `docs/coding-and-testing-guidelines.md` §1.2's "non-obvious lifecycle/invariants" rule).
+5. **Whether Phase 3's `AuditEntry` change is additive-only** (safe to fold into 2.1–2.3) or touches
    enough of `audit_log.py`'s existing shape (Excel export columns, etc.) to warrant its own
    reviewed PR — worth a quick look at `audit_log.py` before committing to the folded-in option in
    the table above.
