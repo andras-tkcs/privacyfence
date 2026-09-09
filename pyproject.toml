@@ -30,7 +30,27 @@ dependencies = [
     # web/server.py isn't written twice against two different stacks).
     # Platform-independent -- installed everywhere, unlike the AppKit
     # dependencies above.
-    "starlette>=0.37,<1.0",
+    #
+    # Floor raised from 0.37 to 1.3.1 (SEC-19, Phase 2.4 in
+    # docs/security-remediation-plan.md): every starlette release below
+    # 1.3.1 has at least one of five CVEs pip-audit's dependency-audit.yml
+    # gate found live in this repo's original <1.0-capped range.
+    # PYSEC-2026-161/CVE-2026-48710 and PYSEC-2026-248/CVE-2026-54282 are
+    # directly relevant here, not just theoretical: an unvalidated Host
+    # header / request path can move `request.url`'s authority boundary,
+    # and `web/session_auth.py::check_origin` and
+    # `web/org_session.py::check_origin` both compare an incoming `Origin`
+    # header against `request.url.scheme`/`.netloc` as defense-in-depth on
+    # top of the CSRF double-submit token -- a corrupted `request.url`
+    # could have made that comparison meaningless (not a full bypass on
+    # its own, since the double-submit token is the primary check, but
+    # exactly the kind of secondary control this bug would quietly
+    # defeat). PYSEC-2026-249/CVE-2026-54283 (unbounded urlencoded form
+    # parsing) and PYSEC-2026-2281/2280 (a Windows UNC-path SSRF and an
+    # HTTPEndpoint verb-dispatch bypass, both StaticFiles/class-based-view
+    # issues this app's own route functions don't use) are fixed by the
+    # same bump regardless.
+    "starlette>=1.3.1,<2.0",
     "uvicorn>=0.30,<1.0",
     # Official MCP Python SDK, promoted from a test-only dependency to a
     # runtime one at P2 (D2 in docs/https-connector-refactor-plan.md §15):

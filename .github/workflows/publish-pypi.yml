@@ -31,11 +31,11 @@ jobs:
   build:
     runs-on: ubuntu-latest   # pure Python sdist/wheel -- no macOS-only step needed
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.13'
 
@@ -44,7 +44,7 @@ jobs:
           pip install --upgrade pip build
           python -m build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pypi-dist
           path: dist/
@@ -59,13 +59,17 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: pypi-dist
           path: dist/
 
       - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # Pinned to the tip of upstream's own `release/v1` tracking branch
+        # rather than a one-off tag -- that's the branch pypa itself
+        # recommends following for v1.x, and Dependabot bumps this SHA the
+        # same way it bumps any other action pin (see .github/dependabot.yml).
+        uses: pypa/gh-action-pypi-publish@a892a5a61159132606e93a2fa6f4358831b04d26 # v1.14.2 (release/v1)
         with:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true   # lets a rerun after a partial failure succeed
@@ -82,12 +86,14 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: pypi-dist
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # See the TestPyPI job's "Publish to TestPyPI" step above for why
+        # this is pinned to release/v1's tip rather than a one-off tag.
+        uses: pypa/gh-action-pypi-publish@a892a5a61159132606e93a2fa6f4358831b04d26 # v1.14.2 (release/v1)
         with:
           skip-existing: true
