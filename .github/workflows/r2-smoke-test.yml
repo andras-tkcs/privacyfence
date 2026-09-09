@@ -8,13 +8,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.13'
+      - name: Show Python version
+        run: python3 --version
 
-      - name: Install R2 client
-        run: python -m pip install boto3
+      - name: Install boto3
+        run: python3 -m pip install --user boto3
 
       - name: Test R2 upload
         env:
@@ -24,7 +22,7 @@ jobs:
           R2_BUCKET: privacyfence-releases
           RUN_ID: ${{ github.run_id }}
         run: |
-          python <<'PY'
+          python3 <<'PY'
           import os
           import boto3
 
@@ -46,7 +44,10 @@ jobs:
               ContentType="text/plain",
           )
 
-          result = s3.head_object(Bucket=bucket, Key=key)
+          result = s3.head_object(
+              Bucket=bucket,
+              Key=key,
+          )
 
           print(f"SUCCESS: uploaded s3://{bucket}/{key}")
           print(f"Size: {result['ContentLength']} bytes")
