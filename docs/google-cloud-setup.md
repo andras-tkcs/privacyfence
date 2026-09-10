@@ -122,10 +122,27 @@ token then simply can't read your Workspace directory, no matter what.
 
 ## For users
 
+**Local desktop install:**
+
 1. Get `org_config.json` from your IT team.
 2. In PrivacyFence Settings: **Organization Config…**, and select the file.
 3. For each Google connector you want (Gmail, Drive, Calendar, Contacts, Tasks, Apps Script): **Connectors → \<service\> → Authenticate…**. Your browser opens to Google's sign-in page — sign in and click **Allow**.
 4. Quit and reopen PrivacyFence to activate the connector.
+
+**[`org` mode](org-mode-setup-guide.md) deployment** (a server your IT team runs, not a desktop
+install — ask them which applies to you; Apps Script isn't offered here, it stays local-mode-only,
+see [`org-mode-setup-guide.md` §4.2](org-mode-setup-guide.md#42-the-google-connector-client-optional)):
+
+1. Visit `https://your-server-hostname/login` and sign in with whatever identity provider your
+   organization's server uses for sign-in (org mode's IdP is a separate, independent choice from
+   which connectors it wires up — see [`org-mode-setup-guide.md`
+   §4.1](org-mode-setup-guide.md#41-the-oidc-sign-in-client-required) — it's commonly Google too, but
+   doesn't have to be). Either way, there's no separate "install a config file" step like local mode's.
+2. On the `/connect` page, click **Connect** next to each Google connector you want (Gmail, Drive,
+   Calendar, Contacts, Tasks). Each redirects to Google, asks for consent to that connector's specific
+   scopes, and lands you back on `/connect` showing it connected.
+3. Nothing to quit/reopen, since there's no local app. See [`org-mode-setup-guide.md`
+   §8](org-mode-setup-guide.md#8-first-sign-in-and-connecting-a-service).
 
 ---
 
@@ -138,7 +155,14 @@ The app is in Testing mode. Make sure the Google account signing in is listed as
 Click **Advanced → Go to PrivacyFence (unsafe)** to proceed. This warning appears for any unverified OAuth app and is expected until the org's app is verified by Google.
 
 **"redirect_uri_mismatch"** (IT admin)
-Make sure you created credentials of type **Desktop app**, not Web application — Desktop app clients accept any loopback redirect port, which is what PrivacyFence's OAuth flow uses.
+For a local desktop install, make sure you created credentials of type **Desktop app**, not Web
+application — Desktop app clients accept any loopback redirect port, which is what PrivacyFence's
+OAuth flow uses. For an [`org` mode](org-mode-setup-guide.md) deployment it's the other way around:
+the connector client must be a **Web application** client with the exact
+`https://your-server-hostname/oauth/callback/<service>` redirect URIs registered — see
+[`org-mode-setup-guide.md` §4.2](org-mode-setup-guide.md#42-the-google-connector-client-optional).
+These are two different, unrelated OAuth clients even against the same Google Cloud project — check
+you're editing the one this install actually uses.
 
 **Scopes not granted / 403 errors** (user)
 Click **Reconnect…** next to the connector in PrivacyFence Settings to re-run the OAuth flow. From source, you can also run `privacyfence-app --gmail-oauth` (or `--drive-oauth` / `--contacts-oauth` / `--calendar-oauth` / `--tasks-oauth` / `--apps-script-oauth`).

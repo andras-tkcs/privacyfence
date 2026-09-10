@@ -61,9 +61,21 @@ Use `--salesforce-login-url https://test.salesforce.com` if your users authentic
 
 ## For users
 
+**Local desktop install:**
+
 1. Get `org_config.json` from your IT team and install it via **Organization Config…** in PrivacyFence Settings (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
 2. **Connectors → Salesforce → Authenticate…**. Your browser opens to Salesforce's login page — sign in and click **Allow**.
 3. Quit and reopen PrivacyFence to activate the connector.
+
+**[`org` mode](org-mode-setup-guide.md) deployment** (a server your IT team runs, not a desktop
+install — ask them which applies to you):
+
+1. Visit `https://your-server-hostname/login` and sign in with your organization identity provider.
+2. On the `/connect` page, click **Connect** next to Salesforce. Your browser opens to Salesforce's
+   login page — sign in and click **Allow**.
+3. You land back on `/connect` showing Salesforce as connected — nothing to quit/reopen, since
+   there's no local app. See [`org-mode-setup-guide.md`
+   §8](org-mode-setup-guide.md#8-first-sign-in-and-connecting-a-service).
 
 Your access token is refreshed automatically in the background as needed — no re-entering credentials.
 

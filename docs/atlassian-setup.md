@@ -80,10 +80,26 @@ bundles — just point step 2's Callback URL at the org-mode one from the start.
 
 ## For users
 
+**Local desktop install:**
+
 1. Get `org_config.json` from your IT team and install it via **Organization Config…** in PrivacyFence Settings (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
 2. **Connectors → Jira → Authenticate…** (or **Confluence** — either one triggers the same sign-in and activates both). Your browser opens to Atlassian's consent screen — sign in and click **Accept**.
 3. If your account has access to more than one Atlassian site, PrivacyFence asks you to pick one.
 4. Quit and reopen PrivacyFence to activate the connectors.
+
+**[`org` mode](org-mode-setup-guide.md) deployment** (a server your IT team runs, not a desktop
+install — ask them which applies to you):
+
+1. Visit `https://your-server-hostname/login` and sign in with your organization identity provider.
+2. On the `/connect` page, click **Connect** next to Jira or Confluence (either one triggers the same
+   sign-in and activates both). Your browser opens to Atlassian's consent screen — sign in and click
+   **Accept**.
+3. If your account has access to more than one Atlassian site, the first one is used automatically
+   (org mode doesn't prompt — see `web/routes_connect.py`'s module docstring); ask IT for a
+   differently-scoped account if you need a specific one.
+4. You land back on `/connect` showing both as connected — nothing to quit/reopen, since there's no
+   local app. See [`org-mode-setup-guide.md`
+   §8](org-mode-setup-guide.md#8-first-sign-in-and-connecting-a-service).
 
 ---
 

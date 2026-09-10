@@ -274,8 +274,11 @@ each has its own dedicated org-mode section covering this. **Atlassian is differ
 (`https://pf.example.com/oauth/callback/atlassian`, one URL for both — they're one underlying grant,
 see `web/routes_connect.py`'s `_GRANT_KEY`), so it needs an app of its own rather than a URL added to
 the local-mode one; see [`atlassian-setup.md` §6](atlassian-setup.md#6-org-mode-needs-a-second-dedicated-app)
-for the full walkthrough. Not covered further here since the assumptions for this guide only called
-out Google.
+for the full walkthrough. **Telegram needs none of this** — see
+[`telegram-setup.md`](telegram-setup.md) — since its `api_id`/`api_hash` identify the PrivacyFence
+*application*, not an organization, and are baked into the build the same way for a local install or
+an org-mode server; there's no app registration, redirect URI, or `org_config.json` section for it at
+all. Not covered further here since the assumptions for this guide only called out Google.
 
 ---
 
