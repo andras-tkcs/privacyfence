@@ -380,6 +380,53 @@ sudo ufw enable
 Port 8765 needs no firewall rule of its own — PrivacyFence only binds `127.0.0.1`, so it was never
 reachable from outside the host in the first place; Caddy is the only path in.
 
+### Rate-limiting the OAuth endpoints (recommended)
+
+`/register` (DCR), `/authorize` and `/token` are, by design, reachable without any prior credential —
+that's what lets an MCP client (Claude Desktop, Claude Code) register and sign in itself the first
+time it connects. `oauth_provider.py`'s `OrgOAuthProvider` enforces its own in-process resource
+controls on top of that (a cap on total registered clients, a size cap per registration, stale-client
+pruning, and a bound on concurrently in-flight sign-in attempts — see that module's own docstring),
+but those exist to bound what one server process holds in memory and on disk, not to replace
+network-level rate-limiting. Caddy sitting in front is still the right place to throttle by source IP
+before a request ever reaches PrivacyFence:
+
+```bash
+# Caddy's core build doesn't ship a rate-limit directive -- xcaddy builds one in.
+sudo apt install -y golang-go  # or any recent Go toolchain
+CADDY_VERSION=$(caddy version | awk '{print $1}')
+GOBIN=/usr/bin go run github.com/caddyserver/xcaddy/cmd/xcaddy@latest build "$CADDY_VERSION" \
+  --with github.com/mholt/caddy-ratelimit \
+  --output /usr/bin/caddy
+sudo systemctl restart caddy
+```
+
+Then add a `rate_limit` block ahead of the `reverse_proxy` in `/etc/caddy/Caddyfile`:
+
+```caddyfile
+pf.example.com {
+    @oauth path /register /authorize /token
+    rate_limit @oauth {
+        zone oauth_per_ip {
+            key {remote_host}
+            events 20
+            window 1m
+        }
+    }
+
+    reverse_proxy 127.0.0.1:8765
+}
+```
+
+Twenty requests/minute per source IP is a starting point, not a tuned figure — loosen it if real
+sign-in traffic (a burst of people connecting Claude the same morning, from behind the same office
+NAT) trips it, tighten it if abuse gets through. `key {remote_host}` uses the address Caddy sees
+directly; if PrivacyFence itself sits behind *another* reverse proxy or load balancer in your
+deployment, key on the appropriate forwarded-for header instead so distinct clients aren't lumped
+under one IP. If you're fronting PrivacyFence with nginx or another proxy instead of Caddy, the
+equivalent is `limit_req` (nginx) or your proxy's own per-IP rate-limiting feature — same principle,
+scoped to the same three paths.
+
 ---
 
 ## 7. Run PrivacyFence as a service
