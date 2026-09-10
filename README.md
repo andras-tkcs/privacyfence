@@ -253,6 +253,19 @@ PrivacyFence is currently an open-source macOS implementation rather than a cert
 Releases are code-signed and notarized by Apple, so this just works — no Gatekeeper warnings, no
 manual quarantine step. Full installation details are in [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation).
 
+### Install on Windows
+
+1. Download the latest `PrivacyFence-<version>-setup.exe` from [Releases](../../releases).
+2. Run the installer. It installs PrivacyFence to `%ProgramFiles%\PrivacyFence\`, registers a Task
+   Scheduler task so the daemon starts at login, and starts the daemon immediately.
+3. Install the organization configuration provided by your IT administrator.
+4. Authenticate the connectors you want from the PrivacyFence settings page
+   (`http://localhost:8765/settings`, also reachable from its Start Menu shortcut).
+5. Install **PrivacyFence.mcpb**, installed alongside the daemon, into Claude Desktop.
+
+Releases are Authenticode-signed. Full installation details, including what uninstalling does and
+doesn't remove, are in [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation).
+
 ### Run from source
 
 ```bash
