@@ -15,18 +15,21 @@ jobs:
     # AppKit-tainted code in this repo -- the native menu bar/approval
     # dialogs/settings window -- so nothing here depends on real AppKit/
     # PyObjC behavior any more, and the whole suite is platform-independent.
-    # rumps/pyobjc-framework-* are optional extras now (pyproject.toml's
-    # `macos-native` group), never installed here. Runs on ubuntu-latest
-    # for the same reason any other platform-independent Python project
-    # would: it's the cheaper, faster runner, and there's no longer a
-    # platform split to test across two jobs. Building/signing the actual
-    # macOS .app/.dmg is still macOS-only, and still covered separately by
-    # build.yml on a real macos-latest runner.
+    # rumps/pyobjc-framework-* aren't installed here or anywhere else --
+    # the macos-native extra that used to declare them was removed outright
+    # (docs/security-remediation-plan.md Phase 3 PR3.9, ORP-02; the exact
+    # package set is preserved in docs/adr/0001-remove-macos-native-extra.md).
+    # Runs on ubuntu-latest for the same reason any other
+    # platform-independent Python project would: it's the cheaper, faster
+    # runner, and there's no longer a platform split to test across two
+    # jobs. Building/signing the actual macOS .app/.dmg is still
+    # macOS-only, and still covered separately by build.yml on a real
+    # macos-latest runner.
     #
     # This is the full suite (Python tests + the Node shim's own tests,
     # typecheck and build) and runs on 3.13 only -- the version
-    # pyproject.toml's [project.optional-dependencies].macos-native/build
-    # tooling and the packaging workflows (build.yml) target. TST-05
+    # pyproject.toml's [project.optional-dependencies].dev/build tooling
+    # and the packaging workflows (build.yml) target. TST-05
     # (docs/security-remediation-plan.md, phase 2.2) covers the other
     # supported versions (3.11, the `requires-python` floor, and 3.12) via
     # the `test-python-compat` job below with a reduced, Node-free suite --

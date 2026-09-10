@@ -55,7 +55,7 @@ dependencies = [
     # Official MCP Python SDK, promoted from a test-only dependency to a
     # runtime one at P2 (D2 in docs/https-connector-refactor-plan.md §15):
     # web/routes_mcp.py hosts the real Streamable HTTP MCP endpoint on it,
-    # not just tests/integration/test_bridge_daemon_contract.py's client
+    # not just tests/integration/test_mcp_daemon_contract.py's client
     # side anymore. Capped below 2.0 for the same reason the test-only pin
     # originally was -- v2 (released 2026-07-28) removes ClientSession,
     # stdio_client and StdioServerParameters and renames isError ->
@@ -112,20 +112,18 @@ privacyfence = [
 ]
 
 [project.optional-dependencies]
-# P10 (docs/https-connector-refactor-plan.md §12, decision D6) deleted the
-# native menu bar / AppKit approval and settings windows -- nothing in
-# src/privacyfence/ imports any of these three any more. Kept as an
-# optional extra, not dropped outright, purely because D6's own reasoning
-# for deleting the native UI ("the ApprovalUI seam lets it come back if
-# that proves wrong") means a future native implementation (e.g. a
-# Windows-native dialog for #121) would want them back -- installing this
-# extra is not required for anything this package does today.
-macos-native = [
-    "rumps>=0.4.0; sys_platform == 'darwin'",
-    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
-    "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'",
-    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
-]
+# The macos-native extra (rumps + three pyobjc-framework-* packages, gated
+# to sys_platform == 'darwin') that used to live here backed the native
+# menu bar / AppKit approval and settings windows P10 (docs/https-
+# connector-refactor-plan.md §12, decision D6) deleted -- nothing in
+# src/privacyfence/ had imported any of them since. Removed at Phase 3
+# PR3.9 of docs/security-remediation-plan.md (ORP-02): an unused extra is
+# still a dependency-scanning and audit-surface cost, and D6's own "the
+# ApprovalUI seam lets it come back if that proves wrong" reasoning for
+# keeping it declared didn't materialize into any actual native-UI work
+# in the time since. The exact package set is preserved in
+# docs/adr/0001-remove-macos-native-extra.md for whoever picks that back
+# up.
 dev = [
     "pyinstaller>=6.0",
     # sdist/wheel build + local upload, for rehearsing a release by hand --
@@ -151,11 +149,12 @@ test = [
     "pytest-timeout>=2.3",
     "pytest-cov>=5.0",
     # The official MCP Python client used by
-    # tests/integration/test_bridge_daemon_contract.py (real Node bridge
-    # over real MCP-over-stdio) and tests/unit/web/test_routes_mcp.py (the
-    # real /mcp Streamable HTTP endpoint over an in-process ASGI transport)
-    # is `mcp` itself -- now a runtime dependency (see pyproject.toml's
-    # [project.dependencies], P2/D2), not listed again here.
+    # tests/integration/test_mcp_daemon_contract.py (a real loopback socket
+    # speaking Streamable HTTP to a real web/server.py WebServer) and
+    # tests/unit/web/test_routes_mcp.py (the same /mcp endpoint over an
+    # in-process ASGI transport, no real socket) is `mcp` itself -- now a
+    # runtime dependency (see pyproject.toml's [project.dependencies],
+    # P2/D2), not listed again here.
     "freezegun>=1.5",
     # starlette.testclient.TestClient's transport -- test-only, exercising
     # web/ routes (tests/unit/web/) without a real socket.

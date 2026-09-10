@@ -36,7 +36,7 @@ import jwt
 import requests
 from jwt import PyJWKClient
 
-from .org_mode import ConfigurationError
+from .org_mode import AuthzPolicyConfig, ConfigurationError
 from .paths import safe_principal_id
 from .principal import Principal
 
@@ -301,10 +301,67 @@ def principal_from_claims(claims: dict[str, Any], idp: IdpConfig) -> Principal:
     )
 
 
+class AuthorizationDenied(PermissionError):
+    """Raised by ``check_authz_policy`` when a principal the IdP itself
+    already authenticated fails PrivacyFence's own app-level policy
+    (SEC-22, docs/security-remediation-plan.md, Phase 3 item 3.7) -- unlike
+    every other exception this module raises (a bad code, an unverifiable
+    token, a discovery document that doesn't check out), this one means the
+    IdP leg *succeeded*; PrivacyFence itself is the one declining.
+
+    Both web/routes_org_identity.py's ``login_callback`` and web/oauth_
+    provider.py's ``handle_idp_callback`` already wrap their whole claims-
+    to-Principal sequence in a catch-all that logs and returns a generic
+    "sign-in failed, try again" response -- raising this here fits that
+    same handling with no route-level changes needed, while still logging
+    *why* (this exception's own message) for whoever reads the daemon's
+    log. Deliberately not surfaced to the browser/OAuth client itself: an
+    unauthenticated caller should not learn from the response alone
+    whether they failed identity verification or an org-specific allowlist
+    (SEC-10's safe-error-taxonomy posture, applied here too)."""
+
+
+def check_authz_policy(principal: Principal, claims: dict[str, Any], policy: AuthzPolicyConfig) -> None:
+    """The one place a principal the IdP already authenticated can still be
+    turned away by PrivacyFence itself. ``policy.enabled is False`` (the
+    default -- no ``authz`` section in org_config.json, see AuthzPolicyConfig's
+    own docstring) is a complete no-op, so an existing org-mode install
+    keeps admitting every IdP-authenticated principal exactly as before
+    this landed.
+
+    Takes ``claims`` directly (not just ``principal``) because group
+    membership never made it onto ``Principal`` -- only ``is_admin``, a
+    single bit derived from IdpConfig.admin_group_claim, did (see that
+    field's own docstring). Kept as a separate step from ``principal_from_
+    claims`` above, rather than folded into it, because unlike ``is_admin``
+    (carried forward on the Principal for other code to use later) an
+    authz-policy failure has nowhere to be carried to -- there's no
+    Principal to finish building, only a decision to raise on.
+    """
+    if not policy.enabled:
+        return
+    if policy.allowed_domains:
+        domain = principal.email.rsplit("@", 1)[-1].lower() if "@" in principal.email else ""
+        if domain not in policy.allowed_domains:
+            raise AuthorizationDenied(
+                f"principal {principal.id!r} (email {principal.email!r}) is not in an allowed domain"
+            )
+    if policy.required_groups:
+        groups = claims.get(policy.groups_claim) or []
+        if isinstance(groups, str):
+            groups = [groups]
+        if not any(group in policy.required_groups for group in groups):
+            raise AuthorizationDenied(
+                f"principal {principal.id!r} (email {principal.email!r}) is not in a required group"
+            )
+
+
 __all__ = [
     "DEFAULT_SCOPE",
+    "AuthorizationDenied",
     "IdpConfig",
     "build_authorization_url",
+    "check_authz_policy",
     "discover_idp",
     "exchange_code_for_tokens",
     "generate_pkce_pair",

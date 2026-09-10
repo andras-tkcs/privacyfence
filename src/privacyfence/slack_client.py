@@ -149,17 +149,6 @@ class SlackClientError(Exception):
     """Raised for unrecoverable Slack client problems (auth, config, API)."""
 
 
-class SlackDirectoryUnavailable(SlackClientError):
-    """Raised when a participant name can't be resolved because the local user
-    directory doesn't know it. Carries an actionable message (refresh the
-    cache) rather than falling back to a whole-workspace scan that would cost
-    hundreds of API calls and, with no directory to resolve names against,
-    still match nothing."""
-
-
-
-
-
 def build_authorize_url(
     client_id: str, redirect_uri: str, state: str, user_scopes: list[str] | None = None,
 ) -> str:
