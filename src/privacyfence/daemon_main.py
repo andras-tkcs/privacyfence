@@ -47,8 +47,8 @@ Configuration is split into two files (see paths.py):
     not a per-user setting, so it lives here rather than settings.yaml.
     ``rooms`` (optional) is a static room/resource directory snapshot IT
     refreshes with ``scripts/sync_room_directory.py``, using a separate,
-    admin-scoped Google Cloud project — see room_directory_client.py and
-    docs/google-cloud-setup.md. It's plain data, not a credential, and is
+    admin-scoped Google Cloud project — see that script's module docstring
+    and docs/google-cloud-setup.md. It's plain data, not a credential, and is
     handed straight to CalendarConnector; the Calendar OAuth client itself
     never carries Workspace-admin directory scope. ``mode``/``server``/
     ``idp`` (P7, docs/https-connector-refactor-plan.md §4/§9.4/§10.2)
