@@ -204,4 +204,5 @@ Rewrite/split [#121](https://github.com/andras-tkcs/privacyfence/issues/121) rat
 describing prerequisites (#119/#120) that already shipped: one issue for Track A (Linux — small,
 "verify + document, `.deb` as stretch"), one rewritten issue for Track B (Windows — the B1–B6 list
 above, all genuinely new work). Each checklist item above is sized to land as its own PR, per this
-repo's usual convention for phased plans (see `docs/security-remediation-plan.md` for the pattern).
+repo's usual convention for phased plans (see the now-removed `docs/security-remediation-plan.md`
+for the pattern).

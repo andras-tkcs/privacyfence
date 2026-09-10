@@ -36,8 +36,8 @@ python scripts/check_coverage_floor.py coverage.json
 ```
 
 on an `ubuntu-latest` runner. A 100% pass rate is required to merge, for both suites. Coverage
-itself is a ratchet, not a specific percentage a PR must hit (TST-03,
-`docs/security-remediation-plan.md` Phase 2.1): `scripts/check_coverage_floor.py` fails the build
+itself is a ratchet, not a specific percentage a PR must hit (TST-03, Phase 2.1 of the now-removed
+`docs/security-remediation-plan.md`): `scripts/check_coverage_floor.py` fails the build
 if overall branch+line coverage, or the coverage of any module on its security-critical list (the
 URL-scheme allowlist, identity-matching, audit-export, org-config/bundle-trust, session/token-
 lifetime, privacy-filter, secure-write, OIDC-discovery-trust, and MCP-error-taxonomy code paths —
@@ -97,7 +97,8 @@ manual steps. It includes:
   socket, same posture as the approval routes above. `TestAudienceSeparation` in
   `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
   approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
-- `tests/unit/web/test_mcp_tools.py` — added at security-remediation-plan.md phase 1.9 (TST-02):
+- `tests/unit/web/test_mcp_tools.py` — added at the now-removed security-remediation-plan.md's
+  phase 1.9 (TST-02):
   `mcp_tools.py`'s own `ToolSpec`-to-`Tool`/`CallToolResult` schema translation (untested by either
   file above, which exercise dispatch and wire framing, not this mapping layer), plus end-to-end
   coverage over the real `/mcp` transport for three narrow behaviors: an unattended session denying
