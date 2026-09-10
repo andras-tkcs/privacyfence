@@ -15,6 +15,7 @@ from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
 from privacyfence import org_identity as oi
+from privacyfence.org_mode import AuthzPolicyConfig
 from privacyfence.web import oauth_provider as op
 
 IDP_CALLBACK_URL = "https://pf.example.com/oauth/idp/callback"
@@ -42,9 +43,9 @@ def _params(*, state="orig-state", redirect_uri="https://claude.example.com/call
     )
 
 
-def _provider(tmp_path, monkeypatch) -> op.OrgOAuthProvider:
+def _provider(tmp_path, monkeypatch, *, policy: AuthzPolicyConfig | None = None) -> op.OrgOAuthProvider:
     monkeypatch.setattr(op, "_clients_file_path", lambda: str(tmp_path / "oauth_clients.json"))
-    return op.OrgOAuthProvider(_idp(), idp_callback_url=IDP_CALLBACK_URL)
+    return op.OrgOAuthProvider(_idp(), idp_callback_url=IDP_CALLBACK_URL, policy=policy)
 
 
 def _patch_idp_exchange(monkeypatch, *, claims: dict):
@@ -183,6 +184,32 @@ class TestAuthorizeAndIdpCallback:
         state = dict(up.parse_qsl(up.urlparse(auth_url).query))["state"]
         with pytest.raises(ValueError):
             await provider.handle_idp_callback(state=state, code="idp-code")
+
+    async def test_idp_callback_denied_by_authz_policy_raises(self, tmp_path, monkeypatch):
+        # SEC-22: layered on top of the IdP leg -- a principal the IdP
+        # itself authenticated can still be turned away here.
+        import urllib.parse as up
+        policy = AuthzPolicyConfig(allowed_domains=("acme.com",))
+        provider = _provider(tmp_path, monkeypatch, policy=policy)
+        client = _client_info()
+        await provider.register_client(client)
+        _patch_idp_exchange(monkeypatch, claims={"sub": "mallory", "email": "mallory@evil.example.com"})
+        auth_url = await provider.authorize(client, _params())
+        state = dict(up.parse_qsl(up.urlparse(auth_url).query))["state"]
+        with pytest.raises(oi.AuthorizationDenied):
+            await provider.handle_idp_callback(state=state, code="idp-code")
+
+    async def test_idp_callback_admitted_by_authz_policy_succeeds(self, tmp_path, monkeypatch):
+        import urllib.parse as up
+        policy = AuthzPolicyConfig(allowed_domains=("acme.com",))
+        provider = _provider(tmp_path, monkeypatch, policy=policy)
+        client = _client_info()
+        await provider.register_client(client)
+        _patch_idp_exchange(monkeypatch, claims={"sub": "alice", "email": "alice@acme.com"})
+        auth_url = await provider.authorize(client, _params())
+        state = dict(up.parse_qsl(up.urlparse(auth_url).query))["state"]
+        redirect_url = await provider.handle_idp_callback(state=state, code="idp-code")
+        assert "code=" in redirect_url
 
 
 class TestAuthorizationCodeExchange:

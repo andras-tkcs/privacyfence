@@ -753,7 +753,15 @@ def _start_org_web_server(
 
     connector_registry = ConnectorRegistry(factory=_connectors_for_principal)
 
-    provider = OrgOAuthProvider(idp, idp_callback_url=f"{server_config.issuer_url.rstrip('/')}/oauth/idp/callback")
+    # SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7): layered
+    # on top of the IdP's own authentication above -- see org_identity.
+    # check_authz_policy's own docstring for what this does and doesn't
+    # change. Absent "authz" section in org_config.json -> disabled,
+    # every IdP-authenticated principal is admitted, unchanged from before.
+    authz_policy = org_mode.AuthzPolicyConfig.from_org_config(org_config)
+    provider = OrgOAuthProvider(
+        idp, idp_callback_url=f"{server_config.issuer_url.rstrip('/')}/oauth/idp/callback", policy=authz_policy,
+    )
     sessions = OrgSessionStore()
     mcp_dispatcher = McpDispatcher(
         lambda: connector_registry.get(current_principal()).connectors,
@@ -778,9 +786,11 @@ def _start_org_web_server(
     step_up = org_mode.StepUpConfig.from_org_config(org_config)
     logger.info(
         "Org mode active -- MCP-over-HTTP at %s (OAuth 2.1, DCR at %s/register), IdP %s, "
-        "WebAuthn step-up %s",
+        "WebAuthn step-up %s, app-level authz policy %s",
         server.mcp_url, server.base_url, idp.issuer,
         f"enabled (scope={step_up.scope})" if step_up.enabled else "disabled",
+        f"enabled ({len(authz_policy.allowed_domains)} allowed domain(s), "
+        f"{len(authz_policy.required_groups)} required group(s))" if authz_policy.enabled else "disabled",
     )
     return server
 
