@@ -7,13 +7,20 @@ auth.py`` model of "the cookie's own value is the one shared secret
 everyone in the install has": org mode has more than one user, so each
 session has to carry its own, distinct identity.
 
-Not wired into routes_approvals.py/routes_settings.py's own auth checks in
-this phase -- those stay local-mode-only for now (a documented follow-up,
-see docs/https-connector-refactor-plan.md's P7 section). What this module
-and routes_org_identity.py deliver is the session mechanism itself, real
-and tested end to end, plus web/server.py's ``_PrincipalScopeMiddleware``
-resolving ``current_principal()`` from it (P6's own seam) -- so any route
-built against it from here on gets per-principal scoping for free.
+As of P9 this backs a real, principal-scoped ``/approvals``/``/security``
+surface for org mode -- web/routes_org_approvals.py, not the local-mode
+``routes_approvals.py``, which still authenticates with one shared secret
+and has no principal filtering (see that module's own docstring for why it
+was never mounted under org mode as-is). ``/settings``
+(routes_settings.py's ~30-action surface) is the one still not wired into
+this session model -- still local-mode-only for now, a documented
+follow-up (see web/server.py's own module docstring's "Still deliberately
+not mounted in org mode" section). What this module and routes_org_
+identity.py deliver is the session mechanism itself, real and tested end
+to end, plus web/server.py's ``_PrincipalScopeMiddleware`` resolving
+``current_principal()`` from it (P6's own seam) -- so any route built
+against it from here on gets per-principal scoping for free, exactly as
+routes_org_approvals.py already does.
 """
 from __future__ import annotations
 

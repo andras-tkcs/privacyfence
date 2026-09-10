@@ -234,7 +234,8 @@ def check_csrf(request: Request, csrf: str | None) -> bool:
     CSRF token, the same reasoning web/org_session.py's own check_csrf
     gives for why no separate per-session value needs to be minted and
     tracked. Constant-time compare -- same posture ipc_server.py's own
-    token check takes for ~/.privacyfence/ipc_token."""
+    token check took for ~/.privacyfence/ipc_token, before P5 deleted
+    both."""
     cookie = request.cookies.get(SESSION_COOKIE, "")
     if not cookie or not csrf:
         return False

@@ -5,7 +5,7 @@ session just to call telegram_list_chats / tasks_list_task_lists yourself.
 
 Reuses the same connector construction and stored credentials the daemon
 uses (privacyfence.daemon_main.build_connectors), so connectors must already
-be authenticated via the menu bar (or `privacyfence-app --tasks-oauth` /
+be authenticated via PrivacyFence Settings' Connectors page (or `privacyfence-app --tasks-oauth` /
 `--telegram-setup`) before this will return anything for them.
 
 Caution: Telethon's session file allows only one active connection at a
@@ -40,7 +40,7 @@ async def _list(connectors: list, connector_name: str, tool: str, args: dict) ->
     if connector is None:
         print(
             f"  [{connector_name}] connector not available — check it's enabled, "
-            "org config installed, and authenticated (menu bar → Connectors).",
+            "org config installed, and authenticated (Settings → Connectors).",
             file=sys.stderr,
         )
         return []

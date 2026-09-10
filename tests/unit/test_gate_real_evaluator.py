@@ -15,11 +15,13 @@ AutoAcceptEvaluator, args/raw_data shaped the way the real connector module
 builds them, and an assertion on both the return value and the resulting
 AuditEntry fields -- not just "a popup would/wouldn't show."
 
-The native popup layer (approval_popup.show_read_popup / show_popup / etc.)
-is still monkeypatched to a scripted answer, same as test_gate.py -- that
-mock boundary is correct and unchanged; only the auto-accept side moves
-from fake to real. approval_window.py's actual window construction has its
-own coverage in test_approval_window.py.
+The popup layer (``gate.show_read_popup``/``gate.show_popup`` -- P10
+deleted the native AppKit implementation behind them, so they now delegate
+to whichever ``ApprovalUI`` is current, i.e. ``WebApprovalUI``) is still
+monkeypatched to a scripted answer, same as test_gate.py -- that mock
+boundary is correct and unchanged; only the auto-accept side moves from
+fake to real. The actual card construction has its own coverage in
+test_approval_window_html.py/test_web_approval_ui.py.
 
 salesforce.read_record's approved_object_types rule already has a
 real-evaluator regression test in test_gate.py::TestApprovedObjectTypesNeverPopsUp

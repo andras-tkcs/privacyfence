@@ -1,6 +1,6 @@
 """Checks GitHub Releases for a newer PrivacyFence version, once a day.
 
-PrivacyFence ships as a single DMG (app + bridge, one version number) via GitHub Releases tagged
+PrivacyFence ships as a single DMG (app + `.mcpb` shim, one version number) via GitHub Releases tagged
 ``v<major>.<minor>.<patch>[<stage><n>]`` — no PyPI package exists to check against instead.
 ``stage`` is one of ``a``/``b``/``rc`` (PEP 440's short pre-release spellings; this is also the
 exact scheme `__version__` itself now uses, derived from these same tags by setuptools_scm — see
