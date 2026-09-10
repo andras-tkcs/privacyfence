@@ -18,8 +18,17 @@ import io
 import zipfile
 
 import openpyxl
+import pytest
 
-from privacyfence.text_extraction import MAX_SCAN_CHARS, extract_text, is_prefetch_worthy, preview_blocks_for
+from privacyfence import text_extraction
+from privacyfence.text_extraction import (
+    MAX_SCAN_CHARS,
+    _read_zip_member_bounded,
+    _ZipEntryTooLarge,
+    extract_text,
+    is_prefetch_worthy,
+    preview_blocks_for,
+)
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -288,6 +297,103 @@ class TestPptx:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("some/other/file.xml", "<root/>")
+        assert extract_text(buf.getvalue(), PPTX_MIME) == ""
+
+
+class TestZipBombProtection:
+    """SEC-14: a DOCX/PPTX's word/document.xml or slideN.xml is decompressed
+    from an attacker-controlled zip before a human has approved anything --
+    a crafted entry that's small on disk but huge once decompressed must not
+    be fully read into memory. See _read_zip_member_bounded() and its
+    _MAX_ZIP_ENTRY_BYTES cap in text_extraction.py."""
+
+    def test_docx_member_over_the_cap_returns_empty_string(self, monkeypatch):
+        # Cap set far below this fixture's real (small) document.xml size --
+        # equivalent to a real-world zip bomb from extract_text()'s point of
+        # view, without actually generating tens of megabytes in a unit test.
+        monkeypatch.setattr(text_extraction, "_MAX_ZIP_ENTRY_BYTES", 10)
+        docx = make_docx("This paragraph alone is already over the cap.")
+        assert extract_text(docx, DOCX_MIME) == ""
+
+    def test_pptx_member_over_the_cap_returns_empty_string(self, monkeypatch):
+        monkeypatch.setattr(text_extraction, "_MAX_ZIP_ENTRY_BYTES", 10)
+        pptx = make_pptx("This slide's XML is already over the cap.")
+        assert extract_text(pptx, PPTX_MIME) == ""
+
+    def test_declared_size_within_cap_still_reads_normally(self, monkeypatch):
+        # Cap set generously above the fixture's real size -- a sanity check
+        # that the cap itself doesn't break ordinary small documents.
+        monkeypatch.setattr(text_extraction, "_MAX_ZIP_ENTRY_BYTES", 10_000)
+        docx = make_docx("Well within the cap.")
+        assert extract_text(docx, DOCX_MIME) == "Well within the cap."
+
+    def test_read_zip_member_bounded_returns_bytes_within_cap(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("small.txt", b"hello world")
+        with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+            assert _read_zip_member_bounded(zf, "small.txt") == b"hello world"
+
+    def test_read_zip_member_bounded_rejects_declared_size_over_cap(self, monkeypatch):
+        monkeypatch.setattr(text_extraction, "_MAX_ZIP_ENTRY_BYTES", 5)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("big.txt", b"this is more than five bytes")
+        with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+            with pytest.raises(_ZipEntryTooLarge):
+                _read_zip_member_bounded(zf, "big.txt")
+
+    def test_read_zip_member_bounded_rejects_stream_over_cap_even_when_declared_size_understates_it(
+        self, monkeypatch
+    ):
+        # A crafted entry can't rely on an undersold ZipInfo.file_size alone
+        # to smuggle a bigger payload past the up-front check -- the actual
+        # bytes read off the stream are counted too. Faked via a minimal
+        # stand-in rather than hand-crafting a zip whose central directory
+        # lies, which the zipfile module itself won't let us write.
+        monkeypatch.setattr(text_extraction, "_MAX_ZIP_ENTRY_BYTES", 100)
+
+        class _LyingZipInfo:
+            file_size = 5  # declared: well within the cap
+
+        class _LyingZipFile:
+            def getinfo(self, name):
+                return _LyingZipInfo()
+
+            def open(self, info):
+                return io.BytesIO(b"x" * 1000)  # actual: far over the cap
+
+        with pytest.raises(_ZipEntryTooLarge):
+            _read_zip_member_bounded(_LyingZipFile(), "lying.xml")
+
+
+class TestXxeProtection:
+    """SEC-14: word/document.xml and slideN.xml are parsed with defusedxml
+    rather than xml.etree.ElementTree, so a DOCTYPE declaring entities in an
+    attacker-controlled attachment is rejected instead of expanded."""
+
+    def test_docx_with_entity_declaration_is_rejected_not_expanded(self):
+        malicious_xml = (
+            '<?xml version="1.0"?>'
+            '<!DOCTYPE root [<!ENTITY xxe "pwned">]>'
+            f"<w:document {_DOCX_NS}><w:body><w:p><w:r><w:t>&xxe;</w:t></w:r></w:p>"
+            "</w:body></w:document>"
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("word/document.xml", malicious_xml)
+        assert extract_text(buf.getvalue(), DOCX_MIME) == ""
+
+    def test_pptx_with_entity_declaration_is_rejected_not_expanded(self):
+        malicious_xml = (
+            '<?xml version="1.0"?>'
+            '<!DOCTYPE root [<!ENTITY xxe "pwned">]>'
+            f"<p:sld {_PPTX_NS}><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r>"
+            "<a:t>&xxe;</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("ppt/slides/slide1.xml", malicious_xml)
         assert extract_text(buf.getvalue(), PPTX_MIME) == ""
 
 

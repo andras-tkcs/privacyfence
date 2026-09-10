@@ -24,6 +24,13 @@ dependencies = [
     "certifi>=2024.2.2",
     "openpyxl>=3.1",
     "pypdf>=5.0",
+    # text_extraction.py's DOCX/PPTX parsing (SEC-14, docs/security-
+    # remediation-plan.md Phase 3 item 3.2): that content is an
+    # attacker-controlled attachment fetched and parsed pre-approval, so its
+    # embedded XML parts get defusedxml's stdlib-compatible ElementTree
+    # rather than xml.etree.ElementTree, which has no protection against
+    # billion-laughs/entity-expansion-style XML attacks on its own.
+    "defusedxml>=0.7.1",
     # Embedded HTTP(S) server for the web approval surface (D10 in
     # docs/https-connector-refactor-plan.md §15: this stack is brought in
     # starting at P1, ahead of the MCP-over-HTTP endpoint itself, so
@@ -81,6 +88,17 @@ dependencies = [
     # already made for the MCP SDK -- see webauthn_stepup.py's own module
     # docstring.
     "webauthn>=3.0,<4.0",
+    # Cross-platform single-instance file locking for daemon_main.py's
+    # _acquire_instance_lock()/_release_instance_lock() (docs/windows-
+    # support-plan.md Phase 1, B1 in docs/windows-linux-support-plan.md):
+    # picks the right OS primitive itself (fcntl.flock on POSIX,
+    # msvcrt/LockFileEx on Windows), the same "don't hand-roll a
+    # platform-locking primitive" reasoning already given above for
+    # PyJWT/webauthn. Not a platform-conditional extra -- it's a small,
+    # pure-Python-plus-stdlib-ctypes library that's a no-op cost on every
+    # platform, so every install gets it rather than branching the
+    # dependency list by sys_platform.
+    "portalocker>=2.8",
 ]
 
 [project.scripts]
@@ -123,6 +141,14 @@ dev = [
     # in as CI.
     "build>=1.2",
     "twine>=5.0",
+    # Build-time-only PNG -> multi-resolution .ico conversion for the
+    # Windows build (docs/windows-support-plan.md Phase 2.3): unlike
+    # macOS's sips/iconutil (used by build_dmg.sh), there's no Windows-
+    # native icon-conversion tool available cross-platform in CI, so
+    # scripts/build_installer.ps1 does it with Pillow instead. Not a
+    # runtime dependency -- mirrors how pyinstaller itself is dev-extra-
+    # only above.
+    "Pillow>=10.0",
 ]
 test = [
     "pytest>=8.0",
@@ -235,12 +261,11 @@ ignore_missing_imports = true
 # TST-07: "bandit or semgrep for security-focused rules". Scans src/ only
 # for now (tests/ trips B101 `assert_used` constantly, which is how pytest
 # assertions work, not a finding) and runs non-blocking in CI alongside
-# mypy: bandit currently flags two real, already-tracked issues (SEC-14,
-# Phase 3 item 3.2 -- xml.etree.ElementTree on attachment content) plus a
-# handful of low-severity false positives (constant names like
+# mypy: the two real B314 findings this used to flag (SEC-14, Phase 3 item
+# 3.2 -- xml.etree.ElementTree on attachment content) were fixed by
+# switching text_extraction.py's DOCX/PPTX parsing to defusedxml. What's
+# left is a handful of low-severity false positives (constant names like
 # `web_token`/`mcp_token` read as B105 "hardcoded password strings", an
 # `assert` used for internal invariant-narrowing rather than input
-# validation). Fixing SEC-14 here would be scope creep on this change;
-# once it lands (Phase 3.2) and the false positives are triaged, this
-# should move to blocking.
+# validation); once those are triaged, this should move to blocking.
 exclude_dirs = ["tests"]
