@@ -29,7 +29,18 @@ jobs:
         run: brew install create-dmg
 
       - name: Install Python dependencies
-        run: pip install -e ".[dev]"
+        # `test` extra (not just `dev`) so the packaged smoke test below --
+        # tests/integration/test_macos_packaged_smoke.py, TST-15 -- has
+        # pytest/pytest-timeout/playwright available; `mcp` (the client it
+        # and the shim fixture need) is already a runtime dependency.
+        run: pip install -e ".[dev,test]"
+
+      # tests/integration/test_macos_packaged_smoke.py drives a real headless
+      # Chromium page against the packaged app's own approval UI -- same
+      # browser test_browser_smoke.py (TST-06) already needs in tests.yml,
+      # just installed here too since this workflow doesn't share that job.
+      - name: Install Playwright browsers
+        run: playwright install chromium
 
       # Drives both the release-channel gating below (only a "stable" tag gets a public GitHub
       # Release asset -- see CLAUDE.md's "Releasing" section and scripts/r2_release.py's module
@@ -117,6 +128,16 @@ jobs:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: bash scripts/build_dmg.sh
+
+      # TST-15 (docs/security-remediation-plan.md, Phase 3 item 3.10): the one
+      # place the actual packaged artifact -- not a source checkout, not a dev
+      # install -- gets exercised at all. Mounts the DMG just built above,
+      # runs the real frozen daemon binary from it, connects the real .mcpb
+      # shim, and drives one real Allow/Deny round trip through a real
+      # headless browser against the real served approval UI. A failure here
+      # fails this job before the DMG reaches R2/GitHub Releases below.
+      - name: Run packaged smoke test (TST-15)
+        run: pytest tests/integration/test_macos_packaged_smoke.py -v
 
       - name: Upload DMG as artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
