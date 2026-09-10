@@ -40,7 +40,7 @@ import yaml
 from . import __version__, dialog_window_html, org_bundle_signing, org_mode, web_prompt
 from .app_credentials import telegram_app_credentials
 from .approval_ui import get_approval_ui
-from .audit_log import AuditLogger, current_week
+from .audit_log import AuditLogger, compute_security_config_hash, current_week, get_audit_logger
 from .auto_accept import (
     reload_rules,
     set_rules_changed_listener,
@@ -738,6 +738,19 @@ class SettingsController:
             )
         except Exception as exc:
             logger.warning("Could not save config: %s", exc)
+            return
+        try:
+            # SEC-23: every settings.yaml write is a privacy-policy change,
+            # so the fingerprint every *new* audit entry carries
+            # (AuditEntry.security_config_hash) needs to move with it --
+            # daemon_main.run_app() only stamps this AuditLogger with a
+            # startup-time snapshot, and this is the one place (below every
+            # settings.yaml writer -- _save_and_reload, _save_and_reload_
+            # privacy, toggle_pii_detection, ...) that a change actually
+            # lands on disk.
+            get_audit_logger().set_security_config_hash(compute_security_config_hash(cfg))
+        except Exception as exc:
+            logger.warning("Could not update audit log's security-config hash: %s", exc)
 
     def _save_and_reload(self, cfg: dict) -> None:
         self._save_config(cfg)

@@ -55,6 +55,8 @@ parameter's docstring.
 """
 from __future__ import annotations
 
+import re
+import secrets
 from html import escape as _html_escape
 from pathlib import Path
 
@@ -62,6 +64,41 @@ from .markdown_to_html import markdown_to_html
 
 _STYLES_PATH = Path(__file__).parent / "resources" / "approval_window" / "styles.css"
 _STYLES_CSS = _STYLES_PATH.read_text(encoding="utf-8")
+
+# SEC-08 (docs/security-remediation-plan.md, Phase 3.1): this document is
+# rendered exactly once, at approval-creation time (card_builder.py's
+# build_card_html, called from gate.py's own thread, long before any
+# browser request/response for it exists) and then served byte-for-byte
+# from PendingApproval.html on every GET of /approvals/{id} -- possibly
+# many times, if the human reloads before deciding. That means the
+# Content-Security-Policy nonce covering this document's own <style>/
+# <script> elements has to be picked *now*, baked into the body, and
+# reused unchanged for as long as this exact document is served --
+# there's no later "per-response" moment to generate one against, the way
+# a document built fresh inside a route handler gets one from
+# web/server.py's _SecurityHeadersMiddleware. web/routes_approvals.py's/
+# web/routes_org_approvals.py's own serving code recovers the same value
+# via extract_csp_nonce() below and sets it as that specific response's
+# CSP nonce, so the header and the body always agree.
+_NONCE_TAG_RE = re.compile(r'<script nonce="([A-Za-z0-9_-]+)">')
+
+
+def _new_nonce() -> str:
+    return secrets.token_urlsafe(18)
+
+
+def extract_csp_nonce(html: str) -> str | None:
+    """Recover the nonce build_card_stack_html() (or dialog_window_html.py's
+    ``_document``, same tag shape) baked into an already-rendered
+    document's own ``<script nonce="...">`` tag -- see the module-level
+    note above for why this has to be extracted after the fact rather than
+    generated fresh per response. Returns None if the html predates this
+    (shouldn't happen for anything built by this module) or was mangled --
+    callers should fail safe (fall back to a fresh nonce, which will not
+    match the body and so will simply have the effect of blocking the
+    inline <style>/<script>, not of granting anything looser)."""
+    match = _NONCE_TAG_RE.search(html)
+    return match.group(1) if match else None
 
 # Narrow (single-column, sections only, no preview pane at all) vs wide
 # (two-column, sections + a genuine free-text-body right pane) -- set
@@ -600,6 +637,7 @@ def build_card_stack_html(
     preview_kicker: str,
     preview_body_html: str,
     accept_all_labels: list[str],
+    nonce: str | None = None,
 ) -> str:
     """Build the full HTML document for one approval window's content area.
 
@@ -677,7 +715,15 @@ def build_card_stack_html(
     decides which per entry, same as it always did for the single case).
     The whole button row is appended last, after ``temp_accept_text``'s own
     caption when present.
+
+    ``nonce`` (SEC-08, see module-level note above): the CSP nonce baked
+    into this document's own ``<style>``/``<script>`` tags. Callers building
+    a genuinely new document leave this ``None`` and get a fresh
+    cryptographically random one; a caller re-rendering (never happens
+    today, but kept explicit rather than accidental) can pass one through
+    to keep it stable.
     """
+    nonce = nonce or _new_nonce()
     width = CONTENT_WIDTH[layout]
     # A plain running counter, advanced only when a section actually
     # renders -- not itertools.count()'d speculatively, since §1/§2 are
@@ -791,7 +837,7 @@ def build_card_stack_html(
 <head>
 <meta charset="utf-8">
 <meta name="color-scheme" content="light dark">
-<style>
+<style nonce="{nonce}">
 {_STYLES_CSS}
 html {{ height: 100%; }}
 /* overflow-y:auto here is now a last-resort fallback only, not the
@@ -832,7 +878,7 @@ body {{
 }}
 </style>
 </head>
-<body>{body_html}<script>{_JS}</script></body>
+<body>{body_html}<script nonce="{nonce}">{_JS}</script></body>
 </html>
 """
 

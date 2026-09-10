@@ -60,13 +60,15 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .. import approval_list_html, org_identity, webauthn_stepup
+from .. import approval_list_html, approval_window_html, org_identity, webauthn_stepup
 from ..org_identity import IdpConfig
 from ..org_mode import StepUpConfig
 from ..principal import Principal
 from ..webauthn_stepup import StepUpChallengeStore, WebAuthnError
 from ..web_approval_ui import WebApprovalUI
 from . import org_session
+from .csp import nonce_for as _csp_nonce_for
+from .csp import set_nonce as _set_csp_nonce
 from .org_session import OrgSessionStore
 from .routes_approvals import _DECIDED_MESSAGE, _DENIED_MESSAGE, _ALREADY_DECIDED_MESSAGE, _FAILED_MESSAGE
 from .routes_approvals import _inject_shim, _SW_JS
@@ -120,7 +122,7 @@ class _StepUpAuthAttemptStore:
                 del self._pending[s]
 
 
-def _org_bridge_shim(*, decide_url: str, csrf: str, stepup_options_url: str) -> str:
+def _org_bridge_shim(*, decide_url: str, csrf: str, stepup_options_url: str, nonce: str) -> str:
     """The org-mode counterpart of web/routes_approvals.py's own
     ``_bridge_shim`` -- same ``window.webkit.messageHandlers.pf.postMessage``
     swap, plus the step-up branch a ``428`` response triggers (see module
@@ -130,11 +132,17 @@ def _org_bridge_shim(*, decide_url: str, csrf: str, stepup_options_url: str) -> 
     variant has somewhere to fetch a fresh challenge from without a second
     server-side endpoint to design; today's flow never needs it because the
     first ``428`` already includes everything the client needs.
+
+    ``nonce`` (SEC-08, docs/security-remediation-plan.md Phase 3.1): same
+    role as web/routes_approvals.py's own ``_bridge_shim`` -- this is a real
+    ``<script>`` element injected into an already-rendered card document,
+    so it must carry that document's own nonce (``show_approval`` below
+    recovers it via approval_window_html.extract_csp_nonce).
     """
     del stepup_options_url  # reserved -- see docstring
     return (
         PF_WEBAUTHN_JS
-        + "<script>(function(){"
+        + f'<script nonce="{nonce}">(function(){{'
         "window.webkit = window.webkit || {};"
         "window.webkit.messageHandlers = window.webkit.messageHandlers || {};"
         "function pfDecide(body){"
@@ -201,12 +209,12 @@ def _tokens_css() -> str:
     return _TOKENS_CSS
 
 
-def _render_list_page(rows: list, *, csrf: str) -> str:
-    body = approval_list_html.build_list_html(rows, csrf=csrf)
+def _render_list_page(rows: list, *, csrf: str, nonce: str) -> str:
+    body = approval_list_html.build_list_html(rows, csrf=csrf, nonce=nonce)
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PrivacyFence -- Approvals</title>
-<style>{_tokens_css()}body{{background:var(--color-bg);color:var(--color-text);margin:0;
+<style nonce="{nonce}">{_tokens_css()}body{{background:var(--color-bg);color:var(--color-text);margin:0;
 font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}</style></head>
 <body>{body}
 <p style="text-align:center"><a href="/connect">Connections</a> &middot; <a href="/security">Passkeys</a></p>
@@ -233,7 +241,7 @@ def build_routes(
             return RedirectResponse("/login?next=/approvals", status_code=302, headers={"Cache-Control": "no-store"})
         session_id = request.cookies.get(org_session.SESSION_COOKIE, "")
         rows = [approval_list_html.row_from_approval(card) for card in registry.list_pending(principal.id)]
-        html = _render_list_page(rows, csrf=session_id)
+        html = _render_list_page(rows, csrf=session_id, nonce=_csp_nonce_for(request))
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     async def show_approval(request: Request) -> Response:
@@ -255,9 +263,14 @@ def build_routes(
                 headers={"Cache-Control": "no-store"},
             )
         session_id = request.cookies.get(org_session.SESSION_COOKIE, "")
+        # SEC-08 (docs/security-remediation-plan.md Phase 3.1) -- see
+        # web/routes_approvals.py's own show_approval for why this document's
+        # nonce has to be recovered from the body rather than taken fresh.
+        nonce = approval_window_html.extract_csp_nonce(card.html) or _csp_nonce_for(request)
+        _set_csp_nonce(request, nonce)
         shim = _org_bridge_shim(
             decide_url=f"/api/approvals/{card.id}/decide", csrf=session_id,
-            stepup_options_url=f"/api/approvals/{card.id}/stepup/idp",
+            stepup_options_url=f"/api/approvals/{card.id}/stepup/idp", nonce=nonce,
         )
         return HTMLResponse(_inject_shim(card.html, shim), headers={"Cache-Control": "no-store"})
 

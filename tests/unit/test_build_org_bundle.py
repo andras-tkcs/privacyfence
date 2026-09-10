@@ -174,6 +174,68 @@ class TestMainSigningIntegration:
         assert bundle["slack"]["client_id"] == "id1"  # the earlier merge survives
         assert bundle["salesforce"]["consumer_key"] == "ckey"
 
+    def test_authz_flags_write_the_authz_section(self, tmp_path):
+        key_path = tmp_path / "key.pem"
+        build_org_bundle._generate_signing_key(str(key_path))
+        out_path = tmp_path / "org_config.json"
+
+        rc = build_org_bundle.main([
+            "-o", str(out_path), "--mode", "org",
+            "--server-issuer-url", "https://pf.example.com",
+            "--idp-issuer", "https://idp.example.com",
+            "--idp-client-id", "cid", "--idp-client-secret", "csecret",
+            "--authz-allowed-domain", "acme.com", "--authz-allowed-domain", "acme.co.uk",
+            "--authz-groups-claim", "groups", "--authz-required-group", "privacyfence-users",
+            "--sign-key", str(key_path),
+        ])
+
+        assert rc == 0
+        bundle = json.loads(out_path.read_text())
+        assert bundle["authz"] == {
+            "allowed_domains": ["acme.com", "acme.co.uk"],
+            "groups_claim": "groups",
+            "required_groups": ["privacyfence-users"],
+        }
+
+    def test_authz_required_group_without_groups_claim_is_rejected(self, tmp_path):
+        key_path = tmp_path / "key.pem"
+        build_org_bundle._generate_signing_key(str(key_path))
+        out_path = tmp_path / "org_config.json"
+
+        with pytest.raises(SystemExit, match="authz-groups-claim"):
+            build_org_bundle.main([
+                "-o", str(out_path), "--mode", "org",
+                "--server-issuer-url", "https://pf.example.com",
+                "--idp-issuer", "https://idp.example.com",
+                "--idp-client-id", "cid", "--idp-client-secret", "csecret",
+                "--authz-required-group", "privacyfence-users",
+                "--sign-key", str(key_path),
+            ])
+
+    def test_authz_flags_require_mode_org(self, tmp_path):
+        out_path = tmp_path / "org_config.json"
+        with pytest.raises(SystemExit, match="--mode org"):
+            build_org_bundle.main([
+                "-o", str(out_path), "--authz-allowed-domain", "acme.com",
+            ])
+
+    def test_mode_local_clears_a_previously_written_authz_section(self, tmp_path):
+        key_path = tmp_path / "key.pem"
+        build_org_bundle._generate_signing_key(str(key_path))
+        out_path = tmp_path / "org_config.json"
+        build_org_bundle.main([
+            "-o", str(out_path), "--mode", "org",
+            "--server-issuer-url", "https://pf.example.com",
+            "--idp-issuer", "https://idp.example.com",
+            "--idp-client-id", "cid", "--idp-client-secret", "csecret",
+            "--authz-allowed-domain", "acme.com",
+            "--sign-key", str(key_path),
+        ])
+
+        build_org_bundle.main(["-o", str(out_path), "--merge", "--mode", "local"])
+
+        assert "authz" not in json.loads(out_path.read_text())
+
     def test_sign_key_needs_cryptography_gives_a_clear_error(self, tmp_path, monkeypatch):
         # A plain sys.modules["cryptography"] = None wouldn't reliably
         # force ImportError here -- once a submodule has been imported
@@ -190,3 +252,108 @@ class TestMainSigningIntegration:
 
         with pytest.raises(SystemExit, match="pip install cryptography"):
             build_org_bundle._generate_signing_key(str(tmp_path / "key.pem"))
+
+
+class TestAuditForwardingFlags:
+    """SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6):
+    org_config.json's "audit_forwarding" section, built from
+    --audit-forwarding-* flags."""
+
+    def _sign_key(self, tmp_path):
+        key_path = tmp_path / "key.pem"
+        build_org_bundle._generate_signing_key(str(key_path))
+        return key_path
+
+    def _org_mode_args(self, tmp_path, *extra):
+        return [
+            "-o", str(tmp_path / "org_config.json"), "--mode", "org",
+            "--server-issuer-url", "https://pf.example.com",
+            "--idp-issuer", "https://idp.example.com",
+            "--idp-client-id", "cid", "--idp-client-secret", "csecret",
+            "--sign-key", str(self._sign_key(tmp_path)),
+            *extra,
+        ]
+
+    def test_requires_org_mode(self, tmp_path):
+        with pytest.raises(SystemExit, match="require --mode org"):
+            build_org_bundle.main([
+                "-o", str(tmp_path / "org_config.json"),
+                "--enable-audit-forwarding", "--audit-forwarding-syslog-host", "siem.example.com",
+            ])
+
+    def test_syslog_kind_writes_full_section(self, tmp_path):
+        rc = build_org_bundle.main(self._org_mode_args(
+            tmp_path,
+            "--enable-audit-forwarding", "--audit-forwarding-kind", "syslog",
+            "--audit-forwarding-syslog-host", "siem.example.com",
+            "--audit-forwarding-syslog-port", "601",
+            "--audit-forwarding-syslog-protocol", "udp",
+        ))
+        assert rc == 0
+        bundle = json.loads((tmp_path / "org_config.json").read_text())
+        assert bundle["audit_forwarding"] == {
+            "enabled": True, "kind": "syslog",
+            "syslog": {"host": "siem.example.com", "port": 601, "protocol": "udp"},
+        }
+
+    def test_syslog_kind_without_host_is_rejected(self, tmp_path):
+        with pytest.raises(SystemExit, match="audit-forwarding-syslog-host"):
+            build_org_bundle.main(self._org_mode_args(tmp_path, "--enable-audit-forwarding"))
+
+    def test_http_kind_writes_full_section(self, tmp_path):
+        rc = build_org_bundle.main(self._org_mode_args(
+            tmp_path,
+            "--enable-audit-forwarding", "--audit-forwarding-kind", "http",
+            "--audit-forwarding-http-url", "https://siem.example.com/ingest",
+            "--audit-forwarding-http-bearer-token-env", "SIEM_TOKEN",
+        ))
+        assert rc == 0
+        bundle = json.loads((tmp_path / "org_config.json").read_text())
+        assert bundle["audit_forwarding"] == {
+            "enabled": True, "kind": "http",
+            "http": {"url": "https://siem.example.com/ingest", "bearer_token_env": "SIEM_TOKEN"},
+        }
+
+    def test_http_kind_without_url_is_rejected(self, tmp_path):
+        with pytest.raises(SystemExit, match="audit-forwarding-http-url"):
+            build_org_bundle.main(self._org_mode_args(
+                tmp_path, "--enable-audit-forwarding", "--audit-forwarding-kind", "http",
+            ))
+
+    def test_disable_flag_turns_it_back_off_on_merge(self, tmp_path):
+        args = self._org_mode_args(
+            tmp_path,
+            "--enable-audit-forwarding", "--audit-forwarding-syslog-host", "siem.example.com",
+        )
+        build_org_bundle.main(args)
+        key_path = tmp_path / "key.pem"  # written by _org_mode_args' own _sign_key() above
+
+        rc = build_org_bundle.main([
+            "-o", str(tmp_path / "org_config.json"), "--merge", "--disable-audit-forwarding",
+            "--sign-key", str(key_path),
+        ])
+        assert rc == 0
+        bundle = json.loads((tmp_path / "org_config.json").read_text())
+        assert bundle["audit_forwarding"]["enabled"] is False
+        # The rest of the section (host, etc.) survives -- only "enabled" flips.
+        assert bundle["audit_forwarding"]["syslog"]["host"] == "siem.example.com"
+
+    def test_local_mode_strips_any_existing_section(self, tmp_path):
+        args = self._org_mode_args(
+            tmp_path,
+            "--enable-audit-forwarding", "--audit-forwarding-syslog-host", "siem.example.com",
+        )
+        build_org_bundle.main(args)
+
+        rc = build_org_bundle.main([
+            "-o", str(tmp_path / "org_config.json"), "--merge", "--mode", "local",
+        ])
+        assert rc == 0
+        bundle = json.loads((tmp_path / "org_config.json").read_text())
+        assert "audit_forwarding" not in bundle
+
+    def test_summary_line_reports_enabled_state(self, tmp_path, capsys):
+        build_org_bundle.main(self._org_mode_args(
+            tmp_path, "--enable-audit-forwarding", "--audit-forwarding-syslog-host", "siem.example.com",
+        ))
+        assert "audit_forwarding.enabled=True" in capsys.readouterr().out

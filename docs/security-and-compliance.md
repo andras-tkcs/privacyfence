@@ -39,7 +39,7 @@ your organization runs and controls, not a PrivacyFence-operated service:
 |---|---|---|
 | Who it's for | One employee, one machine | An organization's whole user base, from one shared install |
 | Where it runs | On the employee's own Mac, as a local daemon reachable over its own embedded, loopback-only (`localhost`) `/mcp` HTTP endpoint — directly (Claude Code) or via a thin stdio-to-HTTP shim Claude Desktop's `.mcpb` installs (no service credentials, no tool-schema knowledge of its own) | On a server IT provisions and operates (documented for Ubuntu in [`org-mode-setup-guide.md`](org-mode-setup-guide.md)), reachable over HTTPS — directly or, as that guide sets up, behind a reverse proxy (e.g. Caddy) that terminates TLS and forwards plaintext to PrivacyFence's own loopback bind |
-| Who authenticates, and how | Nobody signs in as anybody — there is exactly one implicit local principal, and every request to the daemon is authorized by possession of a random secret written to a file on that same machine (see §8) | Each person signs in as themselves via **OIDC against the organization's own identity provider** (Google Workspace, Okta, Entra ID, or any OIDC-compliant IdP, discovered from its `/.well-known/openid-configuration`) — the same login, for a browser or for an MCP client's OAuth 2.1 handshake, resolves to the same `Principal`, so a browser session and an MCP token issued for the same sign-in are provably the same identity |
+| Who authenticates, and how | Nobody signs in as anybody — there is exactly one implicit local principal, and every request to the daemon is authorized by possession of a random secret written to a file on that same machine (see §8) | Each person signs in as themselves via **OIDC against the organization's own identity provider** (Google Workspace, Okta, Entra ID, or any OIDC-compliant IdP, discovered from its `/.well-known/openid-configuration`) — the same login, for a browser or for an MCP client's OAuth 2.1 handshake, resolves to the same `Principal`, so a browser session and an MCP token issued for the same sign-in are provably the same identity. Optionally, an `authz` section in `org_config.json` layers a PrivacyFence-level allowlist (email domain and/or IdP group claim) on top of that IdP authentication — a principal the IdP itself successfully authenticates can still be turned away by PrivacyFence if it doesn't match (`org_identity.py`'s `check_authz_policy`); absent, every IdP-authenticated principal is admitted, same as before this existed |
 | Where data is processed | Locally, in-process, on that machine | In-process, on the org-mode server IT operates — still not a PrivacyFence-operated destination |
 | Where data is stored | Locally: OS credential storage / local token files, and a local audit log (`logs/audit/*.jsonl`, `*.xlsx`) | On the org-mode server, under a per-principal directory; still a local audit log, on that server, not a PrivacyFence-hosted one |
 | Vendor-operated infrastructure | None, either mode. There is no multi-tenant service, no hosted database, and no PrivacyFence API that traffic passes through — org mode's server is infrastructure your organization stands up and operates from PrivacyFence's own source, same as local mode's `.app` |
@@ -252,15 +252,26 @@ narrower calls still deny rather than silently proceed.
   (`credentials/`, local token files) and never transmitted to any PrivacyFence-operated
   destination — there isn't one.
 - **Audit trail:** every decision (approved, denied, or auto-accepted) is appended to a local
-  JSON-lines file per week, auto-exported to a formatted Excel workbook. In **local mode** this log
-  is local to the employee's own machine — PrivacyFence does not ship a mechanism to centrally
-  collect these logs for IT, so an organization that requires that for its own compliance program
-  should plan for it separately (e.g., MDM-based log collection) rather than assume it happens
-  automatically. In **org mode** the log is already on one server IT controls, covering every
-  principal's actions from that install — but it is still a local file on that server, not forwarded
-  anywhere (e.g. to a SIEM) and not append-integrity-protected against tampering by whoever has write
-  access to that server; centralized forwarding and tamper-evidence are tracked as SEC-23 in
-  [`security-remediation-plan.md`](security-remediation-plan.md), not implemented yet.
+  JSON-lines file per week, auto-exported to a formatted Excel workbook. Every entry carries a
+  stable `event_id`, an explicit `schema_version`, this install's own `deployment_id`, and a
+  `security_config_hash` fingerprinting the privacy policy (settings.yaml) in effect at the time
+  (SEC-23) — and is chained to the entry before it with a keyed hash (HMAC-SHA256), so an edit,
+  insertion, or removal made after the fact is detectable (`AuditLogger.verify_chain()`, or
+  `scripts/verify_audit_log.py` from the command line) without needing anywhere else to compare
+  against. That key lives next to the log it protects, so this catches accidental corruption and a
+  party who can write the `.jsonl` files without also reading the key file — not a fully privileged
+  local administrator who can read both; see `audit_forwarding.py`'s module docstring for that
+  honest threat-model caveat. In **local mode** this log is local to the employee's own machine —
+  PrivacyFence does not ship a mechanism to centrally collect these logs for IT, so an organization
+  that requires that for its own compliance program should plan for it separately (e.g., MDM-based
+  log collection) rather than assume it happens automatically. In **org mode** the log is already
+  on one server IT controls, covering every principal's actions from that install; it can
+  additionally be forwarded, per-entry, to a syslog server or a generic HTTPS/JSON webhook (Splunk
+  HEC, Datadog's Logs API, an Elastic ingest pipeline, an OTLP-over-HTTP/JSON log receiver) —
+  `org_config.json`'s `audit_forwarding` section, off by default, see
+  [`org-mode-setup-guide.md`](org-mode-setup-guide.md#11-centralized-audit-log-forwarding-optional).
+  Forwarding is additional visibility, not a replacement for the local file, which stays the
+  authoritative record (with its own hash chain) even when a specific entry fails to forward.
 - **Download/attachment delivery (`drive_download_file`, `gmail_download_attachment`,
   `confluence_download_attachment`) is mode-conditional, not "never sent to Claude" everywhere.**
   In **local mode**, these tools write the approved file straight to a local directory Claude and

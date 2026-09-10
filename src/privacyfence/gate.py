@@ -482,15 +482,16 @@ def _on_rules_changed() -> None:
         )
 
 
-# Set by ipc_server.py around a single dispatched request, for the duration
-# of that request only, when the request came in on a connection that
-# called privacyfence_begin_unattended_session() and hasn't since called
+# Set by web/mcp_dispatch.py's McpDispatcher.call() around a single
+# dispatched request, for the duration of that request only, when the
+# request came in on a Streamable HTTP session that called
+# privacyfence_begin_unattended_session() and hasn't since called
 # privacyfence_end_unattended_session() -- see unattended_scope() below and
 # docs/TECHNICAL_REFERENCE.md's "Scheduled / unattended Cowork tasks"
 # section. Deliberately NOT a module-level bool: a plain bool would be
 # shared across every concurrent request on
-# every connection, but unattended mode is a per-connection state (the
-# bridge is one process per Cowork task, so "per connection" already means
+# every session, but unattended mode is a per-session state (tracked in
+# McpDispatcher._unattended_sessions, so "per session" already means
 # "per scheduled run").
 _unattended_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "privacyfence_unattended", default=False
@@ -504,10 +505,11 @@ def is_unattended() -> bool:
 class unattended_scope:  # noqa: N801 (context-manager-style name, like `freeze_time`)
     """Run the wrapped code with the unattended-session flag set to `enabled`.
 
-    ipc_server.py wraps each dispatched ``call`` request in this, based on
-    whether the request's connection is currently in an unattended session.
-    gated_call() below is the only reader (via is_unattended()) -- no
-    connector code needs to know this exists.
+    web/mcp_dispatch.py's McpDispatcher.call() wraps each dispatched ``call``
+    request in this, based on whether the request's Streamable HTTP session
+    is currently in an unattended session. gated_call() below is the only
+    reader (via is_unattended()) -- no connector code needs to know this
+    exists.
     """
 
     def __init__(self, enabled: bool) -> None:
@@ -527,12 +529,13 @@ class unattended_scope:  # noqa: N801 (context-manager-style name, like `freeze_
 # must state, in one sentence, why it's calling the tool -- enforced at the
 # MCP schema
 # level, not by convention. Carried the same way is_unattended() is: a
-# contextvar set once, centrally, in ipc_server.py._call_connector() (which
-# pops "reason" out of args before it reaches _dedupe_key -- see that
-# module's docstring on why args must stay retry-stable, and its own
-# comment at the pop site), not threaded through all ~95 tool call sites
-# individually. No connector method signature needs to change for this to
-# work; gated_call() and every connector's _auto_audit() read it directly.
+# contextvar set once, centrally, in web/mcp_dispatch.py's McpDispatcher.
+# call() (which pops "reason" out of args before it reaches _dedupe_key --
+# see that module's docstring on why args must stay retry-stable, and its
+# own comment at the pop site), not threaded through all ~95 tool call
+# sites individually. No connector method signature needs to change for
+# this to work; gated_call() and every connector's _auto_audit() read it
+# directly.
 _reason_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
     "privacyfence_reason", default=""
 )
@@ -659,9 +662,9 @@ async def gated_call(
     created_at = time.time()
     request_id = uuid.uuid4().hex[:12]
     operation_key = TOOL_TO_OPERATION.get(tool, f"{connector}.{tool}")
-    # Set by ipc_server.py._call_connector() via reason_scope(), from the
-    # mandatory "reason" param every gated ToolSpec now declares -- see
-    # gate.py's reason_scope docstring. Self-reported, never verified;
+    # Set by web/mcp_dispatch.py's McpDispatcher.call() via reason_scope(),
+    # from the mandatory "reason" param every gated ToolSpec now declares --
+    # see gate.py's reason_scope docstring. Self-reported, never verified;
     # rendered as such (see approval_window_html.py's "Claude says" block).
     claude_reason = current_reason()
 
@@ -1052,15 +1055,16 @@ async def gated_call(
             )
             raise GateDeniedError("Request denied by user")
     except asyncio.CancelledError:
-        # The bridge asked the daemon to give up on this request (see
-        # ipc.py's "cancel" method) -- an expected, named outcome, not a
-        # bug, so it gets its own decision rather than falling through to
-        # the generic "error" fallback below. If this fires while still
-        # waiting on a popup, the dialog itself can't be closed this
-        # way and stays open (see ipc.py's own docstring) -- this
-        # entry is still the accurate record of what Claude received:
-        # nothing, because nothing was waiting anymore by the time (if
-        # ever) a human answered it.
+        # The MCP client gave up on this request -- its request task gets
+        # cancelled when the Streamable HTTP connection drops, most often
+        # because it timed out (see web/mcp_dispatch.py's McpDispatcher.
+        # call() CancelledError handling). An expected, named outcome, not
+        # a bug, so it gets its own decision rather than falling through
+        # to the generic "error" fallback below. If this fires while still
+        # waiting on a popup, the card itself can't be closed this way and
+        # stays open -- this entry is still the accurate record of what
+        # Claude received: nothing, because nothing was waiting anymore by
+        # the time (if ever) a human answered it.
         audit(
             decision="cancelled", auto_accept_rule="",
             pii_detected=bool(pii_categories or upload_pii_categories),
@@ -1161,6 +1165,9 @@ async def propose_rule_change(
                 remove_auto_accept_rule(operation_key, rule_name, old_value)
             add_auto_accept_rule(operation_key, rule_name, value)
             changed = True
+        # "..._via_bridge_proposal" is legacy vocabulary kept for audit-log
+        # continuity, not a live bridge -- see audit_log.py's AuditEntry.decision
+        # field comment (docs/security-remediation-plan.md Phase 3 PR3.9, ORP-06).
         applied_decision = "rule_removed_via_bridge_proposal" if operation == "remove" else "rule_changed_via_bridge_proposal"
         applied_rule_name = rule_name
     else:

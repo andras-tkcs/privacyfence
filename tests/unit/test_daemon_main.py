@@ -17,10 +17,12 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import portalocker
 import pytest
 import yaml
 
@@ -393,6 +395,61 @@ class TestLogOrgConfigBundleHash:
         jsonl_files = list((tmp_path / "audit").glob("*.jsonl"))
         entries = [json.loads(line) for line in jsonl_files[0].read_text().splitlines()]
         assert "signed=True" in entries[0]["summary"]
+
+
+class TestGetOrCreateDeploymentId:
+    """SEC-23: a stable, opaque per-install id persisted once at
+    data_dir()/deployment_id and reused across restarts."""
+
+    def test_no_existing_file_creates_and_returns_a_new_id(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        deployment_id = daemon_main.get_or_create_deployment_id()
+        assert deployment_id
+        assert (tmp_path / "deployment_id").read_text(encoding="utf-8") == deployment_id
+
+    def test_existing_file_is_reused(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        (tmp_path / "deployment_id").write_text("existing-id-123", encoding="utf-8")
+        assert daemon_main.get_or_create_deployment_id() == "existing-id-123"
+
+    def test_empty_existing_file_generates_a_fresh_id(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        (tmp_path / "deployment_id").write_text("", encoding="utf-8")
+        deployment_id = daemon_main.get_or_create_deployment_id()
+        assert deployment_id != ""
+
+    def test_repeated_calls_return_the_same_id(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        first = daemon_main.get_or_create_deployment_id()
+        second = daemon_main.get_or_create_deployment_id()
+        assert first == second
+
+    def test_unreadable_existing_file_falls_back_to_a_new_id(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        deployment_path = tmp_path / "deployment_id"
+        deployment_path.write_text("some-id", encoding="utf-8")
+
+        from pathlib import Path
+        original_read_text = Path.read_text
+
+        def failing_read_text(self, *args, **kwargs):
+            if self == deployment_path:
+                raise OSError("permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", failing_read_text)
+        with caplog.at_level(logging.WARNING):
+            deployment_id = daemon_main.get_or_create_deployment_id()
+        assert "Could not read deployment id" in caplog.text
+        assert deployment_id
+
+    def test_persist_failure_still_returns_the_new_id(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        monkeypatch.setattr(daemon_main, "atomic_write_text", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+        with caplog.at_level(logging.WARNING):
+            deployment_id = daemon_main.get_or_create_deployment_id()
+        assert "Could not persist deployment id" in caplog.text
+        assert deployment_id
 
 
 class TestCheckStoragePermissions:
@@ -1516,6 +1573,29 @@ class TestInstanceLock:
     def test_release_without_acquire_is_a_no_op(self):
         daemon_main._release_instance_lock()  # must not raise
 
+    def test_lock_file_records_holder_pid(self):
+        # portalocker.lock() is handed the raw fd _acquire_instance_lock()
+        # already opened, same as the fcntl.flock() call it replaced -- the
+        # os.ftruncate()/os.write() calls right after it must still see a
+        # live, writable fd rather than one portalocker has consumed or
+        # wrapped.
+        assert daemon_main._acquire_instance_lock() is True
+        assert Path(daemon_main.LOCK_FILE).read_text() == str(os.getpid())
+
+    def test_second_acquire_is_rejected_at_the_os_level_not_just_in_process(self):
+        # Confirms the portalocker swap still takes a real OS-level
+        # exclusive lock (LOCK_EX | LOCK_NB), not just something this
+        # process's own _lock_fd bookkeeping enforces -- an independent fd
+        # on the same file, opened the way a second daemon instance would,
+        # must be rejected by portalocker itself.
+        assert daemon_main._acquire_instance_lock() is True
+        other_fd = os.open(daemon_main.LOCK_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
+        try:
+            with pytest.raises(portalocker.exceptions.LockException):
+                portalocker.lock(other_fd, portalocker.LOCK_EX | portalocker.LOCK_NB)
+        finally:
+            os.close(other_fd)
+
 
 # ---------------------------------------------------------------------------- #
 # run_*_oauth: headless/dev CLI setup commands
@@ -1802,7 +1882,7 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "init_config_path", lambda path: None)
         monkeypatch.setattr(daemon_main, "reload_rules", lambda rules: None)
         fake_audit_logger = MagicMock()
-        monkeypatch.setattr(daemon_main, "init_audit_logger", lambda path: fake_audit_logger)
+        monkeypatch.setattr(daemon_main, "init_audit_logger", lambda path, **kwargs: fake_audit_logger)
         monkeypatch.setattr(daemon_main, "load_org_config", lambda: {})
         monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: connectors)
         monkeypatch.setattr(daemon_main, "_wait_for_shutdown", lambda: None)
@@ -2096,13 +2176,17 @@ class TestRunApp:
         # pre-migration one Claude/the caller originally passed in.
         assert len(reloaded) == 1
 
-    def test_rule_suggestion_priority_is_ignored_and_logged(self, monkeypatch, tmp_path, caplog):
-        # Issue #151: every matching auto-accept rule now gets its own
-        # "Always allow" button, so there's nothing left to prioritize or
-        # exclude -- a pre-existing rule_suggestion_priority block in a
-        # user's settings.yaml must still load without error (ignored,
-        # logged), same forward-compatible "unknown key is inert" posture
-        # used elsewhere.
+    def test_stale_rule_suggestion_priority_key_is_silently_ignored(self, monkeypatch, tmp_path, caplog):
+        # Issue #151 retired the settings.yaml-configurable
+        # rule_suggestion_priority (every matching auto-accept rule now gets
+        # its own "Always allow" button, so there's nothing left to
+        # prioritize or exclude). The dedicated "ignoring this key" log
+        # notice that once called this out by name was itself removed at
+        # docs/security-remediation-plan.md Phase 3 PR3.9 (ORP-04) -- a
+        # pre-existing rule_suggestion_priority block in a user's
+        # settings.yaml must still load without error, now via the same
+        # silent "unknown key is inert" handling as any other retired key,
+        # not a dedicated call-out.
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
@@ -2110,17 +2194,6 @@ class TestRunApp:
         config = {"rule_suggestion_priority": {"drive_read": ["approved_folder", "i_am_owner"]}}
         with caplog.at_level(logging.INFO):
             result = daemon_main.run_app(config, str(tmp_path / "settings.yaml"))
-
-        assert result == 0
-        assert "rule_suggestion_priority is no longer used" in caplog.text
-
-    def test_no_rule_suggestion_priority_logs_nothing_about_it(self, monkeypatch, tmp_path, caplog):
-        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
-        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
-        self._patch_common(monkeypatch)
-
-        with caplog.at_level(logging.INFO):
-            result = daemon_main.run_app({}, str(tmp_path / "settings.yaml"))
 
         assert result == 0
         assert "rule_suggestion_priority" not in caplog.text
@@ -2163,6 +2236,119 @@ class TestRunApp:
         daemon_main.run_app({}, "config.yaml")
 
         fake_audit_logger.export_all_pending.assert_called_once()
+
+    def test_audit_logger_is_closed_on_shutdown(self, monkeypatch):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        fake_audit_logger = self._patch_common(monkeypatch)
+
+        daemon_main.run_app({}, "config.yaml")
+
+        fake_audit_logger.close.assert_called_once()
+
+
+class TestAuditForwardingWiring:
+    """SEC-23: run_app() only builds an AuditForwarder when org mode's
+    audit_forwarding config is both enabled and actually running in org
+    mode -- local mode (or an org_config with mode: local) never forwards,
+    whatever the section says."""
+
+    def _patch_common(self, *args, **kwargs):
+        # Reuses TestRunApp's own setup rather than duplicating it --
+        # instantiated directly (not inherited) so pytest doesn't also
+        # re-collect and re-run TestRunApp's own test_* methods under this
+        # class.
+        return TestRunApp()._patch_common(*args, **kwargs)
+
+    def test_disabled_by_default_no_forwarder_built(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        self._patch_common(monkeypatch)
+        stub = daemon_main.init_audit_logger
+        captured = {}
+
+        def wrapped(path, **kwargs):
+            captured.update(kwargs)
+            return stub(path, **kwargs)
+        monkeypatch.setattr(daemon_main, "init_audit_logger", wrapped)
+
+        daemon_main.run_app({}, "config.yaml")
+
+        assert captured["forwarder"] is None
+
+    def test_enabled_but_local_mode_no_forwarder_built(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(daemon_main, "load_org_config", lambda: {
+            "audit_forwarding": {"enabled": True, "kind": "syslog", "syslog": {"host": "siem.example.com"}},
+        })
+        stub = daemon_main.init_audit_logger
+        captured = {}
+
+        def wrapped(path, **kwargs):
+            captured.update(kwargs)
+            return stub(path, **kwargs)
+        monkeypatch.setattr(daemon_main, "init_audit_logger", wrapped)
+
+        daemon_main.run_app({}, "config.yaml")
+
+        assert captured["forwarder"] is None
+
+    def test_enabled_org_mode_builds_a_forwarder(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(daemon_main, "load_org_config", lambda: {
+            "mode": "org",
+            "audit_forwarding": {"enabled": True, "kind": "syslog", "syslog": {"host": "siem.example.com"}},
+        })
+        stub = daemon_main.init_audit_logger
+        captured = {}
+
+        def wrapped(path, **kwargs):
+            captured.update(kwargs)
+            return stub(path, **kwargs)
+        monkeypatch.setattr(daemon_main, "init_audit_logger", wrapped)
+
+        try:
+            daemon_main.run_app({}, "config.yaml")
+        finally:
+            forwarder = captured.get("forwarder")
+            if forwarder is not None:
+                forwarder.stop()
+
+        assert captured["forwarder"] is not None
+
+    def test_enabled_org_mode_with_invalid_forwarding_config_does_not_crash_startup(self, monkeypatch, caplog, tmp_path):
+        # kind="syslog" with no host at all -- audit_forwarding.build_sender()
+        # raises ValueError; run_app() must log and keep starting without a
+        # forwarder rather than taking the whole daemon down over a bad
+        # forwarding config.
+        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
+        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
+        monkeypatch.setattr(daemon_main, "data_dir", lambda: tmp_path)
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(daemon_main, "load_org_config", lambda: {
+            "mode": "org", "audit_forwarding": {"enabled": True, "kind": "syslog"},
+        })
+        stub = daemon_main.init_audit_logger
+        captured = {}
+
+        def wrapped(path, **kwargs):
+            captured.update(kwargs)
+            return stub(path, **kwargs)
+        monkeypatch.setattr(daemon_main, "init_audit_logger", wrapped)
+
+        with caplog.at_level(logging.WARNING):
+            result = daemon_main.run_app({}, "config.yaml")
+
+        assert result == 0
+        assert captured["forwarder"] is None
+        assert "Could not start audit-log forwarding" in caplog.text
 
 
 # ---------------------------------------------------------------------------- #

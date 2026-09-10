@@ -24,22 +24,17 @@ Node binary -- this suite is "always-on" in the sense that CI always has
 both (see .github/workflows/tests.yml's ``Install Playwright browsers``
 step), not that it forces every contributor's machine to.
 
-Two of the checks the plan's own TST-06 row lists are deliberately *not*
-asserted as passing here, each for a different reason -- see
-``TestSecurityHeadersCsp``/``TestPdfPreview`` below:
-
-- "no-inline-script CSP check" is written but skipped: it needs SEC-08's
-  nonce migration (Phase 3.1, still unimplemented as of this plan item),
-  not just a test. ``script-src``/``style-src`` are ``'unsafe-inline'`` by
-  design until then (web/server.py's own ``_CSP`` docstring).
-- "PDF preview actually renders" is written as a real assertion, and is
-  ``xfail`` against today's ``_CSP``: it has no ``object-src`` exception,
-  so it inherits ``default-src 'none'`` and blocks the card's own
-  ``<embed>`` -- exactly the "currently likely broken -- no test catches
-  this" the plan's Phase 3 table flags for SEC-08/3.1 to fix. Recorded
-  here, not silently fixed here -- see this plan's own "Notes on scope not
-  in the source review": widening this phase's scope to also patch the CSP
-  is exactly what that note says not to do.
+Both checks the plan's own TST-06 row lists (a no-inline-script CSP check
+and "PDF preview actually renders") now assert real pass/fail outcomes --
+see ``TestSecurityHeadersCsp``/``TestPdfPreview`` below. Both were
+previously written as a skip/an ``xfail`` respectively, against the
+pre-SEC-08 policy (docs/security-remediation-plan.md Phase 3.1):
+``script-src``/``style-src`` were a blanket ``'unsafe-inline'`` with no
+``object-src`` exception, which both left the "no-inline-script" check with
+nothing real to assert against and left the card's own PDF ``<embed>``
+blocked by the implicit ``default-src 'none'`` fallback (the "currently
+likely broken -- no test catches this" bug the plan's Phase 3 table named
+3.1 to fix). web/csp.py's ``build_csp()`` is what closed both.
 """
 from __future__ import annotations
 
@@ -466,15 +461,6 @@ class TestApprovalDecisionFlow:
 
 
 class TestPdfPreview:
-    @pytest.mark.xfail(
-        reason=(
-            "SEC-08/Phase 3.1 (docs/security-remediation-plan.md) hasn't landed: web/server.py's _CSP has no "
-            "object-src exception, so it inherits default-src 'none' and blocks the card's own <embed "
-            "type=\"application/pdf\">. This is the 'currently likely broken' PDF-preview bug the plan's Phase 3 "
-            "table already names 3.1 to fix -- flagged here, not fixed here (see this module's own docstring)."
-        ),
-        strict=False,
-    )
     def test_pdf_embed_is_not_blocked_by_csp(self, page, local_server):
         server, web_ui = local_server
         _sign_in_local(page, server)
@@ -504,27 +490,82 @@ class TestPdfPreview:
 
 
 # --------------------------------------------------------------------- #
-# CSP: no-inline-script (SEC-08/Phase 3.1 dependency)
+# CSP: no-inline-script (SEC-08/Phase 3.1)
 # --------------------------------------------------------------------- #
 
 
 class TestSecurityHeadersCsp:
-    @pytest.mark.skip(
-        reason=(
-            "Not applicable until SEC-08/Phase 3.1 lands: web/server.py's own _CSP docstring documents "
-            "script-src/style-src 'unsafe-inline' as a deliberate, current choice (approval_window_html.py's/"
-            "approval_list_html.py's inline <script> tags), not a bug -- there is no nonce-based CSP yet for this "
-            "check to assert against. Un-skip once 3.1 migrates both directives off 'unsafe-inline'."
-        ),
-    )
-    def test_inline_scripts_would_be_blocked_under_a_nonce_based_csp(self, page, local_server):
-        """Deliberately unimplemented -- see the class-level skip reason
-        above. Once SEC-08 lands (a per-response nonce on script-src/
-        style-src, no bare 'unsafe-inline'), this should assert the
-        Content-Security-Policy response header carries no 'unsafe-inline'
-        on either directive, and that an inline <script> injected via
-        page.evaluate never executes."""
-        raise NotImplementedError("un-skip and implement once SEC-08/Phase 3.1 lands")
+    def test_script_src_and_style_src_carry_no_bare_unsafe_inline(self, page, local_server):
+        """web/csp.py's build_csp(): script-src and style-src-elem take a
+        per-response nonce, not 'unsafe-inline' -- style-src-attr is the
+        one deliberate exception (see that module's own docstring for why),
+        so this checks the *directive name* 'style-src' exactly, not any
+        occurrence of the substring, to avoid a false pass/fail on
+        style-src-attr's own value."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        response = page.goto(f"{server.base_url}/approvals")
+        csp = response.headers.get("content-security-policy", "")
+        directives = dict(
+            part.strip().split(" ", 1) for part in csp.split(";") if part.strip()
+        )
+        assert "script-src" in directives, csp
+        assert "unsafe-inline" not in directives["script-src"]
+        assert "'nonce-" in directives["script-src"]
+        assert "style-src-elem" in directives, csp
+        assert "unsafe-inline" not in directives["style-src-elem"]
+        assert "'nonce-" in directives["style-src-elem"]
+
+    def test_inline_script_injected_via_dom_never_executes(self, page, local_server):
+        """A script element with no ``nonce`` attribute at all (what any
+        HTML-injection bug would actually produce -- an attacker has no way
+        to know the response's own nonce value) must never run, under the
+        real CSP enforcement only an actual browser applies -- see this
+        module's own docstring on why TestClient can't stand in here."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        page.goto(f"{server.base_url}/approvals")
+        page.evaluate(
+            """() => {
+                window.__pfInjectedRan = false;
+                var s = document.createElement('script');
+                s.textContent = 'window.__pfInjectedRan = true;';
+                document.body.appendChild(s);
+            }"""
+        )
+        # No API waits on a script *not* running -- give the (blocked)
+        # element a moment it would need if it were somehow going to run.
+        page.wait_for_timeout(200)
+        assert page.evaluate("window.__pfInjectedRan") is False
+
+    def test_correctly_nonced_inline_script_still_runs(self, page, local_server):
+        """The negative check above only means something next to a positive
+        one: the CSP isn't simply blocking every inline <script> outright
+        (which would also break the real page) -- a <script> carrying this
+        exact response's own nonce is allowed to run, same as
+        approval_list_html.py's/web_shell.py's own inline scripts already
+        do on every real page load."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        response = page.goto(f"{server.base_url}/approvals")
+        csp = response.headers.get("content-security-policy", "")
+        nonce = next(
+            part.split("'nonce-", 1)[1].rstrip("'")
+            for part in csp.split(";")
+            if part.strip().startswith("script-src")
+        )
+        page.evaluate(
+            """(nonce) => {
+                window.__pfNoncedRan = false;
+                var s = document.createElement('script');
+                s.nonce = nonce;
+                s.textContent = 'window.__pfNoncedRan = true;';
+                document.body.appendChild(s);
+            }""",
+            nonce,
+        )
+        page.wait_for_timeout(200)
+        assert page.evaluate("window.__pfNoncedRan") is True
 
 
 # --------------------------------------------------------------------- #

@@ -12,10 +12,13 @@ from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
 from privacyfence.principal import LOCAL_PRINCIPAL_ID, Principal, current_principal
+from privacyfence.web.csp import build_csp
 from privacyfence.web.server import (
     DEFAULT_PORT,
     WebServer,
+    _parse_host_header,
     _PrincipalScopeMiddleware,
+    _SecurityHeadersMiddleware,
     build_app,
     load_or_create_token,
 )
@@ -37,9 +40,9 @@ def _signed_in(client: TestClient, sessions: LocalSessionStore) -> str:
 
 
 class TestHostAllowlist:
-    def _client(self):
+    def _client(self, allowed_hosts=frozenset({"localhost"})):
         sessions = LocalSessionStore()
-        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, allowed_hosts=frozenset({"localhost"}))
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, allowed_hosts=allowed_hosts)
         client = TestClient(app, base_url="http://localhost")
         _signed_in(client, sessions)
         return client
@@ -55,6 +58,74 @@ class TestHostAllowlist:
     def test_port_suffix_on_the_host_header_is_ignored_for_matching(self):
         r = self._client().get("/approvals", headers={"Host": "localhost:9999"})
         assert r.status_code == 200
+
+    def test_ipv4_host_with_port_matches_the_bare_address(self):
+        client = self._client(allowed_hosts=frozenset({"127.0.0.1"}))
+        r = client.get("/approvals", headers={"Host": "127.0.0.1:9999"})
+        assert r.status_code == 200
+
+    def test_ipv6_literal_host_matches_after_stripping_brackets(self):
+        # SEC-17: the old split(":", 1)[0] returned "[" for this, which
+        # could never be in any real allowlist.
+        client = self._client(allowed_hosts=frozenset({"::1"}))
+        r = client.get("/approvals", headers={"Host": "[::1]"})
+        assert r.status_code == 200
+
+    def test_ipv6_literal_host_with_port_matches_after_stripping_brackets(self):
+        client = self._client(allowed_hosts=frozenset({"::1"}))
+        r = client.get("/approvals", headers={"Host": "[::1]:9999"})
+        assert r.status_code == 200
+
+    def test_malformed_host_header_is_rejected(self):
+        r = self._client().get("/approvals", headers={"Host": "[::1"})
+        assert r.status_code == 400
+
+
+class TestParseHostHeader:
+    """Direct coverage of the RFC-3986-aware parser SEC-17 (docs/security-
+    remediation-plan.md Phase 3 item 3.4) replaced the manual
+    ``split(":", 1)[0]`` with -- TestHostAllowlist above covers it wired
+    into the real middleware, this covers every branch of the parser
+    itself."""
+
+    def test_bare_hostname(self):
+        assert _parse_host_header("localhost") == "localhost"
+
+    def test_hostname_is_lowercased(self):
+        assert _parse_host_header("LocalHost") == "localhost"
+
+    def test_ipv4_without_port(self):
+        assert _parse_host_header("127.0.0.1") == "127.0.0.1"
+
+    def test_ipv4_with_port(self):
+        assert _parse_host_header("127.0.0.1:8080") == "127.0.0.1"
+
+    def test_ipv6_without_port(self):
+        assert _parse_host_header("[::1]") == "::1"
+
+    def test_ipv6_with_port(self):
+        assert _parse_host_header("[::1]:8443") == "::1"
+
+    def test_empty_header_is_rejected(self):
+        assert _parse_host_header("") is None
+
+    def test_unparsable_port_is_rejected(self):
+        assert _parse_host_header("[::1]:not-a-port") is None
+
+    def test_userinfo_is_rejected(self):
+        # A Host header never carries "user@host" -- accepting it would
+        # let an attacker-controlled prefix ride along to a hostname that
+        # happens to be allowed.
+        assert _parse_host_header("attacker@localhost") is None
+
+    def test_path_smuggled_after_the_host_is_rejected(self):
+        assert _parse_host_header("localhost/evil") is None
+
+    def test_query_smuggled_after_the_host_is_rejected(self):
+        assert _parse_host_header("localhost?x=1") is None
+
+    def test_fragment_smuggled_after_the_host_is_rejected(self):
+        assert _parse_host_header("localhost#frag") is None
 
 
 class TestPrincipalScopeMiddleware:
@@ -138,6 +209,155 @@ class TestSecurityHeaders:
         r = TestClient(app, base_url="http://localhost").get("/approvals")  # unauthenticated -> 401
         assert r.status_code == 401
         assert r.headers.get("x-frame-options") == "DENY"
+
+    def test_permissions_policy_denies_unused_powerful_features(self):
+        # SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5).
+        r = self._client().get("/approvals")
+        policy = r.headers.get("permissions-policy", "")
+        assert "camera=()" in policy
+        assert "microphone=()" in policy
+        assert "geolocation=()" in policy
+
+    def test_permissions_policy_leaves_webauthn_at_its_self_default(self):
+        # web/routes_security.py's step-up flow needs these from this same
+        # origin -- see _PERMISSIONS_POLICY's own comment.
+        r = self._client().get("/approvals")
+        policy = r.headers.get("permissions-policy", "")
+        assert "publickey-credentials-get=(self)" in policy
+        assert "publickey-credentials-create=(self)" in policy
+
+    def test_cross_origin_opener_policy_is_same_origin(self):
+        r = self._client().get("/approvals")
+        assert r.headers.get("cross-origin-opener-policy") == "same-origin"
+
+    def test_no_strict_transport_security_in_local_mode(self):
+        # Local mode is plain http://localhost by design (module docstring)
+        # -- sending HSTS there would be at best inert, at worst harmful
+        # (see _SecurityHeadersMiddleware's own docstring).
+        r = self._client().get("/approvals")
+        assert "strict-transport-security" not in r.headers
+
+
+class TestCacheControlOnSensitivePages:
+    """SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): a sweep
+    across every local-mode page that carries session- or approval-specific
+    content, rather than trusting that each route author remembered
+    Cache-Control: no-store on their own -- a future new page that forgets
+    it fails here instead of shipping silently cacheable."""
+
+    def test_the_approvals_page_is_no_store(self):
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions)
+        client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
+        r = client.get("/approvals")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store"
+
+    def test_the_settings_page_is_no_store(self, tmp_path, monkeypatch):
+        controller = _controller(tmp_path, monkeypatch)
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, controller=controller)
+        client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
+        r = client.get("/settings")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store"
+
+    def test_the_unauthorized_landing_page_is_no_store(self):
+        # Regression test: this page names a live bearer-secret command
+        # (session_auth.unauthorized_html) and, before SEC-18, shipped with
+        # no Cache-Control header at all.
+        app = build_app(WebApprovalUI(), token=TOKEN)
+        r = TestClient(app, base_url="http://localhost").get("/approvals")
+        assert r.status_code == 401
+        assert r.headers.get("cache-control") == "no-store"
+
+
+class TestCspNonce:
+    """SEC-08 (docs/security-remediation-plan.md Phase 3.1)."""
+
+    def _client(self):
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions)
+        client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
+        return client
+
+    def test_script_src_and_style_src_elem_carry_a_nonce_not_unsafe_inline(self):
+        r = self._client().get("/approvals")
+        csp = r.headers.get("content-security-policy", "")
+        directives = dict(part.strip().split(" ", 1) for part in csp.split(";") if part.strip())
+        assert "'nonce-" in directives["script-src"]
+        assert "unsafe-inline" not in directives["script-src"]
+        assert "'nonce-" in directives["style-src-elem"]
+        assert "unsafe-inline" not in directives["style-src-elem"]
+        # style-src-attr keeps 'unsafe-inline' deliberately -- see
+        # web/csp.py's own module docstring for why.
+        assert directives["style-src-attr"] == "'unsafe-inline'"
+
+    def test_object_src_and_frame_src_allow_data_uris(self):
+        r = self._client().get("/approvals")
+        csp = r.headers.get("content-security-policy", "")
+        directives = dict(part.strip().split(" ", 1) for part in csp.split(";") if part.strip())
+        assert directives["object-src"] == "data:"
+        assert directives["frame-src"] == "data:"
+
+    def test_nonce_differs_across_separate_requests(self):
+        client = self._client()
+        first = client.get("/approvals").headers["content-security-policy"]
+        second = client.get("/approvals").headers["content-security-policy"]
+        assert first != second
+
+    def test_body_style_and_script_tags_carry_the_response_own_nonce(self):
+        r = self._client().get("/approvals")
+        csp = r.headers.get("content-security-policy", "")
+        nonce = next(
+            part.split("'nonce-", 1)[1].rstrip("'") for part in csp.split(";") if part.strip().startswith("script-src")
+        )
+        assert f'<style nonce="{nonce}">' in r.text
+        assert f'<script nonce="{nonce}">' in r.text
+
+
+class TestSecurityHeadersMiddlewareReplacesNotExtends:
+    """SEC-08 (docs/security-remediation-plan.md Phase 3.1): the middleware
+    used to blindly append its fixed header set, which would have emitted
+    *two* headers of the same name if the wrapped app already set one of
+    them -- this proves it overrides instead."""
+
+    async def _app(self, scope, receive, send):
+        response = JSONResponse({"ok": True}, headers={
+            "X-Frame-Options": "ALLOWALL",
+            "Content-Security-Policy": "default-src *",
+        })
+        await response(scope, receive, send)
+
+    def test_conflicting_headers_from_the_app_are_overridden_not_duplicated(self):
+        app = _SecurityHeadersMiddleware(self._app)
+        client = TestClient(app, base_url="http://localhost")
+        r = client.get("/")
+        assert r.headers.get_list("x-frame-options") == ["DENY"]
+        csp_values = r.headers.get_list("content-security-policy")
+        assert len(csp_values) == 1
+        assert csp_values[0] != "default-src *"
+        assert "default-src 'none'" in csp_values[0]
+
+
+class TestBuildCsp:
+    def test_same_nonce_appears_in_every_nonce_source(self):
+        csp = build_csp("the-nonce")
+        assert csp.count("'nonce-the-nonce'") == 2  # script-src, style-src-elem
+
+    def test_no_bare_style_src_directive(self):
+        # A bare 'style-src' would silently win over style-src-elem/attr in
+        # browsers that don't support the split subdirectives, re-opening
+        # exactly the hole this policy means to close -- see web/csp.py's
+        # own module docstring.
+        csp = build_csp("n")
+        directive_names = [part.strip().split(" ", 1)[0] for part in csp.split(";") if part.strip()]
+        assert "style-src" not in directive_names
+        assert "style-src-elem" in directive_names
+        assert "style-src-attr" in directive_names
 
 
 class TestToken:
