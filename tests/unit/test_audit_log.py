@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from freezegun import freeze_time
 
 from privacyfence.audit_log import (
     APPROVED_LIKE_DECISIONS,
+    CURRENT_SCHEMA_VERSION,
+    GENESIS_HASH,
     AuditEntry,
     AuditLogger,
+    _previous_week,
+    compute_security_config_hash,
     current_week,
     get_audit_logger,
     init_audit_logger,
@@ -277,6 +282,36 @@ class TestExportWeekToExcel:
         assert logger.export_week_to_excel("2026-W28") is None
 
 
+class TestRecentEntries:
+    @freeze_time("2026-07-06")  # ISO week 28 of 2026
+    def test_skips_blank_lines(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week=current_week()))
+        with open(tmp_path / f"{current_week()}.jsonl", "a", encoding="utf-8") as fh:
+            fh.write("\n")
+
+        assert len(logger.recent_entries()) == 1
+
+    @freeze_time("2026-07-06")
+    def test_skips_malformed_lines(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week=current_week()))
+        with open(tmp_path / f"{current_week()}.jsonl", "a", encoding="utf-8") as fh:
+            fh.write("not valid json\n")
+
+        assert len(logger.recent_entries()) == 1
+
+    @freeze_time("2026-07-06")
+    def test_stops_at_current_week_once_limit_reached(self, tmp_path):
+        # Never falls through to the previous week's file once the current
+        # week alone already satisfies `limit`.
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week=current_week()))
+        logger.record(make_entry(week=_previous_week(current_week())))
+
+        assert len(logger.recent_entries(limit=1)) == 1
+
+
 class TestRecentMatches:
     """The request-fingerprint feature: (connector, tool, summary) counted
     against one week's approved-like decisions."""
@@ -287,6 +322,14 @@ class TestRecentMatches:
             logger.record(make_entry(week="2026-W28", decision="approved"))
 
         assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 3
+
+    def test_skips_blank_lines(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(week="2026-W28", decision="approved"))
+        with open(tmp_path / "2026-W28.jsonl", "a", encoding="utf-8") as fh:
+            fh.write("\n")
+
+        assert logger.recent_matches("gmail", "gmail_get_message", "Message from alice@example.com", week="2026-W28") == 1
 
     def test_different_summary_does_not_match(self, tmp_path):
         logger = AuditLogger(str(tmp_path))
@@ -369,3 +412,368 @@ class TestSingletonAccess:
         logger = get_audit_logger()
         assert isinstance(logger, AuditLogger)
         assert str(logger._log_dir) == str(fallback_home / ".privacyfence" / "audit")
+
+
+class TestComputeSecurityConfigHash:
+    def test_deterministic_for_same_config(self):
+        config = {"privacy": {"gmail": "block"}, "pii_detection": {"enabled": True}}
+        assert compute_security_config_hash(config) == compute_security_config_hash(dict(config))
+
+    def test_insensitive_to_key_order(self):
+        a = {"b": 1, "a": 2}
+        b = {"a": 2, "b": 1}
+        assert compute_security_config_hash(a) == compute_security_config_hash(b)
+
+    def test_different_config_gives_different_hash(self):
+        assert compute_security_config_hash({"a": 1}) != compute_security_config_hash({"a": 2})
+
+    def test_returns_sha256_hex_digest(self):
+        digest = compute_security_config_hash({})
+        assert len(digest) == 64
+        int(digest, 16)  # raises ValueError if not valid hex
+
+
+class TestSchemaVersionField:
+    def test_defaults_to_one_for_legacy_reconstruction(self):
+        # An entry reconstructed from a pre-SEC-23 .jsonl line (no
+        # "schema_version" key at all) must report the legacy version, not
+        # the current one -- see AuditEntry.schema_version's own docstring.
+        assert make_entry().schema_version == 1
+
+    def test_record_stamps_current_schema_version(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        entry = make_entry()
+        logger.record(entry)
+        assert entry.schema_version == CURRENT_SCHEMA_VERSION
+
+        line = (tmp_path / "2026-W28.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        assert json.loads(line)["schema_version"] == CURRENT_SCHEMA_VERSION
+
+
+class TestEventIdField:
+    def test_defaults_to_empty_string(self):
+        assert make_entry().event_id == ""
+
+    def test_record_generates_a_unique_event_id(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        a = make_entry()
+        b = make_entry()
+        logger.record(a)
+        logger.record(b)
+        assert a.event_id != ""
+        assert b.event_id != ""
+        assert a.event_id != b.event_id
+
+    def test_record_preserves_a_caller_supplied_event_id(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        entry = make_entry(event_id="caller-chosen-id")
+        logger.record(entry)
+        assert entry.event_id == "caller-chosen-id"
+
+
+class TestDeploymentIdField:
+    def test_defaults_to_empty_string(self):
+        assert make_entry().deployment_id == ""
+
+    def test_record_stamps_the_logger_deployment_id(self, tmp_path):
+        logger = AuditLogger(str(tmp_path), deployment_id="deployment-abc")
+        entry = make_entry()
+        logger.record(entry)
+        assert entry.deployment_id == "deployment-abc"
+
+    def test_record_preserves_a_caller_supplied_deployment_id(self, tmp_path):
+        logger = AuditLogger(str(tmp_path), deployment_id="deployment-abc")
+        entry = make_entry(deployment_id="explicit-id")
+        logger.record(entry)
+        assert entry.deployment_id == "explicit-id"
+
+
+class TestSecurityConfigHashField:
+    def test_defaults_to_empty_string(self):
+        assert make_entry().security_config_hash == ""
+
+    def test_record_stamps_the_logger_security_config_hash(self, tmp_path):
+        logger = AuditLogger(str(tmp_path), security_config_hash="hash-at-startup")
+        entry = make_entry()
+        logger.record(entry)
+        assert entry.security_config_hash == "hash-at-startup"
+
+    def test_set_security_config_hash_affects_future_entries_only(self, tmp_path):
+        logger = AuditLogger(str(tmp_path), security_config_hash="old-hash")
+        first = make_entry()
+        logger.record(first)
+
+        logger.set_security_config_hash("new-hash")
+        second = make_entry()
+        logger.record(second)
+
+        assert first.security_config_hash == "old-hash"
+        assert second.security_config_hash == "new-hash"
+
+    def test_record_preserves_a_caller_supplied_security_config_hash(self, tmp_path):
+        logger = AuditLogger(str(tmp_path), security_config_hash="logger-hash")
+        entry = make_entry(security_config_hash="explicit-hash")
+        logger.record(entry)
+        assert entry.security_config_hash == "explicit-hash"
+
+
+class TestHashChain:
+    """SEC-23's append-integrity mechanism: each entry is HMAC-chained to
+    the one before it, so an edit/insertion/removal after the fact is
+    detectable via verify_chain()."""
+
+    def test_first_entry_chains_from_genesis(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        entry = make_entry()
+        logger.record(entry)
+        assert entry.prev_hash == GENESIS_HASH
+        assert entry.entry_hash != ""
+
+    def test_second_entry_chains_from_first(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        a = make_entry()
+        b = make_entry()
+        logger.record(a)
+        logger.record(b)
+        assert b.prev_hash == a.entry_hash
+        assert b.entry_hash != a.entry_hash
+
+    def test_verify_chain_ok_for_untampered_log(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        for _ in range(3):
+            logger.record(make_entry())
+
+        result = logger.verify_chain("2026-W28")
+        assert result.ok is True
+        assert result.entries_checked == 3
+        assert result.first_break_line is None
+
+    def test_verify_chain_missing_file_is_ok_with_zero_checked(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        result = logger.verify_chain("2099-W01")
+        assert result.ok is True
+        assert result.entries_checked == 0
+
+    def test_verify_chain_detects_altered_entry(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry())
+        logger.record(make_entry())
+
+        week_file = tmp_path / "2026-W28.jsonl"
+        lines = week_file.read_text(encoding="utf-8").splitlines()
+        tampered = json.loads(lines[0])
+        tampered["summary"] = "an attacker changed this"
+        lines[0] = json.dumps(tampered)
+        week_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        result = logger.verify_chain("2026-W28")
+        assert result.ok is False
+        assert result.first_break_line == 1
+        assert "entry_hash" in result.detail
+
+    def test_verify_chain_detects_reordered_entries(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry(summary="first"))
+        logger.record(make_entry(summary="second"))
+
+        week_file = tmp_path / "2026-W28.jsonl"
+        lines = week_file.read_text(encoding="utf-8").splitlines()
+        week_file.write_text("\n".join(reversed(lines)) + "\n", encoding="utf-8")
+
+        result = logger.verify_chain("2026-W28")
+        assert result.ok is False
+        # The reversed file's first line is the *second* entry, which
+        # verifies fine on its own (its own entry_hash still matches its
+        # own content -- only its position changed); the break only
+        # becomes visible one line later, where the (now second) first
+        # entry's prev_hash=GENESIS_HASH no longer matches what line 1's
+        # entry_hash established as the expected chain link.
+        assert result.first_break_line == 2
+
+    def test_verify_chain_detects_malformed_line(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry())
+        with open(tmp_path / "2026-W28.jsonl", "a", encoding="utf-8") as fh:
+            fh.write("not valid json\n")
+
+        result = logger.verify_chain("2026-W28")
+        assert result.ok is False
+        assert result.first_break_line == 2
+        assert "malformed" in result.detail
+
+    def test_verify_chain_skips_legacy_entries_with_no_hash(self, tmp_path):
+        week_file = tmp_path / "2026-W28.jsonl"
+        AuditLogger(str(tmp_path))  # just to create the directory
+        legacy = dict(
+            timestamp="2026-07-06T12:00:00+00:00", week="2026-W28", request_id="",
+            connector="gmail", tool="gmail_get_message", tool_name="Read Gmail message",
+            summary="s", sender="a@example.com", decision="approved",
+            auto_accept_rule="", latency_seconds=1.0,
+        )
+        week_file.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+        logger = AuditLogger(str(tmp_path))
+        result = logger.verify_chain("2026-W28")
+        assert result.ok is True
+        assert result.entries_checked == 1
+
+    def test_chain_key_and_state_persist_across_logger_instances(self, tmp_path):
+        # A daemon restart constructs a brand-new AuditLogger over the same
+        # log_dir -- the chain must keep extending, not silently reset to
+        # GENESIS_HASH, or every restart would look like tampering to
+        # verify_chain().
+        first_logger = AuditLogger(str(tmp_path))
+        first_entry = make_entry()
+        first_logger.record(first_entry)
+
+        second_logger = AuditLogger(str(tmp_path))
+        second_entry = make_entry()
+        second_logger.record(second_entry)
+
+        assert second_entry.prev_hash == first_entry.entry_hash
+
+        result = second_logger.verify_chain("2026-W28")
+        assert result.ok is True
+        assert result.entries_checked == 2
+
+    def test_chain_key_file_is_created(self, tmp_path):
+        AuditLogger(str(tmp_path))
+        assert (tmp_path / ".audit_chain.key").exists()
+
+    def test_chain_state_file_is_created_after_record(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry())
+        assert (tmp_path / ".audit_chain_state.json").exists()
+
+    def test_verify_chain_skips_blank_lines(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry())
+        with open(tmp_path / "2026-W28.jsonl", "a", encoding="utf-8") as fh:
+            fh.write("\n")
+
+        result = logger.verify_chain("2026-W28")
+        assert result.ok is True
+        assert result.entries_checked == 1
+
+
+class TestChainKeyPersistenceFailures:
+    """_load_or_create_chain_key/_load_chain_state/_persist_chain_state's
+    own fail-open posture: an unreadable or unwritable key/state file logs
+    a warning and keeps the daemon running with an in-memory-only key or a
+    fresh chain segment, rather than crashing audit logging entirely."""
+
+    def test_unreadable_existing_key_file_falls_back_to_a_new_key(self, tmp_path, monkeypatch, caplog):
+        key_path = tmp_path / ".audit_chain.key"
+        key_path.write_bytes(b"0" * 32)
+
+        original_read_bytes = Path.read_bytes
+
+        def failing_read_bytes(self):
+            if self == key_path:
+                raise OSError("permission denied")
+            return original_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", failing_read_bytes)
+        with caplog.at_level("WARNING"):
+            logger = AuditLogger(str(tmp_path))
+        assert "Could not read audit chain-integrity key" in caplog.text
+        # Still usable -- a fresh key was generated in its place.
+        logger.record(make_entry())
+
+    def test_key_persist_failure_is_non_fatal(self, tmp_path, monkeypatch, caplog):
+        import privacyfence.audit_log as audit_log_module
+
+        def failing_write(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(audit_log_module, "atomic_write_bytes", failing_write)
+        with caplog.at_level("WARNING"):
+            logger = AuditLogger(str(tmp_path))
+        assert "Could not persist audit chain-integrity key" in caplog.text
+        logger.record(make_entry())  # still works with the in-memory key
+
+    def test_empty_existing_key_file_generates_a_fresh_key(self, tmp_path):
+        (tmp_path / ".audit_chain.key").write_bytes(b"")
+        logger = AuditLogger(str(tmp_path))
+        assert logger._chain_key != b""
+
+    def test_unreadable_chain_state_falls_back_to_genesis(self, tmp_path, monkeypatch, caplog):
+        state_path = tmp_path / ".audit_chain_state.json"
+        state_path.write_text("not valid json", encoding="utf-8")
+
+        with caplog.at_level("WARNING"):
+            logger = AuditLogger(str(tmp_path))
+        assert "Could not read audit chain state" in caplog.text
+        assert logger._last_hash == GENESIS_HASH
+
+    def test_chain_state_missing_last_hash_key_falls_back_to_genesis(self, tmp_path):
+        state_path = tmp_path / ".audit_chain_state.json"
+        state_path.write_text(json.dumps({"count": 3}), encoding="utf-8")
+        logger = AuditLogger(str(tmp_path))
+        assert logger._last_hash == GENESIS_HASH
+
+    def test_state_persist_failure_is_non_fatal(self, tmp_path, monkeypatch, caplog):
+        import privacyfence.audit_log as audit_log_module
+
+        def failing_write(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(audit_log_module, "atomic_write_json", failing_write)
+        logger = AuditLogger(str(tmp_path))
+        with caplog.at_level("WARNING"):
+            logger.record(make_entry())
+        assert "Could not persist audit chain state" in caplog.text
+
+
+class TestForwarding:
+    class _FakeForwarder:
+        def __init__(self):
+            self.submitted: list[dict] = []
+            self.stopped = False
+
+        def submit(self, payload):
+            self.submitted.append(payload)
+
+        def stop(self):
+            self.stopped = True
+
+    def test_record_submits_to_forwarder(self, tmp_path):
+        forwarder = self._FakeForwarder()
+        logger = AuditLogger(str(tmp_path), forwarder=forwarder)
+        logger.record(make_entry())
+        assert len(forwarder.submitted) == 1
+        assert forwarder.submitted[0]["decision"] == "approved"
+
+    def test_record_without_forwarder_does_not_error(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.record(make_entry())  # no forwarder configured -- must not raise
+
+    def test_close_stops_the_forwarder(self, tmp_path):
+        forwarder = self._FakeForwarder()
+        logger = AuditLogger(str(tmp_path), forwarder=forwarder)
+        logger.close()
+        assert forwarder.stopped is True
+
+    def test_close_without_forwarder_does_not_error(self, tmp_path):
+        logger = AuditLogger(str(tmp_path))
+        logger.close()  # no forwarder configured -- must not raise
+
+
+class TestExportIncludesSec23Columns:
+    def test_new_columns_present_with_expected_values(self, tmp_path):
+        pytest.importorskip("openpyxl")
+        import openpyxl
+
+        logger = AuditLogger(str(tmp_path), deployment_id="dep-1", security_config_hash="cfg-1")
+        entry = make_entry()
+        logger.record(entry)
+
+        output = logger.export_week_to_excel("2026-W28")
+        wb = openpyxl.load_workbook(output)
+        ws = wb["Decisions"]
+
+        headers = [ws.cell(row=1, column=c).value for c in range(16, 20)]
+        assert headers == ["Event ID", "Deployment ID", "Security Config Hash", "Integrity Hash"]
+
+        row = [ws.cell(row=2, column=c).value for c in range(16, 20)]
+        assert row == [entry.event_id, "dep-1", "cfg-1", entry.entry_hash]
