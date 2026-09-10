@@ -90,8 +90,9 @@ instance of.
 - A Google Cloud project you can create OAuth clients in. A Google Workspace organization lets you
   restrict sign-in to your own domain (**Internal** consent-screen user type); a plain Google
   account works too, but then access control has to happen at the OAuth consent screen (test-user
-  allowlist, or submitting for verification) since PrivacyFence itself has no separate user
-  allowlist yet — see [§4.1](#41-the-oidc-sign-in-client-required).
+  allowlist, or submitting for verification) unless you also configure PrivacyFence's own
+  `--authz-allowed-domain`/`--authz-required-group` allowlist — see
+  [§4.1](#41-the-oidc-sign-in-client-required) and [§5](#5-build-the-organization-config-bundle).
 - Nothing PrivacyFence-specific installed anywhere yet.
 
 ---
@@ -189,8 +190,10 @@ section (§9.4).
 
 1. **OAuth consent screen** (APIs & Services → OAuth consent screen):
    - **User type**: **Internal** if this is a Google Workspace organization (restricts sign-in to
-     your own domain — the strongest access control available here, since PrivacyFence has no
-     separate email allowlist of its own yet). Otherwise **External**, and see the note below.
+     your own domain at the IdP level — the strongest access control available here). Otherwise
+     **External**, and see the note below; either way, `--authz-allowed-domain`/
+     `--authz-required-group` ([§5](#5-build-the-organization-config-bundle)) let you additionally
+     restrict who PrivacyFence itself admits, on top of whatever the consent screen already does.
    - App name: `PrivacyFence`. No scopes need adding here — `openid email profile` (what
      `org_identity.py` requests) are Google's default, non-sensitive scopes and need no
      verification, unlike the connector scopes in §4.2.
@@ -223,6 +226,16 @@ document lives at `https://accounts.google.com/.well-known/openid-configuration`
 > PrivacyFence gates a feature on `is_admin` yet as of P8 — it's carried through
 > (`Principal.is_admin`) for future use. Leave `--idp-admin-group-claim` unset for a Google IdP;
 > everyone who can sign in is a plain, equally-privileged user.
+
+> **On the app-level allowlist (`--authz-allowed-domain`/`--authz-required-group`, SEC-22):** this
+> is a separate, independent restriction from `admin_group_claim` above — it decides who may sign
+> in at all, not who's an admin — and layers on top of, never replaces, the IdP's own
+> authentication (§4.1's consent-screen restriction is still the first line of defense). A plain
+> Google IdP with no Cloud Identity group-claim configuration can still use `--authz-allowed-domain
+> acme.com`, since it only reads the (always-present) `email` claim —
+> `--authz-required-group`/`--authz-groups-claim` need the same Cloud Identity setup
+> `admin_group_claim` does, since
+> both read group membership off the ID token.
 
 ### 4.2 The Google connector client (optional)
 
@@ -497,14 +510,16 @@ other).
 
 ## 10. Day-to-day admin
 
-- **Adding a user**: nothing to do on the PrivacyFence side. Anyone who can complete the Google
-  sign-in (i.e., anyone your consent screen's Internal/test-user/verification posture from
-  [§4.1](#41-the-oidc-sign-in-client-required) allows through) gets a `Principal` the first time
-  they sign in — access control lives entirely at that layer today, not in a PrivacyFence-side
-  allowlist.
+- **Adding a user**: nothing to do on the PrivacyFence side (beyond, if you've set
+  `--authz-required-group`, adding them to that group at the IdP). Anyone who can complete the
+  Google sign-in (i.e., anyone your consent screen's Internal/test-user/verification posture from
+  [§4.1](#41-the-oidc-sign-in-client-required) allows through) *and* passes any authz allowlist
+  you've configured (`--authz-allowed-domain`/`--authz-required-group`,
+  [§5](#5-build-the-organization-config-bundle)) gets a `Principal` the first time they sign in.
 - **Removing a user**: revoke their access at the IdP (remove them from the Workspace domain, the
-  test-user list, or the relevant Google group) — they simply can't sign in again. Their
-  `~/.privacyfence/users/<id>/` directory on the server is untouched by this; delete it by hand if
+  test-user list, or the relevant Google group) — they simply can't sign in again; removing them
+  from a `--authz-required-group` group, or narrowing `--authz-allowed-domain`, works the same way.
+  Their `~/.privacyfence/users/<id>/` directory on the server is untouched by this; delete it by hand if
   you want their credentials and settings gone too.
 - **Rotating a connector secret** (e.g. the Google connector client secret): rebuild the bundle with
   `--merge` so you don't have to re-specify the IdP section, and redeploy it exactly as in

@@ -240,6 +240,28 @@ def build_parser() -> argparse.ArgumentParser:
              "--idp-admin-group-value it-admins).",
     )
 
+    authz = parser.add_argument_group(
+        "App-level authorization policy (SEC-22, docs/security-remediation-plan.md, Phase 3 item 3.7)",
+    )
+    authz.add_argument(
+        "--authz-allowed-domain", action="append", default=[], metavar="DOMAIN", dest="authz_allowed_domains",
+        help="Only admit a principal whose (IdP-asserted) email is at this domain -- repeat for "
+             "more than one. Layered on top of the IdP's own authentication, not a replacement "
+             "for it. Omit to leave this unrestricted (the default).",
+    )
+    authz.add_argument(
+        "--authz-groups-claim", metavar="CLAIM",
+        help="ID token claim (e.g. \"groups\") whose value --authz-required-group is checked "
+             "against -- required if --authz-required-group is given. Independent of "
+             "--idp-admin-group-claim (a different question: who's an admin, not who may sign in "
+             "at all) even if your IdP happens to use the same claim name for both.",
+    )
+    authz.add_argument(
+        "--authz-required-group", action="append", default=[], metavar="VALUE", dest="authz_required_groups",
+        help="Only admit a principal whose --authz-groups-claim contains one of these -- repeat "
+             "for more than one. Requires --authz-groups-claim.",
+    )
+
     step_up = parser.add_argument_group(
         "WebAuthn step-up (P9, docs/https-connector-refactor-plan.md §10.6/§15 D7)",
     )
@@ -419,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
         bundle.pop("idp", None)
         bundle.pop("step_up", None)
         bundle.pop("download_delivery", None)
+        bundle.pop("authz", None)
     elif any([
         args.server_issuer_url, args.idp_issuer, args.idp_client_id, args.idp_client_secret,
         args.server_tls_cert, args.server_tls_key, args.server_trusted_proxies, args.idp_step_up_acr_values,
@@ -463,6 +486,20 @@ def main(argv: list[str] | None = None) -> int:
             downloads_section["allow_disk_staging"] = False
         bundle["download_delivery"] = downloads_section
 
+    if args.authz_allowed_domains or args.authz_groups_claim or args.authz_required_groups:
+        if bundle.get("mode") != "org":
+            raise SystemExit("--authz-* flags require --mode org (or --merge against an existing org-mode bundle).")
+        if args.authz_required_groups and not args.authz_groups_claim:
+            raise SystemExit("--authz-required-group requires --authz-groups-claim.")
+        authz_section: dict[str, Any] = dict(bundle.get("authz") or {})
+        if args.authz_allowed_domains:
+            authz_section["allowed_domains"] = args.authz_allowed_domains
+        if args.authz_groups_claim:
+            authz_section["groups_claim"] = args.authz_groups_claim
+        if args.authz_required_groups:
+            authz_section["required_groups"] = args.authz_required_groups
+        bundle["authz"] = authz_section
+
     services = [k for k in ("google", "slack", "salesforce", "atlassian") if k in bundle]
     if not services and "unattended_sessions" not in bundle and "mode" not in bundle:
         raise SystemExit(
@@ -492,6 +529,10 @@ def main(argv: list[str] | None = None) -> int:
         summary += f", step_up.enabled={bundle['step_up'].get('enabled', False)}"
     if "download_delivery" in bundle:
         summary += f", download_delivery.allow_disk_staging={bundle['download_delivery'].get('allow_disk_staging', True)}"
+    if "authz" in bundle:
+        n_domains = len(bundle["authz"].get("allowed_domains") or [])
+        n_groups = len(bundle["authz"].get("required_groups") or [])
+        summary += f", authz.allowed_domains={n_domains}, authz.required_groups={n_groups}"
     summary += f", signed={'signature' in bundle}"
     print(f"Wrote {out_path} with: {summary}")
     if bundle.get("mode") == "org":

@@ -566,7 +566,7 @@ def _build_org_app(
     ``StepUpConfig``."""
     from urllib.parse import urlparse
 
-    from ..org_mode import StepUpConfig
+    from ..org_mode import AuthzPolicyConfig, StepUpConfig
     from . import routes_org_approvals, routes_security
 
     extra_routes: list[Route] = []
@@ -602,6 +602,10 @@ def _build_org_app(
         default_next_path = "/connect"
     extra_routes.extend(routes_org_identity.build_routes(
         idp=org.idp, sessions=org.sessions, base_url=org.issuer_url, default_next_path=default_next_path,
+        # SEC-22: derived from org.org_config directly here, the same
+        # "self-contained, cheap re-parse" pattern StepUpConfig below
+        # already uses -- see that call's own comment.
+        policy=AuthzPolicyConfig.from_org_config(org.org_config),
     ))
 
     issuer_host = urlparse(org.issuer_url).hostname or ""

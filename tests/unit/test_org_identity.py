@@ -14,6 +14,7 @@ import requests
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from privacyfence import org_identity as oi
+from privacyfence.org_mode import AuthzPolicyConfig
 from privacyfence.principal import Principal
 
 
@@ -390,3 +391,67 @@ class TestPrincipalFromClaims:
         idp = _idp(admin_group_claim="role", admin_group_values=("admin",))
         p = oi.principal_from_claims({"sub": "s", "role": "admin"}, idp)
         assert p.is_admin is True
+
+
+class TestCheckAuthzPolicy:
+    """SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7)."""
+
+    def _principal(self, **overrides) -> Principal:
+        defaults = dict(id="alice-id", email="alice@acme.com", display_name="Alice")
+        defaults.update(overrides)
+        return Principal(**defaults)
+
+    def test_disabled_policy_admits_everyone(self):
+        oi.check_authz_policy(self._principal(email=""), {}, AuthzPolicyConfig())  # must not raise
+
+    def test_allowed_domain_admits(self):
+        policy = AuthzPolicyConfig(allowed_domains=("acme.com",))
+        oi.check_authz_policy(self._principal(email="alice@acme.com"), {}, policy)  # must not raise
+
+    def test_allowed_domain_is_case_insensitive(self):
+        policy = AuthzPolicyConfig(allowed_domains=("acme.com",))
+        oi.check_authz_policy(self._principal(email="alice@ACME.COM"), {}, policy)  # must not raise
+
+    def test_disallowed_domain_is_denied(self):
+        policy = AuthzPolicyConfig(allowed_domains=("acme.com",))
+        with pytest.raises(oi.AuthorizationDenied):
+            oi.check_authz_policy(self._principal(email="mallory@evil.example.com"), {}, policy)
+
+    def test_no_email_is_denied_when_domains_are_restricted(self):
+        policy = AuthzPolicyConfig(allowed_domains=("acme.com",))
+        with pytest.raises(oi.AuthorizationDenied):
+            oi.check_authz_policy(self._principal(email=""), {}, policy)
+
+    def test_required_group_present_admits(self):
+        policy = AuthzPolicyConfig(groups_claim="groups", required_groups=("privacyfence-users",))
+        claims = {"groups": ["engineers", "privacyfence-users"]}
+        oi.check_authz_policy(self._principal(), claims, policy)  # must not raise
+
+    def test_required_group_absent_is_denied(self):
+        policy = AuthzPolicyConfig(groups_claim="groups", required_groups=("privacyfence-users",))
+        claims = {"groups": ["engineers"]}
+        with pytest.raises(oi.AuthorizationDenied):
+            oi.check_authz_policy(self._principal(), claims, policy)
+
+    def test_required_group_claim_missing_from_token_is_denied(self):
+        policy = AuthzPolicyConfig(groups_claim="groups", required_groups=("privacyfence-users",))
+        with pytest.raises(oi.AuthorizationDenied):
+            oi.check_authz_policy(self._principal(), {}, policy)
+
+    def test_groups_claim_as_a_bare_string_not_a_list(self):
+        policy = AuthzPolicyConfig(groups_claim="role", required_groups=("member",))
+        oi.check_authz_policy(self._principal(), {"role": "member"}, policy)  # must not raise
+
+    def test_both_checks_must_pass(self):
+        policy = AuthzPolicyConfig(
+            allowed_domains=("acme.com",), groups_claim="groups", required_groups=("privacyfence-users",),
+        )
+        # Right domain, wrong group -> still denied.
+        with pytest.raises(oi.AuthorizationDenied):
+            oi.check_authz_policy(
+                self._principal(email="alice@acme.com"), {"groups": ["engineers"]}, policy,
+            )
+        # Both satisfied -> admitted.
+        oi.check_authz_policy(
+            self._principal(email="alice@acme.com"), {"groups": ["privacyfence-users"]}, policy,
+        )

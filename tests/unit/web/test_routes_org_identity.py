@@ -6,6 +6,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from privacyfence import org_identity as oi
+from privacyfence.org_mode import AuthzPolicyConfig
 from privacyfence.principal import Principal
 from privacyfence.web import org_session, routes_org_identity as roi
 
@@ -20,9 +21,9 @@ def _idp() -> oi.IdpConfig:
     )
 
 
-def _app(sessions: org_session.OrgSessionStore | None = None):
+def _app(sessions: org_session.OrgSessionStore | None = None, *, policy: AuthzPolicyConfig | None = None):
     sessions = sessions or org_session.OrgSessionStore()
-    routes = roi.build_routes(idp=_idp(), sessions=sessions, base_url=BASE_URL)
+    routes = roi.build_routes(idp=_idp(), sessions=sessions, base_url=BASE_URL, policy=policy)
     app = Starlette(routes=routes)
     return app, sessions
 
@@ -178,6 +179,30 @@ class TestLoginCallback:
         qs = dict(up.parse_qsl(up.urlparse(r.headers["location"]).query))
         cb = client.get(f"{roi.LOGIN_CALLBACK_PATH}?code=abc&state={qs['state']}")
         assert cb.status_code == 400
+
+    def test_authz_policy_denial_fails_cleanly_and_mints_no_session(self, monkeypatch):
+        # SEC-22: an IdP-authenticated principal PrivacyFence's own policy
+        # rejects gets the same generic failure as any other sign-in
+        # failure -- no session cookie, no 500.
+        policy = AuthzPolicyConfig(allowed_domains=("acme.com",))
+        app, sessions = _app(policy=policy)
+        cb = self._drive_login(
+            client=_client(app), monkeypatch=monkeypatch,
+            claims={"sub": "mallory", "email": "mallory@evil.example.com"},
+        )
+        assert cb.status_code == 400
+        assert org_session.SESSION_COOKIE not in cb.cookies
+        assert sessions.session_count == 0
+
+    def test_authz_policy_admits_a_matching_principal(self, monkeypatch):
+        policy = AuthzPolicyConfig(allowed_domains=("acme.com",))
+        app, sessions = _app(policy=policy)
+        cb = self._drive_login(
+            client=_client(app), monkeypatch=monkeypatch,
+            claims={"sub": "alice", "email": "alice@acme.com"},
+        )
+        assert cb.status_code == 302
+        assert org_session.SESSION_COOKIE in cb.cookies
 
 
 class TestLogout:

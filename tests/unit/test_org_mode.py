@@ -151,6 +151,46 @@ class TestDownloadDeliveryConfigFromOrgConfig:
             org_mode.DownloadDeliveryConfig.from_org_config({"download_delivery": {"link_ttl_seconds": 0}})
 
 
+class TestAuthzPolicyConfigFromOrgConfig:
+    """SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7): an
+    existing org install with no "authz" section keeps admitting every
+    IdP-authenticated principal exactly as before this landed."""
+
+    def test_absent_section_is_disabled_with_defaults(self):
+        config = org_mode.AuthzPolicyConfig.from_org_config({})
+        assert config.enabled is False
+        assert config.allowed_domains == ()
+        assert config.groups_claim == ""
+        assert config.required_groups == ()
+
+    def test_allowed_domains_are_lowercased_and_at_stripped(self):
+        config = org_mode.AuthzPolicyConfig.from_org_config({
+            "authz": {"allowed_domains": ["Acme.com", "@sub.Acme.com"]},
+        })
+        assert config.allowed_domains == ("acme.com", "sub.acme.com")
+        assert config.enabled is True
+
+    def test_required_groups_with_groups_claim(self):
+        config = org_mode.AuthzPolicyConfig.from_org_config({
+            "authz": {"groups_claim": "groups", "required_groups": ["privacyfence-users"]},
+        })
+        assert config.groups_claim == "groups"
+        assert config.required_groups == ("privacyfence-users",)
+        assert config.enabled is True
+
+    def test_required_groups_without_groups_claim_raises(self):
+        with pytest.raises(org_mode.ConfigurationError, match="groups_claim"):
+            org_mode.AuthzPolicyConfig.from_org_config({"authz": {"required_groups": ["admins"]}})
+
+    def test_blank_domain_entries_are_dropped(self):
+        config = org_mode.AuthzPolicyConfig.from_org_config({"authz": {"allowed_domains": ["", "  ", "acme.com"]}})
+        assert config.allowed_domains == ("acme.com",)
+
+    def test_non_dict_authz_section_is_treated_as_absent(self):
+        config = org_mode.AuthzPolicyConfig.from_org_config({"authz": "not-a-dict"})
+        assert config.enabled is False
+
+
 class TestConfigurationError:
     def test_is_a_value_error_subclass(self):
         # So every existing `except ValueError`/`pytest.raises(ValueError)`

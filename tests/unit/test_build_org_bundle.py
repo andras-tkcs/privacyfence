@@ -174,6 +174,68 @@ class TestMainSigningIntegration:
         assert bundle["slack"]["client_id"] == "id1"  # the earlier merge survives
         assert bundle["salesforce"]["consumer_key"] == "ckey"
 
+    def test_authz_flags_write_the_authz_section(self, tmp_path):
+        key_path = tmp_path / "key.pem"
+        build_org_bundle._generate_signing_key(str(key_path))
+        out_path = tmp_path / "org_config.json"
+
+        rc = build_org_bundle.main([
+            "-o", str(out_path), "--mode", "org",
+            "--server-issuer-url", "https://pf.example.com",
+            "--idp-issuer", "https://idp.example.com",
+            "--idp-client-id", "cid", "--idp-client-secret", "csecret",
+            "--authz-allowed-domain", "acme.com", "--authz-allowed-domain", "acme.co.uk",
+            "--authz-groups-claim", "groups", "--authz-required-group", "privacyfence-users",
+            "--sign-key", str(key_path),
+        ])
+
+        assert rc == 0
+        bundle = json.loads(out_path.read_text())
+        assert bundle["authz"] == {
+            "allowed_domains": ["acme.com", "acme.co.uk"],
+            "groups_claim": "groups",
+            "required_groups": ["privacyfence-users"],
+        }
+
+    def test_authz_required_group_without_groups_claim_is_rejected(self, tmp_path):
+        key_path = tmp_path / "key.pem"
+        build_org_bundle._generate_signing_key(str(key_path))
+        out_path = tmp_path / "org_config.json"
+
+        with pytest.raises(SystemExit, match="authz-groups-claim"):
+            build_org_bundle.main([
+                "-o", str(out_path), "--mode", "org",
+                "--server-issuer-url", "https://pf.example.com",
+                "--idp-issuer", "https://idp.example.com",
+                "--idp-client-id", "cid", "--idp-client-secret", "csecret",
+                "--authz-required-group", "privacyfence-users",
+                "--sign-key", str(key_path),
+            ])
+
+    def test_authz_flags_require_mode_org(self, tmp_path):
+        out_path = tmp_path / "org_config.json"
+        with pytest.raises(SystemExit, match="--mode org"):
+            build_org_bundle.main([
+                "-o", str(out_path), "--authz-allowed-domain", "acme.com",
+            ])
+
+    def test_mode_local_clears_a_previously_written_authz_section(self, tmp_path):
+        key_path = tmp_path / "key.pem"
+        build_org_bundle._generate_signing_key(str(key_path))
+        out_path = tmp_path / "org_config.json"
+        build_org_bundle.main([
+            "-o", str(out_path), "--mode", "org",
+            "--server-issuer-url", "https://pf.example.com",
+            "--idp-issuer", "https://idp.example.com",
+            "--idp-client-id", "cid", "--idp-client-secret", "csecret",
+            "--authz-allowed-domain", "acme.com",
+            "--sign-key", str(key_path),
+        ])
+
+        build_org_bundle.main(["-o", str(out_path), "--merge", "--mode", "local"])
+
+        assert "authz" not in json.loads(out_path.read_text())
+
     def test_sign_key_needs_cryptography_gives_a_clear_error(self, tmp_path, monkeypatch):
         # A plain sys.modules["cryptography"] = None wouldn't reliably
         # force ImportError here -- once a submodule has been imported
