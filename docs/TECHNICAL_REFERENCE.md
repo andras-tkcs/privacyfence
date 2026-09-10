@@ -1558,7 +1558,8 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
   time without losing any state. All state (credentials, tokens, filters, queue) lives in the
   daemon, which stays running independently.
 - `/mcp` is a local, loopback-bound (`localhost`) Streamable HTTP endpoint, authenticated by a
-  per-launch random bearer token (`~/.privacyfence/mcp_token`) required on every request; its URL
+  persistent random bearer token (`~/.privacyfence/mcp_token`, reused across daemon restarts, not
+  regenerated per launch) required on every request; its URL
   is discovered via `~/.privacyfence/mcp_url` (see `src/privacyfence/web/server.py`'s module
   docstring). Claude Code talks to it directly; Claude Desktop's shim (`mcpb/shim/`) proxies it over
   stdio, discovering the same `mcp_url`/`mcp_token` files itself, with no config file edited and no
