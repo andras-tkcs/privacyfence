@@ -1,9 +1,12 @@
 """Unit tests for privacyfence.gate.gated_call — the single choke point every
-tool call passes through (auto-accept check -> native popup -> audit log).
+tool call passes through (auto-accept check -> popup -> audit log).
 
-These tests stub out the native popup functions and the auto-accept
-evaluator so the state machine can be exercised deterministically, without
-spawning real osascript dialogs. The one invariant that matters more than
+These tests stub out the popup functions (``gate.show_popup``/``gate.
+show_read_popup`` -- P10 deleted the native AppKit implementation behind
+them, so they now delegate to whichever ``ApprovalUI`` is current, i.e.
+``WebApprovalUI``) and the auto-accept evaluator so the state machine can
+be exercised deterministically, without spawning a real approval surface.
+The one invariant that matters more than
 any individual branch: gated_call must never return raw_data when
 filtered_data differs from it -- that's the actual privacy boundary.
 """
@@ -2278,10 +2281,10 @@ class TestAuditGapSafety:
 
 class TestUnattendedMode:
     """gate.is_unattended()/unattended_scope() back the fail-fast path for
-    scheduled/unattended Cowork tasks: ipc_server.py wraps a request in
-    unattended_scope(True) when its connection called privacyfence_begin_
-    unattended_session(). See docs/TECHNICAL_REFERENCE.md's "Scheduled /
-    unattended Cowork tasks" section.
+    scheduled/unattended Cowork tasks: web/mcp_dispatch.py's McpDispatcher.
+    call() wraps a request in unattended_scope(True) when its session
+    called privacyfence_begin_unattended_session(). See docs/TECHNICAL_
+    REFERENCE.md's "Scheduled / unattended Cowork tasks" section.
 
     The one invariant that matters more than any individual branch: this
     must never change what auto-accepts -- only what happens when nothing
@@ -2395,8 +2398,8 @@ class TestUnattendedMode:
 
 class TestClaudeReason:
     """The mandatory "reason" ToolSpec param, carried the same way
-    is_unattended() is: a contextvar set by ipc_server.py, read
-    internally by gated_call() via
+    is_unattended() is: a contextvar set by web/mcp_dispatch.py's
+    McpDispatcher.call(), read internally by gated_call() via
     current_reason() -- no caller passes it as an explicit kwarg."""
 
     async def test_reason_scope_value_reaches_the_audit_entry(self, monkeypatch, audit_dir):

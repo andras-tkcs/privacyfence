@@ -142,8 +142,9 @@ class TooManyPendingApprovalsError(RuntimeError):
 
 def canonical_key(connector: str, tool: str, args: dict[str, Any] | None) -> str:
     """The decision-ledger / coalescing key: ``(connector, tool,
-    canonical(args))``. Same shape ipc_server.py's and mcp_dispatch.py's own
-    retry-dedupe keys already use -- already retry-stable, since every
+    canonical(args))``. Same shape mcp_dispatch.py's own retry-dedupe key
+    uses (and ipc_server.py's did, before P5 retired it) -- already
+    retry-stable, since every
     caller into gate.gated_call() has "reason" popped out of ``args`` before
     it gets here (see gate.py's ``reason_scope`` docstring), so re-issuing
     the identical tool call always reproduces the identical key.
@@ -154,10 +155,11 @@ def canonical_key(connector: str, tool: str, args: dict[str, Any] | None) -> str
 def is_pending_result(result: Any) -> bool:
     """True for exactly the shape gate.py's ``_pending_result()`` returns
     (``{"status": "approval_pending", ...}``) -- the one gated_call() result
-    shape that is not a real answer yet. Both ipc_server.py's and
-    mcp_dispatch.py's own retry-dedupe caches (a pre-P3 mechanism, built
-    for "reuse the answer to an identical in-flight or just-finished call")
-    check this before caching a completed result: caching a *pending*
+    shape that is not a real answer yet. mcp_dispatch.py's own retry-dedupe
+    cache (a pre-P3 mechanism, built for "reuse the answer to an identical
+    in-flight or just-finished call" -- ipc_server.py's had the same check
+    before P5 retired it) checks this before caching a completed result:
+    caching a *pending*
     result would mean the identical re-call Claude is supposed to make to
     actually collect the decision (§5.2 point 6) just gets handed the same
     stale "still pending" blob back for up to that cache's own TTL, instead
