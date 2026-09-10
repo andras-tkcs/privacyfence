@@ -139,6 +139,69 @@ class TestSecurityHeaders:
         assert r.status_code == 401
         assert r.headers.get("x-frame-options") == "DENY"
 
+    def test_permissions_policy_denies_unused_powerful_features(self):
+        # SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5).
+        r = self._client().get("/approvals")
+        policy = r.headers.get("permissions-policy", "")
+        assert "camera=()" in policy
+        assert "microphone=()" in policy
+        assert "geolocation=()" in policy
+
+    def test_permissions_policy_leaves_webauthn_at_its_self_default(self):
+        # web/routes_security.py's step-up flow needs these from this same
+        # origin -- see _PERMISSIONS_POLICY's own comment.
+        r = self._client().get("/approvals")
+        policy = r.headers.get("permissions-policy", "")
+        assert "publickey-credentials-get=(self)" in policy
+        assert "publickey-credentials-create=(self)" in policy
+
+    def test_cross_origin_opener_policy_is_same_origin(self):
+        r = self._client().get("/approvals")
+        assert r.headers.get("cross-origin-opener-policy") == "same-origin"
+
+    def test_no_strict_transport_security_in_local_mode(self):
+        # Local mode is plain http://localhost by design (module docstring)
+        # -- sending HSTS there would be at best inert, at worst harmful
+        # (see _SecurityHeadersMiddleware's own docstring).
+        r = self._client().get("/approvals")
+        assert "strict-transport-security" not in r.headers
+
+
+class TestCacheControlOnSensitivePages:
+    """SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): a sweep
+    across every local-mode page that carries session- or approval-specific
+    content, rather than trusting that each route author remembered
+    Cache-Control: no-store on their own -- a future new page that forgets
+    it fails here instead of shipping silently cacheable."""
+
+    def test_the_approvals_page_is_no_store(self):
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions)
+        client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
+        r = client.get("/approvals")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store"
+
+    def test_the_settings_page_is_no_store(self, tmp_path, monkeypatch):
+        controller = _controller(tmp_path, monkeypatch)
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, controller=controller)
+        client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
+        r = client.get("/settings")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store"
+
+    def test_the_unauthorized_landing_page_is_no_store(self):
+        # Regression test: this page names a live bearer-secret command
+        # (session_auth.unauthorized_html) and, before SEC-18, shipped with
+        # no Cache-Control header at all.
+        app = build_app(WebApprovalUI(), token=TOKEN)
+        r = TestClient(app, base_url="http://localhost").get("/approvals")
+        assert r.status_code == 401
+        assert r.headers.get("cache-control") == "no-store"
+
 
 class TestToken:
     def test_generates_and_persists_a_token(self, tmp_path, monkeypatch):
