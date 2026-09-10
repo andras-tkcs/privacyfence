@@ -252,3 +252,108 @@ class TestMainSigningIntegration:
 
         with pytest.raises(SystemExit, match="pip install cryptography"):
             build_org_bundle._generate_signing_key(str(tmp_path / "key.pem"))
+
+
+class TestAuditForwardingFlags:
+    """SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6):
+    org_config.json's "audit_forwarding" section, built from
+    --audit-forwarding-* flags."""
+
+    def _sign_key(self, tmp_path):
+        key_path = tmp_path / "key.pem"
+        build_org_bundle._generate_signing_key(str(key_path))
+        return key_path
+
+    def _org_mode_args(self, tmp_path, *extra):
+        return [
+            "-o", str(tmp_path / "org_config.json"), "--mode", "org",
+            "--server-issuer-url", "https://pf.example.com",
+            "--idp-issuer", "https://idp.example.com",
+            "--idp-client-id", "cid", "--idp-client-secret", "csecret",
+            "--sign-key", str(self._sign_key(tmp_path)),
+            *extra,
+        ]
+
+    def test_requires_org_mode(self, tmp_path):
+        with pytest.raises(SystemExit, match="require --mode org"):
+            build_org_bundle.main([
+                "-o", str(tmp_path / "org_config.json"),
+                "--enable-audit-forwarding", "--audit-forwarding-syslog-host", "siem.example.com",
+            ])
+
+    def test_syslog_kind_writes_full_section(self, tmp_path):
+        rc = build_org_bundle.main(self._org_mode_args(
+            tmp_path,
+            "--enable-audit-forwarding", "--audit-forwarding-kind", "syslog",
+            "--audit-forwarding-syslog-host", "siem.example.com",
+            "--audit-forwarding-syslog-port", "601",
+            "--audit-forwarding-syslog-protocol", "udp",
+        ))
+        assert rc == 0
+        bundle = json.loads((tmp_path / "org_config.json").read_text())
+        assert bundle["audit_forwarding"] == {
+            "enabled": True, "kind": "syslog",
+            "syslog": {"host": "siem.example.com", "port": 601, "protocol": "udp"},
+        }
+
+    def test_syslog_kind_without_host_is_rejected(self, tmp_path):
+        with pytest.raises(SystemExit, match="audit-forwarding-syslog-host"):
+            build_org_bundle.main(self._org_mode_args(tmp_path, "--enable-audit-forwarding"))
+
+    def test_http_kind_writes_full_section(self, tmp_path):
+        rc = build_org_bundle.main(self._org_mode_args(
+            tmp_path,
+            "--enable-audit-forwarding", "--audit-forwarding-kind", "http",
+            "--audit-forwarding-http-url", "https://siem.example.com/ingest",
+            "--audit-forwarding-http-bearer-token-env", "SIEM_TOKEN",
+        ))
+        assert rc == 0
+        bundle = json.loads((tmp_path / "org_config.json").read_text())
+        assert bundle["audit_forwarding"] == {
+            "enabled": True, "kind": "http",
+            "http": {"url": "https://siem.example.com/ingest", "bearer_token_env": "SIEM_TOKEN"},
+        }
+
+    def test_http_kind_without_url_is_rejected(self, tmp_path):
+        with pytest.raises(SystemExit, match="audit-forwarding-http-url"):
+            build_org_bundle.main(self._org_mode_args(
+                tmp_path, "--enable-audit-forwarding", "--audit-forwarding-kind", "http",
+            ))
+
+    def test_disable_flag_turns_it_back_off_on_merge(self, tmp_path):
+        args = self._org_mode_args(
+            tmp_path,
+            "--enable-audit-forwarding", "--audit-forwarding-syslog-host", "siem.example.com",
+        )
+        build_org_bundle.main(args)
+        key_path = tmp_path / "key.pem"  # written by _org_mode_args' own _sign_key() above
+
+        rc = build_org_bundle.main([
+            "-o", str(tmp_path / "org_config.json"), "--merge", "--disable-audit-forwarding",
+            "--sign-key", str(key_path),
+        ])
+        assert rc == 0
+        bundle = json.loads((tmp_path / "org_config.json").read_text())
+        assert bundle["audit_forwarding"]["enabled"] is False
+        # The rest of the section (host, etc.) survives -- only "enabled" flips.
+        assert bundle["audit_forwarding"]["syslog"]["host"] == "siem.example.com"
+
+    def test_local_mode_strips_any_existing_section(self, tmp_path):
+        args = self._org_mode_args(
+            tmp_path,
+            "--enable-audit-forwarding", "--audit-forwarding-syslog-host", "siem.example.com",
+        )
+        build_org_bundle.main(args)
+
+        rc = build_org_bundle.main([
+            "-o", str(tmp_path / "org_config.json"), "--merge", "--mode", "local",
+        ])
+        assert rc == 0
+        bundle = json.loads((tmp_path / "org_config.json").read_text())
+        assert "audit_forwarding" not in bundle
+
+    def test_summary_line_reports_enabled_state(self, tmp_path, capsys):
+        build_org_bundle.main(self._org_mode_args(
+            tmp_path, "--enable-audit-forwarding", "--audit-forwarding-syslog-host", "siem.example.com",
+        ))
+        assert "audit_forwarding.enabled=True" in capsys.readouterr().out

@@ -92,11 +92,13 @@ def build_routes(*, sessions: OrgSessionStore, store: DownloadStagingStore | Non
         # never logged, never persisted server-side) is the primary
         # defense either way -- this is belt-and-suspenders.
         if not org_session.check_origin(request):
-            return PlainTextResponse("Cross-origin request rejected.", status_code=403)
+            return PlainTextResponse(
+                "Cross-origin request rejected.", status_code=403, headers={"Cache-Control": "no-store"},
+            )
 
         token = _decode_token(request.path_params["token"])
         if token is None:
-            return PlainTextResponse("Not found.", status_code=404)
+            return PlainTextResponse("Not found.", status_code=404, headers={"Cache-Control": "no-store"})
 
         registry = store or get_download_staging_store()
         result = registry.claim(token, principal.id)
@@ -104,8 +106,12 @@ def build_routes(*, sessions: OrgSessionStore, store: DownloadStagingStore | Non
             # Missing, expired, wrong-principal, or already-claimed --
             # deliberately indistinguishable (download_staging.claim's own
             # docstring), so this endpoint never discloses which case
-            # applies to an attacker guessing tokens.
-            return PlainTextResponse("Not found.", status_code=404)
+            # applies to an attacker guessing tokens. SEC-18 (docs/
+            # security-remediation-plan.md, Phase 3 item 3.5): no-store even
+            # on this 404 -- a shared cache is free to key on the full path,
+            # and this path (the token itself) is a one-time credential a
+            # cache has no business retaining a response for either way.
+            return PlainTextResponse("Not found.", status_code=404, headers={"Cache-Control": "no-store"})
 
         data, name, mime_type = result
         _audit_staged_download_served(principal.id, name, len(data))

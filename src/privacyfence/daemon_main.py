@@ -83,12 +83,18 @@ from typing import Any
 
 import yaml
 
-from . import org_bundle_signing, org_mode
+from . import audit_forwarding, org_bundle_signing, org_mode
 from .paths import data_dir, org_dir, user_dir
 from .principal import LOCAL_PRINCIPAL_ID, current_principal
 from .app_credentials import telegram_app_credentials
 from .approval_ui import init_approval_ui
-from .audit_log import AuditEntry, current_week, get_audit_logger, init_audit_logger
+from .audit_log import (
+    AuditEntry,
+    compute_security_config_hash,
+    current_week,
+    get_audit_logger,
+    init_audit_logger,
+)
 from .auto_accept import (
     init_config_path,
     migrate_telegram_search_operation_key,
@@ -399,6 +405,40 @@ def log_org_config_bundle_hash(org_config: dict[str, Any]) -> None:
         ))
     except Exception as exc:
         logger.warning("Audit log write failed for organization config startup hash: %s", exc)
+
+
+def get_or_create_deployment_id() -> str:
+    """SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6): a
+    stable, opaque identifier for *this installation* -- not per-principal,
+    and not re-generated across restarts -- stamped onto every audit entry
+    (audit_log.AuditEntry.deployment_id, filled in by AuditLogger.record())
+    so a centralized collection of entries -- forwarded (audit_forwarding.py)
+    or manually aggregated -- can tell which employee machine or org-mode
+    server produced a given decision. Persisted once at
+    ``data_dir()/deployment_id`` (install-wide, like ``org_dir()``'s own
+    bundle -- not per-principal like ``user_dir()``, since one daemon
+    process is one deployment regardless of how many principals it serves
+    in org mode) and read back on every later startup. A random hex id,
+    not a hostname/MAC address -- it identifies "which install", not
+    anything about the machine itself.
+    """
+    path = data_dir() / "deployment_id"
+    try:
+        if path.exists():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+    except OSError as exc:
+        logger.warning("Could not read deployment id at %s: %s", path, exc)
+    new_id = uuid.uuid4().hex
+    try:
+        atomic_write_text(str(path), new_id)
+    except OSError as exc:
+        logger.warning(
+            "Could not persist deployment id at %s: %s -- a new one will be generated next "
+            "startup", path, exc,
+        )
+    return new_id
 
 
 def check_storage_permissions(org_mode_active: bool) -> None:
@@ -1311,7 +1351,28 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     for warning in check_consistency_warnings():
         logger.warning(warning)
 
-    audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
+    # SEC-23: centralized forwarding is org-mode-only (see
+    # org_mode.AuditForwardingConfig's own docstring) -- a local-mode
+    # install's org_config.json could theoretically carry an
+    # "audit_forwarding" section, but there is no "centralize" to speak of
+    # for a single employee's own machine, so it's ignored outside org
+    # mode regardless of what the section says.
+    audit_forwarder = None
+    audit_forwarding_config = org_mode.AuditForwardingConfig.from_org_config(org_config)
+    if audit_forwarding_config.enabled and org_mode.resolve_mode(org_config) == "org":
+        try:
+            sender = audit_forwarding.build_sender(audit_forwarding_config)
+            audit_forwarder = audit_forwarding.AuditForwarder(sender)
+            logger.info("Audit-log forwarding enabled (%s)", audit_forwarding_config.kind)
+        except Exception as exc:
+            logger.warning("Could not start audit-log forwarding -- continuing without it: %s", exc)
+
+    audit_logger = init_audit_logger(
+        str(Path(data_dir()) / "logs" / "audit"),
+        deployment_id=get_or_create_deployment_id(),
+        security_config_hash=compute_security_config_hash(config),
+        forwarder=audit_forwarder,
+    )
     audit_logger.export_all_pending()
 
     # log_org_config_bundle_hash() needs the audit logger initialized above
@@ -1376,6 +1437,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     except KeyboardInterrupt:
         logger.info("Interrupted; shutting down")
     finally:
+        audit_logger.close()
         _release_instance_lock()
     return 0
 

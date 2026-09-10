@@ -218,6 +218,92 @@ class DownloadDeliveryConfig:
         )
 
 
+AuditForwardingKind = Literal["syslog", "http"]
+DEFAULT_AUDIT_FORWARDING_KIND: AuditForwardingKind = "syslog"
+
+SyslogProtocol = Literal["udp", "tcp"]
+DEFAULT_SYSLOG_PROTOCOL: SyslogProtocol = "tcp"
+# IANA's syslog-tls port (RFC 5425), not 514 (RFC 5424's plaintext-only
+# default) -- see audit_forwarding.py's own module docstring for why this
+# module doesn't speak TLS itself and expects this port to be fronted by a
+# TLS-terminating relay when that matters.
+DEFAULT_SYSLOG_PORT = 6514
+
+
+@dataclass(frozen=True)
+class AuditForwardingConfig:
+    """SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6): org
+    mode's centralized audit-log forwarding destination. Lives in
+    ``org_config.json``'s ``audit_forwarding`` section, org-mode-only like
+    ``ServerConfig``/``StepUpConfig``/``DownloadDeliveryConfig`` above --
+    local mode never looks at this at all (there is no "centralize" to
+    speak of for a single employee's own machine); see daemon_main.py's
+    ``run_app`` for the ``resolve_mode(org_config) == "org"`` gate.
+
+    Forwarding is *additional* visibility, never a replacement for the
+    local audit log ``audit_log.py``'s ``AuditLogger`` always writes --
+    that JSONL file (with its own append-integrity hash chain, SEC-23's
+    other half, always on regardless of this config) stays the
+    authoritative record even when forwarding is enabled and even when a
+    specific entry fails to forward. See ``audit_forwarding.py`` for what
+    each ``kind`` actually sends on the wire.
+    """
+
+    enabled: bool = False
+    kind: AuditForwardingKind = DEFAULT_AUDIT_FORWARDING_KIND
+    syslog_host: str = ""
+    syslog_port: int = DEFAULT_SYSLOG_PORT
+    syslog_protocol: SyslogProtocol = DEFAULT_SYSLOG_PROTOCOL
+    http_url: str = ""
+    # Name of an environment variable *this daemon's own process*  reads a
+    # bearer token from at forward-send time -- never itself stored in
+    # org_config.json, so a leaked or mis-shared bundle doesn't also leak
+    # the SIEM credential (the same reasoning behind every OAuth client
+    # secret in this file being a real secret, just via env var since
+    # there's no build-time secrets store equivalent for an IT-run
+    # server's own SIEM API key).
+    http_bearer_token_env: str = ""
+
+    @staticmethod
+    def from_org_config(org_config: dict[str, Any]) -> "AuditForwardingConfig":
+        raw = org_config.get("audit_forwarding")
+        raw = raw if isinstance(raw, dict) else {}
+        enabled = bool(raw.get("enabled", False))
+        kind = raw.get("kind", DEFAULT_AUDIT_FORWARDING_KIND)
+        if kind not in ("syslog", "http"):
+            raise ConfigurationError(
+                f"org_config.json's \"audit_forwarding\".\"kind\" must be \"syslog\" or \"http\", "
+                f"got {kind!r}"
+            )
+        syslog_raw = raw.get("syslog")
+        syslog_raw = syslog_raw if isinstance(syslog_raw, dict) else {}
+        http_raw = raw.get("http")
+        http_raw = http_raw if isinstance(http_raw, dict) else {}
+
+        syslog_protocol = syslog_raw.get("protocol", DEFAULT_SYSLOG_PROTOCOL)
+        if syslog_protocol not in ("udp", "tcp"):
+            raise ConfigurationError(
+                f"org_config.json's \"audit_forwarding\".\"syslog\".\"protocol\" must be \"udp\" "
+                f"or \"tcp\", got {syslog_protocol!r}"
+            )
+        http_url = str(http_raw.get("url", "") or "")
+        if enabled and kind == "http" and http_url and not http_url.startswith("https://"):
+            raise ConfigurationError(
+                "org_config.json's \"audit_forwarding\".\"http\".\"url\" must use https:// -- "
+                "audit entries are sensitive, and this endpoint is otherwise reached over "
+                "plaintext HTTP."
+            )
+        return AuditForwardingConfig(
+            enabled=enabled,
+            kind=kind,
+            syslog_host=str(syslog_raw.get("host", "") or ""),
+            syslog_port=int(syslog_raw.get("port", DEFAULT_SYSLOG_PORT)),
+            syslog_protocol=syslog_protocol,
+            http_url=http_url,
+            http_bearer_token_env=str(http_raw.get("bearer_token_env", "") or ""),
+        )
+
+
 @dataclass(frozen=True)
 class AuthzPolicyConfig:
     """SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7): an
@@ -279,17 +365,23 @@ class AuthzPolicyConfig:
 
 
 __all__ = [
+    "AuditForwardingConfig",
+    "AuditForwardingKind",
     "AuthzPolicyConfig",
     "ConfigurationError",
+    "DEFAULT_AUDIT_FORWARDING_KIND",
     "DEFAULT_INLINE_MAX_BYTES",
     "DEFAULT_LINK_TTL_SECONDS",
     "DEFAULT_MODE",
     "DEFAULT_RP_NAME",
     "DEFAULT_STEP_UP_SCOPE",
+    "DEFAULT_SYSLOG_PORT",
+    "DEFAULT_SYSLOG_PROTOCOL",
     "DownloadDeliveryConfig",
     "Mode",
     "ServerConfig",
     "StepUpConfig",
     "StepUpScope",
+    "SyslogProtocol",
     "resolve_mode",
 ]

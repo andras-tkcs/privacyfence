@@ -3,22 +3,79 @@
 Entries are appended to JSON-lines files in logs/audit/YYYY-WNN.jsonl
 (one file per ISO week). A weekly Excel export (openpyxl) is generated
 at daemon startup for any week that has a .jsonl but no .xlsx yet.
+
+SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6) added
+append-integrity to that JSONL file: every entry is chained to the one
+before it with a keyed hash (HMAC-SHA256, see AuditLogger._compute_entry_
+hash), so a line inserted, edited, or removed after the fact -- without
+also holding this install's own signing key (AuditLogger's
+``.audit_chain.key``, generated on first use and never itself written
+into the log it protects) -- breaks the chain in a way ``verify_chain()``
+(or ``scripts/verify_audit_log.py``) detects. It also added: an explicit,
+monotonically-increasing ``schema_version`` per entry (AuditEntry.
+schema_version); a stable ``event_id`` unique to that one JSONL line
+(distinct from ``request_id``, which is deliberately *shared* across a
+deferred-approval's "pending" and its later "decided" entry -- see
+AuditEntry.decision's own docstring); a per-install ``deployment_id``
+(daemon_main.get_or_create_deployment_id()) so entries centrally
+forwarded or aggregated from multiple machines/servers can be told apart;
+and a per-entry ``security_config_hash`` fingerprinting the privacy
+policy (settings.yaml) in effect when that decision was recorded (see
+compute_security_config_hash() below). Centralized forwarding of these
+entries to a syslog/SIEM/OTLP collector -- SEC-23's other half, for org
+mode -- lives in audit_forwarding.py; AuditLogger.record() calls into it
+but doesn't implement any transport itself.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
+import secrets
 import threading
+import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from . import paths
 from .principal import LOCAL_PRINCIPAL_ID, PrincipalRegistry, current_principal
+from .secure_files import atomic_write_bytes, atomic_write_json, secure_mkdir
+
+if TYPE_CHECKING:
+    from .audit_forwarding import AuditForwarder
 
 logger = logging.getLogger(__name__)
+
+# Bumped whenever AuditEntry's field set changes in a way a downstream
+# consumer (the Excel export, a forwarded-log parser, a hand-rolled jq
+# pipeline over the .jsonl files) would need to know about. An entry
+# written before this field existed at all (schema_version wasn't
+# recorded until SEC-23) reconstructs with AuditEntry's own default (1)
+# rather than this constant -- see AuditEntry.schema_version's docstring.
+# Bump this, and add a line to the history below, the next time a field is
+# added, renamed, or repurposed.
+#   1 -- implicit, undocumented shape (every entry before SEC-23)
+#   2 -- SEC-23: + schema_version, event_id, deployment_id,
+#        security_config_hash, prev_hash, entry_hash
+CURRENT_SCHEMA_VERSION = 2
+
+# The hash chain's own root -- what the very first entry this install ever
+# records (or the first one after a chain-state file goes missing, e.g. a
+# restored-from-backup audit directory with no ``.audit_chain_state.json``
+# alongside it) reports as its ``prev_hash``. Deliberately the same shape
+# (64 lowercase hex characters) as a real SHA-256 digest so nothing
+# downstream needs a special case for "this is the start of a chain, not a
+# broken link" -- verify_chain() treats a segment starting at this value,
+# or one with no chain fields at all (pre-SEC-23 data), as valid.
+GENESIS_HASH = "0" * 64
+
+_CHAIN_KEY_FILENAME = ".audit_chain.key"
+_CHAIN_STATE_FILENAME = ".audit_chain_state.json"
 
 # Decisions where the AI actually received the data or the write went
 # through. Used by AuditLogger.recent_matches() below to count how many
@@ -67,37 +124,46 @@ class AuditEntry:
                             #  way: no data was ever released on this request_id's strength.)
                             # ("error": gate.py's gated_call exited without reaching a normal decision
                             #  branch -- a fallback so an unanticipated failure still leaves a trail)
-                            # ("cancelled": the bridge told the daemon to give up on this request
-                            #  (ipc.py's "cancel" method) -- the MCP client that issued the
-                            #  corresponding tool call gave up on it first, most often because it
-                            #  timed out. Distinct from "error": an expected outcome, not a bug.)
+                            # ("cancelled": the MCP client that issued the corresponding tool call
+                            #  gave up on it first, most often because it timed out -- its request
+                            #  task is cancelled when the Streamable HTTP connection drops (see
+                            #  gate.py's own CancelledError handling). Distinct from "error": an
+                            #  expected outcome, not a bug.)
                             # ("denied_unattended": gate.py denied the call without ever prompting,
                             #  because the connection was in an unattended session and no auto-accept
                             #  rule matched -- distinct from "rejected", which is a human's own Deny.
                             #  Also used by gate.py's propose_rule_change() for the same reason)
-                            # ("policy_check": ipc_server.py's check_policy handler -- a preflight
-                            #  question, not a real decision; recorded for pattern-spotting only)
-                            # ("rules_listed": ipc_server.py's list_rules handler -- not a decision
-                            #  either, but the full current rule/grant set was disclosed, worth its
-                            #  own record for the same pattern-spotting reason as "policy_check")
+                            # ("policy_check": web/mcp_dispatch.py's McpDispatcher.check_policy --
+                            #  a preflight question, not a real decision; recorded for
+                            #  pattern-spotting only)
+                            # ("rules_listed": web/mcp_dispatch.py's McpDispatcher.list_rules -- not
+                            #  a decision either, but the full current rule/grant set was disclosed,
+                            #  worth its own record for the same pattern-spotting reason as
+                            #  "policy_check")
                             # ("org_config_startup": SEC-05 interim -- daemon_main.py's
                             #  log_org_config_bundle_hash(), recorded once per daemon startup that
                             #  finds an org_config.json installed at all, carrying its sha256 in
                             #  `summary` so a tampered bundle between one startup and the next is
                             #  detectable by diffing hashes even on an install that hasn't adopted
                             #  full bundle signing -- see org_bundle_signing.py)
-                            # ("unattended_session_started"/"_ended": ipc_server.py's begin/end_
-                            #  unattended_session handlers, and the same on disconnect cleanup --
-                            #  this connection's gate posture changed, which is worth a record of
-                            #  its own even though no specific tool call was involved)
+                            # ("unattended_session_started"/"_ended": web/mcp_dispatch.py's
+                            #  McpDispatcher.begin_unattended_session/end_unattended_session, and
+                            #  the same on disconnect cleanup -- this session's gate posture
+                            #  changed, which is worth a record of its own even though no specific
+                            #  tool call was involved)
                             # ("rule_changed_via_bridge_proposal"/"rule_removed_via_bridge_proposal"/
                             #  "grant_changed_via_bridge_proposal"/"grant_removed_via_bridge_proposal":
-                            #  gate.py's propose_rule_change() -- a bridge-initiated auto_accept_rules/
+                            #  gate.py's propose_rule_change() -- a Claude-initiated auto_accept_rules/
                             #  auto_accept_grants edit that a human confirmed via the same
                             #  show_rule_confirmation_popup() the "Always allow" flow uses, and that
                             #  actually changed something (config's own `changed` return value was
                             #  True). "rejected" is reused, not a new value, when the human declines
-                            #  instead)
+                            #  instead. The "_via_bridge_proposal" name is historical -- it predates
+                            #  P5's retirement of the bridge, and this is stored, already-written
+                            #  audit data, so the string itself is not being renamed here (see
+                            #  docs/security-remediation-plan.md's ORP-06 for that call); it still
+                            #  means "Claude proposed this via the MCP meta-tool", now over ``/mcp``
+                            #  rather than the bridge socket)
                             # ("bridge_proposal_no_op": same propose_rule_change() confirmation flow,
                             #  but the human's "yes" didn't actually change anything -- e.g. Claude
                             #  proposed removing a rule/grant value that was already gone. Distinct
@@ -133,8 +199,9 @@ class AuditEntry:
                               # gate.py's reason_scope), or the "reason" param on the three
                               # privacyfence_* meta-tools for "policy_check"/
                               # "unattended_session_started"/"_ended" entries, which have no
-                              # underlying gated tool call to take it from otherwise (see
-                              # ipc_server.py's _audit_policy_check/_audit_unattended_session_event).
+                              # underlying gated tool call to take it from otherwise (see web/
+                              # mcp_dispatch.py's McpDispatcher._audit_policy_check/
+                              # _audit_unattended_session_event).
                               # Self-reported and unverified -- never treated as fact. Empty for
                               # the automatic session-end-on-disconnect path, which has no reason
                               # to attribute.
@@ -158,6 +225,90 @@ class AuditEntry:
                               # decision, and was previously only recoverable by cross-referencing
                               # tool-call args, which isn't what the audit log is for. Set by gate.py's
                               # gated_call() (its own ``delivery`` kwarg) -- never inferred here.
+
+    # ---- SEC-23 fields (docs/security-remediation-plan.md, Phase 3 item 3.6) ----
+    # All six below default to a value meaning "not yet stamped" and are
+    # filled in by AuditLogger.record() itself (see its docstring) rather
+    # than at each of this dataclass's ~15 call sites -- record() is
+    # already the one place that holds the write lock and knows the chain
+    # state, so it's the natural (and only correctness-safe) place to
+    # stamp them. A caller MAY set event_id/deployment_id/security_config_
+    # hash itself before calling record() (record() only fills in an empty
+    # one); prev_hash/entry_hash are always (re-)computed by record(),
+    # since they're intrinsic to this specific chain instance, not
+    # something a caller could know in advance.
+    schema_version: int = 1  # AuditEntry's own shape version -- see
+                              # CURRENT_SCHEMA_VERSION's docstring for the version history. Defaults
+                              # to 1 (the implicit, undocumented shape every entry had before this
+                              # field existed) rather than CURRENT_SCHEMA_VERSION, so an entry
+                              # reconstructed from a pre-SEC-23 .jsonl line (which has no
+                              # "schema_version" key at all) is correctly identified as legacy rather
+                              # than misreported as schema 2. record() always overwrites this to
+                              # CURRENT_SCHEMA_VERSION for an entry it's actually recording.
+    event_id: str = ""       # A random id unique to *this one JSONL line* -- unlike request_id
+                              # (deliberately shared across a deferred-approval's "pending" and its
+                              # later "decided" entry, see the `decision` field's own docstring
+                              # above), event_id never repeats, which is what a hash-chain
+                              # verifier, a forwarded-log deduplicator, or a compliance report citing
+                              # "this specific audit line" actually needs. "" for every entry
+                              # recorded before this field existed.
+    deployment_id: str = ""  # This install's own stable identifier (daemon_main.get_or_create_
+                              # deployment_id(), an opaque random id persisted once at
+                              # data_dir()/deployment_id -- not a hostname or MAC address). Lets a
+                              # centrally forwarded or manually aggregated collection of audit
+                              # entries -- from several employees' local-mode machines, or several
+                              # org-mode servers -- be told apart by which install produced them.
+    security_config_hash: str = ""  # sha256 of the settings.yaml (privacy policy) content in effect
+                              # when this decision was recorded -- see compute_security_config_hash()
+                              # below. Lets a reviewer (or an automated diff) tell whether the policy
+                              # governing a given decision has since changed, without needing
+                              # settings.yaml's own (unversioned) edit history. Deliberately does NOT
+                              # cover org_config.json -- see compute_security_config_hash()'s own
+                              # docstring for why that file's tamper-evidence is handled separately
+                              # (daemon_main.log_org_config_bundle_hash, SEC-05).
+    prev_hash: str = ""      # This chain segment's previous entry's own entry_hash (or
+                              # GENESIS_HASH for the first entry in a chain segment) -- see
+                              # AuditLogger._compute_entry_hash and verify_chain().
+    entry_hash: str = ""     # HMAC-SHA256 (keyed by this install's own AuditLogger.
+                              # ``.audit_chain.key``) over this entry's own fields (prev_hash
+                              # included, entry_hash itself excluded) -- the append-integrity
+                              # mechanism itself. Recomputing it from the stored fields and comparing
+                              # is exactly what verify_chain() does; a mismatch means this line was
+                              # altered after AuditLogger wrote it, or the file was reordered/spliced.
+
+
+@dataclass
+class ChainVerificationResult:
+    """AuditLogger.verify_chain()'s return value -- also what scripts/
+    verify_audit_log.py prints, one of these per week file it checks."""
+
+    week: str
+    ok: bool
+    entries_checked: int
+    first_break_line: int | None = None  # 1-based line number of the first entry that failed
+                              # verification, or None if `ok` is True.
+    detail: str = ""
+
+
+def compute_security_config_hash(config: dict[str, Any]) -> str:
+    """SEC-23: a stable fingerprint of the privacy-policy configuration in
+    effect when a decision is recorded -- ``config`` is settings.yaml's own
+    parsed content (see daemon_main.py's module docstring: that file
+    "carries no secrets", so hashing it whole -- unlike org_config.json --
+    is safe to do on every single decision without redacting anything
+    first). Two installs with byte-identical settings.yaml content get the
+    same hash; that's deliberate, this fingerprints *which policy*, not
+    *which install* (deployment_id, above, is the latter).
+
+    org_config.json is deliberately NOT folded in here: SEC-05's own
+    startup hash (daemon_main.log_org_config_bundle_hash) already gives
+    that file tamper-evidence, separately, once per daemon startup --
+    re-deriving the same signal on every decision would add nothing new,
+    and risks a future org_config.json field that isn't secret-free the
+    way settings.yaml is documented to be.
+    """
+    canonical = json.dumps(config, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 # SEC-03: characters that, as the first character of a cell's string value,
@@ -198,18 +349,162 @@ def _excel_literal(value: str) -> str:
 
 
 class AuditLogger:
-    def __init__(self, log_dir: str) -> None:
+    def __init__(
+        self,
+        log_dir: str,
+        *,
+        deployment_id: str = "",
+        security_config_hash: str = "",
+        forwarder: "AuditForwarder | None" = None,
+    ) -> None:
         self._log_dir = Path(log_dir)
-        self._log_dir.mkdir(parents=True, exist_ok=True)
+        # secure_mkdir (SEC-09 posture), not a bare mkdir: this directory now
+        # also holds the hash-chain's own HMAC key (_CHAIN_KEY_FILENAME) --
+        # see _load_or_create_chain_key's docstring for what that key
+        # protects and, honestly, what it doesn't.
+        secure_mkdir(self._log_dir)
         self._lock = threading.Lock()
+        self._deployment_id = deployment_id
+        self._security_config_hash = security_config_hash
+        self._forwarder = forwarder
+        self._chain_key = _load_or_create_chain_key(self._log_dir / _CHAIN_KEY_FILENAME)
+        self._chain_state_path = self._log_dir / _CHAIN_STATE_FILENAME
+        self._last_hash = _load_chain_state(self._chain_state_path)
+
+    def set_security_config_hash(self, value: str) -> None:
+        """Called (settings_controller.py's ``_save_config``) whenever
+        settings.yaml is rewritten, so every entry recorded *after* a
+        policy change carries the new hash without needing a daemon
+        restart -- the value passed to ``__init__`` is only ever this
+        install's *startup*-time snapshot (daemon_main.run_app)."""
+        with self._lock:
+            self._security_config_hash = value
+
+    def _stamp_entry(self, entry: AuditEntry) -> None:
+        """Fill in every SEC-23 field record() owns, in place. Must be
+        called with self._lock held -- prev_hash/entry_hash/self._last_hash
+        form a single mutable chain of state that a concurrent record()
+        call must never interleave with."""
+        if not entry.event_id:
+            entry.event_id = uuid.uuid4().hex
+        if not entry.deployment_id:
+            entry.deployment_id = self._deployment_id
+        if not entry.security_config_hash:
+            entry.security_config_hash = self._security_config_hash
+        # Always overwritten (not "only if unset" like the three above):
+        # schema_version and the chain fields describe *this recording*,
+        # not something a caller could meaningfully pre-supply.
+        entry.schema_version = CURRENT_SCHEMA_VERSION
+        entry.prev_hash = self._last_hash
+        entry.entry_hash = self._compute_entry_hash(entry)
+        self._last_hash = entry.entry_hash
+
+    def _hash_canonical(self, data: dict[str, Any]) -> str:
+        """HMAC-SHA256, keyed by this install's own chain key, over every
+        field of ``data`` except ``entry_hash`` itself -- shared by
+        _compute_entry_hash (write time, from an AuditEntry) and
+        _recompute_hash_for_verification (verify time, from a dict parsed
+        back out of the .jsonl file), so the two can never drift apart on
+        what "canonical" means."""
+        trimmed = {k: v for k, v in data.items() if k != "entry_hash"}
+        canonical = json.dumps(trimmed, sort_keys=True, default=str).encode("utf-8")
+        return hmac.new(self._chain_key, canonical, hashlib.sha256).hexdigest()
+
+    def _compute_entry_hash(self, entry: AuditEntry) -> str:
+        return self._hash_canonical(asdict(entry))
+
+    def _persist_chain_state(self) -> None:
+        try:
+            atomic_write_json(self._chain_state_path, {"last_hash": self._last_hash})
+        except OSError as exc:
+            logger.warning("Could not persist audit chain state at %s: %s", self._chain_state_path, exc)
 
     def record(self, entry: AuditEntry) -> None:
         week_file = self._log_dir / f"{entry.week}.jsonl"
-        line = json.dumps(asdict(entry)) + "\n"
         with self._lock:
+            self._stamp_entry(entry)
+            line = json.dumps(asdict(entry)) + "\n"
             with open(week_file, "a", encoding="utf-8") as fh:
                 fh.write(line)
+            self._persist_chain_state()
         logger.debug("Audit: %s %s/%s", entry.decision, entry.connector, entry.tool)
+        if self._forwarder is not None:
+            self._forwarder.submit(asdict(entry))
+
+    def verify_chain(self, week: str) -> ChainVerificationResult:
+        """Recompute and check every entry's hash chain for one week's
+        .jsonl file: each entry's ``entry_hash`` must recompute correctly
+        from its own stored fields (proves that entry wasn't altered after
+        AuditLogger wrote it), and each entry's ``prev_hash`` must match
+        the previous entry's ``entry_hash`` (proves no entry was inserted,
+        removed, or reordered). A line with no chain fields at all (a
+        pre-SEC-23 entry) can't be verified -- it's skipped, and it resets
+        the "previous entry" expectation for the line after it, since the
+        chain never covered it in the first place.
+
+        Cross-*file* continuity (this week's first prev_hash matching last
+        week's last entry_hash) is intentionally not checked here --
+        AuditLogger.recent_entries()'s own week-rollover handling is the
+        only place that already reasons about adjacent week files, and
+        wiring the same lookup into every verify_chain() call would make
+        an otherwise-fast, single-file check silently depend on which
+        other files happen to exist on disk. ``scripts/verify_audit_log.py``
+        checks every week file in sequence and reports each file's result,
+        which gets the same end-to-end coverage without that coupling.
+        """
+        week_file = self._log_dir / f"{week}.jsonl"
+        if not week_file.exists():
+            return ChainVerificationResult(week=week, ok=True, entries_checked=0, detail="no such log file")
+
+        expected_prev: str | None = None
+        checked = 0
+        with open(week_file, encoding="utf-8") as fh:
+            for lineno, raw_line in enumerate(fh, start=1):
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    data = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    return ChainVerificationResult(
+                        week=week, ok=False, entries_checked=checked,
+                        first_break_line=lineno, detail="malformed JSON line",
+                    )
+                stored_hash = data.get("entry_hash") or ""
+                if not stored_hash:
+                    # Pre-SEC-23 entry (or a schema_version-1 line from an
+                    # even older build) -- nothing to verify, and nothing
+                    # for the *next* entry to chain against either.
+                    expected_prev = None
+                    checked += 1
+                    continue
+                stored_prev = data.get("prev_hash") or ""
+                if expected_prev is not None and stored_prev != expected_prev:
+                    return ChainVerificationResult(
+                        week=week, ok=False, entries_checked=checked, first_break_line=lineno,
+                        detail="prev_hash does not match the previous entry's hash -- an entry "
+                               "may have been inserted, removed, or reordered",
+                    )
+                recomputed = self._recompute_hash_for_verification(data)
+                if recomputed != stored_hash:
+                    return ChainVerificationResult(
+                        week=week, ok=False, entries_checked=checked, first_break_line=lineno,
+                        detail="entry_hash does not match the recomputed HMAC -- this entry's "
+                               "content may have been altered after it was recorded",
+                    )
+                expected_prev = stored_hash
+                checked += 1
+        return ChainVerificationResult(week=week, ok=True, entries_checked=checked, detail="chain intact")
+
+    def _recompute_hash_for_verification(self, data: dict[str, Any]) -> str:
+        return self._hash_canonical(data)
+
+    def close(self) -> None:
+        """Stop this logger's forwarder (if any) -- called once, from
+        daemon_main.run_app()'s own shutdown path. A no-op when forwarding
+        was never enabled."""
+        if self._forwarder is not None:
+            self._forwarder.stop()
 
     def export_week_to_excel(self, week: str) -> str | None:
         """Export one week's .jsonl to .xlsx, overwriting any existing file.
@@ -253,8 +548,12 @@ class AuditLogger:
             "Summary", "Sender / Context", "Decision", "Auto-Accept Rule", "Latency (s)",
             "PII Detected", "PII Categories", "PII Match Details", "Claude's Reason (unverified)",
             "Delivery",
+            # SEC-23: appended, not interleaved, so column indices existing
+            # tooling/tests already rely on (Decision at 8, PII Detected at
+            # 11, ...) stay stable.
+            "Event ID", "Deployment ID", "Security Config Hash", "Integrity Hash",
         ]
-        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12, 30, 55, 55, 16]
+        COL_WIDTHS = [22, 10, 12, 30, 22, 55, 30, 14, 22, 12, 12, 30, 55, 55, 16, 34, 34, 22, 22]
 
         hdr_font  = Font(bold=True, color="FFFFFF")
         hdr_fill  = PatternFill("solid", fgColor="2D4A6B")
@@ -297,6 +596,8 @@ class AuditLogger:
                 "Yes" if entry.pii_detected else "",
                 "; ".join(entry.pii_categories), _excel_literal(entry.pii_match_details or ""),
                 _excel_literal(entry.claude_reason or ""), entry.delivery or "",
+                entry.event_id or "", entry.deployment_id or "",
+                entry.security_config_hash or "", entry.entry_hash or "",
             ])
             fill = decision_fills.get(entry.decision, PatternFill())
             for col in range(1, len(HEADERS) + 1):
@@ -413,6 +714,69 @@ class AuditLogger:
         return count
 
 
+def _load_or_create_chain_key(path: Path) -> bytes:
+    """SEC-23's hash-chain key: 32 random bytes, generated once per audit
+    directory and reused for the life of that install (each principal's
+    own ``logs/audit/`` gets its own key, same granularity as its own
+    chain -- see AuditLogger.__init__).
+
+    Honest threat model: this key lives right next to the .jsonl files it
+    protects, at the same file permissions (0600, same directory). It does
+    NOT defend against a party who can already read *and* write everything
+    under this directory -- that party can read the key and recompute a
+    consistent chain over a tampered file just as validly as this class
+    can. What it DOES catch: accidental corruption; a party who gains
+    write access to the .jsonl files specifically (e.g. via a bug in some
+    other export/backup path) without also reading this key; and, in
+    general, any edit made without going back through AuditLogger.record()
+    itself. The real defense against a fully-privileged local
+    administrator tampering with their own audit trail is a copy that
+    leaves this trust boundary entirely -- see audit_forwarding.py's
+    centralized forwarding, SEC-23's other half.
+    """
+    try:
+        if path.exists():
+            existing = path.read_bytes()
+            if existing:
+                return existing
+    except OSError as exc:
+        logger.warning("Could not read audit chain-integrity key at %s: %s", path, exc)
+    key = secrets.token_bytes(32)
+    try:
+        atomic_write_bytes(path, key)
+    except OSError as exc:
+        logger.warning(
+            "Could not persist audit chain-integrity key at %s: %s -- this process's chain will "
+            "still work, but a restart will generate a new key and start a fresh chain segment",
+            path, exc,
+        )
+    return key
+
+
+def _load_chain_state(path: Path) -> str:
+    """The last entry_hash this AuditLogger (or a previous process using
+    the same log_dir) recorded, so a chain started before a daemon restart
+    keeps extending rather than silently resetting to GENESIS_HASH every
+    time the process restarts. Missing or unreadable state (a fresh audit
+    directory, or one restored from a backup that didn't include the
+    dotfile) starts a new chain segment at GENESIS_HASH -- not a security
+    regression by itself, since verify_chain() treats a GENESIS_HASH
+    (or absent-chain-fields) restart point as valid, just a break in
+    provable continuity across that specific gap.
+    """
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            last_hash = data.get("last_hash")
+            if isinstance(last_hash, str) and last_hash:
+                return last_hash
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Could not read audit chain state at %s -- starting a new chain segment: %s", path, exc,
+        )
+    return GENESIS_HASH
+
+
 def current_week() -> str:
     iso = datetime.now(timezone.utc).isocalendar()
     return f"{iso[0]}-W{iso[1]:02d}"
@@ -458,5 +822,14 @@ def get_audit_logger() -> AuditLogger:
     return _REGISTRY.get()
 
 
-def init_audit_logger(log_dir: str) -> AuditLogger:
-    return _REGISTRY.set(AuditLogger(log_dir))
+def init_audit_logger(
+    log_dir: str,
+    *,
+    deployment_id: str = "",
+    security_config_hash: str = "",
+    forwarder: "AuditForwarder | None" = None,
+) -> AuditLogger:
+    return _REGISTRY.set(AuditLogger(
+        log_dir, deployment_id=deployment_id, security_config_hash=security_config_hash,
+        forwarder=forwarder,
+    ))
