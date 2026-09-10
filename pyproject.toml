@@ -168,6 +168,15 @@ test = [
     # skips itself if either is missing, so this alone doesn't force a
     # browser download on every `pip install -e ".[test]"`.
     "playwright>=1.48,<2.0",
+    # TST-12 (docs/security-remediation-plan.md Phase 3.12): round-trip
+    # property tests on html_to_text.py/markdown_to_html.py/email_markdown.py/
+    # text_extraction.py (tests/unit/test_parser_properties.py) -- generated
+    # random inputs catch parser edge cases (unbalanced tags, adversarial
+    # Markdown syntax, arbitrary Unicode) example-based tests don't think to
+    # write, which matters here specifically because these are the modules
+    # standing between untrusted external content and the approval popup's
+    # preview pane.
+    "hypothesis>=6.100",
 ]
 # Static analysis gate (docs/security-remediation-plan.md, Phase 2 item 2.3,
 # TST-07). ruff is the CI-blocking step ([tool.ruff.lint] below); mypy and
