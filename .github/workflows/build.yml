@@ -177,6 +177,136 @@ jobs:
         with:
           prerelease: true
 
+  # docs/windows-support-plan.md Phase 6 (B5 in docs/windows-linux-support-
+  # plan.md): the Windows analogue of the `build` job above. Runs in
+  # parallel with it (and with `sbom`) rather than depending on it -- same
+  # "independent, tagged-source-tree-only" reasoning the `sbom` job's own
+  # comment gives, and the same already-established pattern of multiple
+  # jobs each attaching their own files to the one GitHub Release for this
+  # tag (this job's own release steps below, `build`'s, and `sbom`'s).
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mcpb/shim/package-lock.json
+
+      # Provides iscc.exe (installer/privacyfence.iss, run by
+      # scripts/build_installer.ps1) -- not preinstalled on windows-latest.
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Install Python dependencies
+        run: pip install -e ".[dev]"
+
+      # Same version/channel resolution as the `build` job's identically-
+      # named step -- see its comments for why the channel lookup is
+      # skipped (rather than failing the run) off a tag, and why a
+      # workflow_dispatch run off an untagged commit only skips the
+      # tag-gated steps below rather than failing outright.
+      - name: Determine version and release channel
+        id: release
+        shell: bash
+        run: |
+          VERSION="$(python -c 'from privacyfence import __version__; print(__version__)')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            CHANNEL="$(python3 scripts/r2_release.py channel "$VERSION")"
+          else
+            CHANNEL="n/a (not a tag push)"
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=$VERSION channel=$CHANNEL"
+
+      # ── Import Authenticode certificate for signing ──────────────────────
+      # Requires these GitHub secrets (Settings → Secrets and variables →
+      # Actions) -- unset entirely (e.g. on a fork's workflow_dispatch run)
+      # means build_installer.ps1 just produces an unsigned build (see its
+      # own Invoke-Signing helper):
+      #   WINDOWS_CERTIFICATE      — base64-encoded Authenticode .pfx
+      #                              (cert + private key)
+      #                              (base64 -w0 cert.pfx | Set-Clipboard, or
+      #                              on Windows: certutil -encode)
+      #   WINDOWS_CERTIFICATE_PWD  — the .pfx export password
+      # docs/windows-support-plan.md Phase 5.1's default decision: start with
+      # an OV cert via a portable .pfx (this step), revisit an EV/HSM-backed
+      # signing service later only if SmartScreen friction on first run
+      # turns out to matter for real users.
+      - name: Import signing certificate
+        if: env.WINDOWS_CERTIFICATE != ''
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        shell: pwsh
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\certificate.pfx", $bytes)
+          echo "SIGN_CERT_PATH=$env:RUNNER_TEMP\certificate.pfx" >> $env:GITHUB_ENV
+
+      - name: Build installer
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          SIGN_CERT_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PWD }}
+        shell: pwsh
+        run: ./scripts/build_installer.ps1
+
+      - name: Remove signing certificate
+        if: always()
+        shell: pwsh
+        run: Remove-Item -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP\certificate.pfx"
+
+      - name: Upload installer as artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: PrivacyFence-windows-installer
+          path: dist/PrivacyFence-*-setup.exe
+          retention-days: 30
+
+      # Same private-by-default R2 archive as the `build` job's DMG upload --
+      # every channel's installer lands in releases/<channel>/<version>/,
+      # alongside whatever else that release shipped. See scripts/
+      # r2_release.py's module docstring and this repo's CLAUDE.md
+      # "Cloudflare R2 release archive" section.
+      - name: Publish release artifacts to Cloudflare R2
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          CF_R2_ENDPOINT: ${{ vars.CF_R2_ENDPOINT }}
+          R2_BUCKET: privacyfence-releases
+        shell: bash
+        run: |
+          python3 -m pip install --quiet boto3
+          python3 scripts/r2_release.py upload --version "${{ steps.release.outputs.version }}" \
+            dist/PrivacyFence-*-setup.exe
+
+      # Stable only, same gating as the `build` job's DMG attachment --
+      # alpha/beta/rc installers stop at the private R2 upload above.
+      - name: Attach release assets (stable only)
+        if: startsWith(github.ref, 'refs/tags/') && steps.release.outputs.channel == 'stable'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: dist/PrivacyFence-*-setup.exe
+          prerelease: false
+
+      - name: Create GitHub Release notes (pre-release, no public assets)
+        if: startsWith(github.ref, 'refs/tags/') && steps.release.outputs.channel != 'stable'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          prerelease: true
+
   # SEC-19 (docs/security-remediation-plan.md, Phase 2.4): one CycloneDX SBOM
   # per ecosystem this repo ships code from. Independent of the `build` job
   # above -- doesn't need the macOS runner, code signing, or notarization,

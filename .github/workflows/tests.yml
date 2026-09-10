@@ -172,6 +172,38 @@ jobs:
       - name: Run test suite (100% pass rate required)
         run: pytest -v --ignore=tests/integration/test_shim_mcp_contract.py
 
+  # docs/windows-support-plan.md Phase 6.2 (B5 in docs/windows-linux-
+  # support-plan.md): a real-Windows confirmation that nothing path-
+  # separator- or Path-handling-related breaks that the `test` job above
+  # (already proven platform-independent on a second POSIX platform via
+  # Linux CI) can't catch. Gated to workflow_dispatch only, not every
+  # push/PR -- deliberately not promoted to a permanent per-PR leg yet; that
+  # phase's own text leaves "keep it permanent" vs. "rely on build.yml's
+  # release-time Windows job alone" as a decision to make once this has
+  # actually been run for real, not before.
+  test-windows:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      # Core Python suite only -- no Node/shim steps here, same "reduced
+      # suite" reasoning test-python-compat gives, since this job exists to
+      # catch Windows-specific breakage in the Python core, not to
+      # re-prove the (already cross-platform, Node-runtime) shim.
+      - name: Run test suite (100% pass rate required)
+        run: pytest -v --cov=src/privacyfence --cov-report=term-missing
+
   # docs/security-remediation-plan.md, Phase 2 item 2.3 (TST-07). Separate
   # job (not a step tacked onto `test` above) so a lint failure is reported
   # on its own line in the checks list, and so it doesn't need the Node/npm
