@@ -24,6 +24,7 @@ an oversight.
 from __future__ import annotations
 
 import json
+import secrets
 from datetime import datetime, timezone
 from html import escape as _html_escape
 from typing import Any
@@ -253,21 +254,33 @@ def _relative_age(iso_ts: str) -> str:
     return f"{hours // 24}d ago"
 
 
-def build_list_html(rows: list[dict[str, Any]], *, csrf: str) -> str:
+def build_list_html(rows: list[dict[str, Any]], *, csrf: str, nonce: str | None = None) -> str:
     """The ``/approvals`` page body (dropped into web_shell.wrap's
     ``<main>``) -- ``rows`` is a list of row_from_approval()'s shape,
     newest first (same order approvals.PendingApprovalRegistry.
-    list_pending() already returns)."""
+    list_pending() already returns).
+
+    ``nonce`` (SEC-08, docs/security-remediation-plan.md Phase 3.1): the
+    caller's current per-response CSP nonce (web/server.py's
+    ``_SecurityHeadersMiddleware``, via ``request.state.csp_nonce``) --
+    unlike approval_window_html.py's card documents, this fragment is
+    rendered fresh on every ``GET /approvals``, so it takes the request's
+    own nonce rather than minting one itself. Must be the same value
+    web_shell.wrap() is given for the rest of this same document, since
+    only one Content-Security-Policy header covers both. Defaults to a
+    fresh one when omitted (every caller outside this module's own tests
+    always passes the real per-request value explicitly)."""
+    nonce = nonce or secrets.token_urlsafe(18)
     body = "".join(_row_html(r) for r in rows) if rows else _EMPTY_STATE
     heading = (
         f"{len(rows)} approval{'s' if len(rows) != 1 else ''} pending" if rows else ""
     )
     js = _JS % {"empty": json.dumps(_EMPTY_STATE), "csrf": json.dumps(csrf)}
     return (
-        f"<style>{_CSS}</style>"
+        f'<style nonce="{nonce}">{_CSS}</style>'
         '<div class="pf-approvals-page">'
         + (f'<div class="pf-approvals-heading">{_html_escape(heading)}</div>' if heading else "")
         + f'<div id="pf-approvals-list">{body}</div>'
         "</div>"
-        f"<script>{js}</script>"
+        f'<script nonce="{nonce}">{js}</script>'
     )
