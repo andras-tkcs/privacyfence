@@ -5,7 +5,7 @@ Run this once per organization after registering each cloud app (see the
 "For IT admins" section of docs/google-cloud-setup.md, docs/slack-setup.md,
 docs/salesforce-setup.md, and docs/atlassian-setup.md). The output file is
 what you distribute to your users — they install it via "Install/Update
-Organization Config…" in the PrivacyFence menu bar.
+Organization Config…" on the General page of PrivacyFence Settings (the embedded web page).
 
 Telegram is not part of this bundle: its api_id/api_hash identify the
 PrivacyFence app itself (not your organization) and are baked into the
@@ -132,7 +132,10 @@ def _load_google_client_secret(path: str) -> dict[str, Any]:
             f"{path} doesn't look like a Google OAuth client_secret.json "
             '(expected a top-level "installed" or "web" key). Download it from '
             "Google Cloud Console -> APIs & Services -> Credentials, for an "
-            "OAuth client of type 'Desktop app'."
+            "OAuth client of type 'Desktop app' (local mode's loopback flow) or "
+            "'Web application' (org mode's server-redirect flow needs an "
+            "explicit, registered HTTPS redirect URI -- see docs/org-mode-"
+            "setup-guide.md's §4.2)."
         )
     return inner
 
@@ -155,7 +158,9 @@ def build_parser() -> argparse.ArgumentParser:
     google.add_argument(
         "--google-client-secret", metavar="PATH",
         help="Path to the client_secret.json downloaded from Google Cloud Console "
-             "(OAuth client of type 'Desktop app').",
+             "(OAuth client of type 'Desktop app' for local mode, or 'Web "
+             "application' for org mode -- see docs/org-mode-setup-guide.md's "
+             "§4.2).",
     )
 
     slack = parser.add_argument_group("Slack")
@@ -508,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(
         'Distribute this file to your users. They install it via "Install/Update '
-        'Organization Config…" in the PrivacyFence menu bar.'
+        'Organization Config…" on the General page of PrivacyFence Settings.'
     )
     return 0
 

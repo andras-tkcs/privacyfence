@@ -1,8 +1,10 @@
 """Embedded HTTP(S) server lifecycle: bind policy, security headers, and
-starting/stopping the ASGI app (uvicorn) on its own thread -- the same
-"runs on its own dedicated thread, daemon still starting for IPC either
-way" posture daemon_main.py's IPCServerThread already established for the
-bridge socket.
+starting/stopping the ASGI app (uvicorn) on its own thread -- see daemon_
+main.py's own module docstring's "Threading model" section (its "Web
+thread") for how this fits alongside the daemon's other threads. Before
+P5 retired it, the bridge socket ran on its own dedicated thread the same
+way (``IPCServerThread``, since deleted along with the rest of ``ipc_
+server.py``).
 
 **Local mode**: D1's decision applies -- loopback HTTP, bound to
 ``localhost`` (not a bare ``127.0.0.1``/``0.0.0.0``) so ``http://localhost``
@@ -11,10 +13,10 @@ without anyone having to move the bind address. Auth is deliberately the
 simplest thing that's still a real control, not sessions/OIDC -- but since
 SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2) it is no
 longer "possession of one never-expiring, URL-carried token is the
-authority" the way it was through v4.0.0a12 (that posture is what
-``~/.privacyfence/ipc_token`` still has for the bridge, see ipc.py's own
-module docstring -- this surface, reachable from a browser rather than
-only a local process, needed more). ``load_or_create_token()``'s random
+authority" the way it was through v4.0.0a12 (the same posture
+``~/.privacyfence/ipc_token`` had for the bridge, before P5 retired both --
+this surface, reachable from a browser rather than only a local process,
+needed more). ``load_or_create_token()``'s random
 secret is generated once, written 0600 under paths.data_dir(), rotated
 whenever the installed version changes, and now used only to authorize
 minting a bootstrap code on demand (``POST /api/bootstrap``, see

@@ -11,7 +11,7 @@ Instead of granting an AI assistant broad, persistent access and relying on the 
 - **PII detection** before personal data enters the AI context
 - **Audit logging** for accepted, denied, and automatically approved requests
 - **Connector-level control** across common enterprise systems
-- **Local credential ownership**: credentials remain in the PrivacyFence daemon, not in the AI-facing bridge
+- **Local credential ownership**: credentials remain in the PrivacyFence daemon, not in the AI-facing shim
 
 > PrivacyFence runs on macOS and Linux and integrates with Claude through MCP. Its governance model is designed around a broader problem: controlling how AI assistants access and act on enterprise information.
 
@@ -247,7 +247,8 @@ PrivacyFence is currently an open-source macOS/Linux implementation rather than 
 1. Download the latest `PrivacyFence-<version>.dmg` from [Releases](../../releases).
 2. Drag **PrivacyFenceApp.app** to `/Applications`.
 3. Install the organization configuration provided by your IT administrator.
-4. Authenticate the connectors you want from the PrivacyFence menu bar.
+4. Authenticate the connectors you want from the **Connectors** page of PrivacyFence Settings (the
+   embedded web page — the daemon logs its URL on startup).
 5. Install **PrivacyFence.mcpb** into Claude Desktop.
 
 Releases are code-signed and notarized by Apple, so this just works — no Gatekeeper warnings, no

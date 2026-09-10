@@ -669,7 +669,7 @@ def _load_atlassian_config() -> tuple[dict[str, Any], str]:
     org_config = daemon_main.load_org_config()
     atlassian_org = org_config.get("atlassian") or {}
     if not atlassian_org.get("client_id"):
-        raise SystemExit("Atlassian organization config not installed -- run Authenticate… in the menu bar first.")
+        raise SystemExit("Atlassian organization config not installed -- run Authenticate… in PrivacyFence Settings (Connectors page) first.")
     token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["atlassian"])
     token = daemon_main.load_atlassian_token(token_path)
     return {**atlassian_org, **(token or {})}, token_path
@@ -809,7 +809,7 @@ def _build_salesforce_client() -> SalesforceClient:
     org_config = daemon_main.load_org_config()
     sf_org = org_config.get("salesforce") or {}
     if not sf_org.get("consumer_key"):
-        raise SystemExit("Salesforce organization config not installed -- run Authenticate… in the menu bar first.")
+        raise SystemExit("Salesforce organization config not installed -- run Authenticate… in PrivacyFence Settings (Connectors page) first.")
     token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["salesforce"])
     token = daemon_main.load_salesforce_token(token_path)
     config = {**sf_org, **token}
@@ -892,7 +892,7 @@ def _build_gmail_client() -> GmailClient:
     org_config = daemon_main.load_org_config()
     client_config = daemon_main._google_client_config(org_config)
     if not client_config:
-        raise SystemExit("Google organization config not installed -- run Authenticate… in the menu bar first.")
+        raise SystemExit("Google organization config not installed -- run Authenticate… in PrivacyFence Settings (Connectors page) first.")
     token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["gmail"])
     return GmailClient(client_config=client_config, token_file=token_path)
 
@@ -943,7 +943,7 @@ def _build_drive_client() -> DriveClient:
     org_config = daemon_main.load_org_config()
     client_config = daemon_main._google_client_config(org_config)
     if not client_config:
-        raise SystemExit("Google organization config not installed -- run Authenticate… in the menu bar first.")
+        raise SystemExit("Google organization config not installed -- run Authenticate… in PrivacyFence Settings (Connectors page) first.")
     token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["drive"])
     return DriveClient(client_config=client_config, token_file=token_path)
 
@@ -1000,7 +1000,7 @@ def _build_calendar_client() -> CalendarClient:
     org_config = daemon_main.load_org_config()
     client_config = daemon_main._google_client_config(org_config)
     if not client_config:
-        raise SystemExit("Google organization config not installed -- run Authenticate… in the menu bar first.")
+        raise SystemExit("Google organization config not installed -- run Authenticate… in PrivacyFence Settings (Connectors page) first.")
     token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["calendar"])
     return CalendarClient(client_config=client_config, token_file=token_path)
 
@@ -1047,7 +1047,7 @@ def _build_contacts_client() -> ContactsClient:
     org_config = daemon_main.load_org_config()
     client_config = daemon_main._google_client_config(org_config)
     if not client_config:
-        raise SystemExit("Google organization config not installed -- run Authenticate… in the menu bar first.")
+        raise SystemExit("Google organization config not installed -- run Authenticate… in PrivacyFence Settings (Connectors page) first.")
     token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["contacts"])
     return ContactsClient(client_config=client_config, token_file=token_path)
 
@@ -1105,7 +1105,7 @@ def _build_tasks_client() -> TasksClient:
     org_config = daemon_main.load_org_config()
     client_config = daemon_main._google_client_config(org_config)
     if not client_config:
-        raise SystemExit("Google organization config not installed -- run Authenticate… in the menu bar first.")
+        raise SystemExit("Google organization config not installed -- run Authenticate… in PrivacyFence Settings (Connectors page) first.")
     token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["tasks"])
     return TasksClient(client_config=client_config, token_file=token_path)
 
@@ -1156,7 +1156,7 @@ def _build_slack_client() -> SlackClient:
     org_config = daemon_main.load_org_config()
     slack_org = org_config.get("slack") or {}
     if not slack_org.get("client_id"):
-        raise SystemExit("Slack organization config not installed -- run Authenticate… in the menu bar first.")
+        raise SystemExit("Slack organization config not installed -- run Authenticate… in PrivacyFence Settings (Connectors page) first.")
     token_path = daemon_main._resolve_path(daemon_main.TOKEN_FILES["slack"])
     token = load_slack_token(token_path)
     return SlackClient(token.get("access_token", ""))

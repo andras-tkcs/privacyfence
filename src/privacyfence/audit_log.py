@@ -67,37 +67,46 @@ class AuditEntry:
                             #  way: no data was ever released on this request_id's strength.)
                             # ("error": gate.py's gated_call exited without reaching a normal decision
                             #  branch -- a fallback so an unanticipated failure still leaves a trail)
-                            # ("cancelled": the bridge told the daemon to give up on this request
-                            #  (ipc.py's "cancel" method) -- the MCP client that issued the
-                            #  corresponding tool call gave up on it first, most often because it
-                            #  timed out. Distinct from "error": an expected outcome, not a bug.)
+                            # ("cancelled": the MCP client that issued the corresponding tool call
+                            #  gave up on it first, most often because it timed out -- its request
+                            #  task is cancelled when the Streamable HTTP connection drops (see
+                            #  gate.py's own CancelledError handling). Distinct from "error": an
+                            #  expected outcome, not a bug.)
                             # ("denied_unattended": gate.py denied the call without ever prompting,
                             #  because the connection was in an unattended session and no auto-accept
                             #  rule matched -- distinct from "rejected", which is a human's own Deny.
                             #  Also used by gate.py's propose_rule_change() for the same reason)
-                            # ("policy_check": ipc_server.py's check_policy handler -- a preflight
-                            #  question, not a real decision; recorded for pattern-spotting only)
-                            # ("rules_listed": ipc_server.py's list_rules handler -- not a decision
-                            #  either, but the full current rule/grant set was disclosed, worth its
-                            #  own record for the same pattern-spotting reason as "policy_check")
+                            # ("policy_check": web/mcp_dispatch.py's McpDispatcher.check_policy --
+                            #  a preflight question, not a real decision; recorded for
+                            #  pattern-spotting only)
+                            # ("rules_listed": web/mcp_dispatch.py's McpDispatcher.list_rules -- not
+                            #  a decision either, but the full current rule/grant set was disclosed,
+                            #  worth its own record for the same pattern-spotting reason as
+                            #  "policy_check")
                             # ("org_config_startup": SEC-05 interim -- daemon_main.py's
                             #  log_org_config_bundle_hash(), recorded once per daemon startup that
                             #  finds an org_config.json installed at all, carrying its sha256 in
                             #  `summary` so a tampered bundle between one startup and the next is
                             #  detectable by diffing hashes even on an install that hasn't adopted
                             #  full bundle signing -- see org_bundle_signing.py)
-                            # ("unattended_session_started"/"_ended": ipc_server.py's begin/end_
-                            #  unattended_session handlers, and the same on disconnect cleanup --
-                            #  this connection's gate posture changed, which is worth a record of
-                            #  its own even though no specific tool call was involved)
+                            # ("unattended_session_started"/"_ended": web/mcp_dispatch.py's
+                            #  McpDispatcher.begin_unattended_session/end_unattended_session, and
+                            #  the same on disconnect cleanup -- this session's gate posture
+                            #  changed, which is worth a record of its own even though no specific
+                            #  tool call was involved)
                             # ("rule_changed_via_bridge_proposal"/"rule_removed_via_bridge_proposal"/
                             #  "grant_changed_via_bridge_proposal"/"grant_removed_via_bridge_proposal":
-                            #  gate.py's propose_rule_change() -- a bridge-initiated auto_accept_rules/
+                            #  gate.py's propose_rule_change() -- a Claude-initiated auto_accept_rules/
                             #  auto_accept_grants edit that a human confirmed via the same
                             #  show_rule_confirmation_popup() the "Always allow" flow uses, and that
                             #  actually changed something (config's own `changed` return value was
                             #  True). "rejected" is reused, not a new value, when the human declines
-                            #  instead)
+                            #  instead. The "_via_bridge_proposal" name is historical -- it predates
+                            #  P5's retirement of the bridge, and this is stored, already-written
+                            #  audit data, so the string itself is not being renamed here (see
+                            #  docs/security-remediation-plan.md's ORP-06 for that call); it still
+                            #  means "Claude proposed this via the MCP meta-tool", now over ``/mcp``
+                            #  rather than the bridge socket)
                             # ("bridge_proposal_no_op": same propose_rule_change() confirmation flow,
                             #  but the human's "yes" didn't actually change anything -- e.g. Claude
                             #  proposed removing a rule/grant value that was already gone. Distinct
@@ -133,8 +142,9 @@ class AuditEntry:
                               # gate.py's reason_scope), or the "reason" param on the three
                               # privacyfence_* meta-tools for "policy_check"/
                               # "unattended_session_started"/"_ended" entries, which have no
-                              # underlying gated tool call to take it from otherwise (see
-                              # ipc_server.py's _audit_policy_check/_audit_unattended_session_event).
+                              # underlying gated tool call to take it from otherwise (see web/
+                              # mcp_dispatch.py's McpDispatcher._audit_policy_check/
+                              # _audit_unattended_session_event).
                               # Self-reported and unverified -- never treated as fact. Empty for
                               # the automatic session-end-on-disconnect path, which has no reason
                               # to attribute.
