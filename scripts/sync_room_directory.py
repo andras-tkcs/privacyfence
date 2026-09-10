@@ -38,6 +38,20 @@ libraries PrivacyFence itself depends on (see pyproject.toml's
 
     pip install google-auth google-auth-oauthlib google-api-python-client
 
+SEC-05 full signing (org_bundle_signing.py): merging "rooms"/"rooms_synced_at"
+into the bundle changes what a previous --sign-key signature covers, so any
+"signature"/"signing_public_key" already on the file is stale the moment
+this script writes to it -- see org_bundle_signing.sign_bundle's own
+docstring ("Any change to the bundle after this invalidates the signature,
+by design"). Leaving that stale signature in place would be worse than
+dropping it: every install that already pinned your org's signing key (or
+mode: org, which requires one) would then refuse to start on the very next
+load, with no obvious cause. So: if the bundle you're merging into already
+carries a signature, --sign-key <path to the SAME Ed25519 private key
+build_org_bundle.py signed it with> is required, or this script refuses to
+write anything at all. Needs the `cryptography` package (pip install
+cryptography) specifically, same as build_org_bundle.py's --sign-key.
+
 Example:
 
     python3 scripts/sync_room_directory.py \\
@@ -48,6 +62,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -68,6 +83,50 @@ from googleapiclient.errors import HttpError
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly"]
+
+
+def _canonical_payload_bytes(bundle: dict[str, Any]) -> bytes:
+    """Byte-for-byte copy of build_org_bundle.py's own
+    ``_canonical_payload_bytes`` (which itself mirrors src/privacyfence/
+    org_bundle_signing.py's -- see that module's docstring on why all three
+    MUST stay identical: a bundle re-signed here must still verify against
+    the daemon's own org_bundle_signing.verify_and_maybe_pin()). Not
+    imported from either for the same standalone-script reason as
+    everything else in this file.
+    """
+    payload = {k: v for k, v in bundle.items() if k != "signature"}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _require_cryptography():
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            PublicFormat,
+            load_pem_private_key,
+        )
+    except ImportError as exc:
+        raise SystemExit(
+            "--sign-key needs the `cryptography` package: pip install cryptography"
+        ) from exc
+    return ed25519, Encoding, PublicFormat, load_pem_private_key
+
+
+def _sign_bundle(bundle: dict[str, Any], sign_key_path: str) -> dict[str, Any]:
+    ed25519, Encoding, PublicFormat, load_pem_private_key = _require_cryptography()
+    with open(sign_key_path, "rb") as fh:
+        private_key = load_pem_private_key(fh.read(), password=None)
+    if not isinstance(private_key, ed25519.Ed25519PrivateKey):
+        raise SystemExit(f"{sign_key_path} is not an Ed25519 private key.")
+    signed = dict(bundle)
+    signed.pop("signature", None)
+    signed["signing_public_key"] = base64.b64encode(
+        private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    ).decode("ascii")
+    signature = private_key.sign(_canonical_payload_bytes(signed))
+    signed["signature"] = base64.b64encode(signature).decode("ascii")
+    return signed
 
 
 def _atomic_write_text(path: str, text: str, *, mode: int = 0o600) -> None:
@@ -281,6 +340,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional Directory API query to filter which rooms are fetched "
              "(same syntax Google's Admin SDK accepts for resources().calendars().list).",
     )
+    parser.add_argument(
+        "--sign-key", metavar="PATH",
+        help="Re-sign the merged bundle with the Ed25519 private key at PATH -- the SAME key "
+             "build_org_bundle.py --sign-key originally signed --org-config with (from "
+             "build_org_bundle.py --generate-signing-key). Required if --org-config is already "
+             "signed (this script's own merge invalidates the existing signature regardless -- "
+             "see module docstring); optional otherwise. Needs the `cryptography` package.",
+    )
     return parser
 
 
@@ -305,14 +372,36 @@ def main(argv: list[str] | None = None) -> int:
             bundle = json.load(fh)
     bundle.setdefault("version", 1)
 
+    was_signed = bool(bundle.get("signature")) or bool(bundle.get("signing_public_key"))
+    if was_signed and not args.sign_key:
+        print(
+            f"{out_path} is already signed, but merging the room directory into it invalidates "
+            "that signature -- every install that has pinned your org's signing key (and any "
+            "mode: org install, which requires one) would refuse to start on the resulting file. "
+            "Re-run with --sign-key <path to the same Ed25519 private key you originally signed "
+            "it with> to re-sign after merging.",
+            file=sys.stderr,
+        )
+        return 1
+    # Any existing signature was over the bundle as it stood at its last
+    # signing -- stale the moment "rooms"/"rooms_synced_at" below change
+    # it, whether or not --sign-key re-signs it in this same run. Never
+    # carry a signature/key forward implicitly (mirrors build_org_bundle.
+    # py --merge's identical never-implicitly-reaffirm stance).
+    bundle.pop("signature", None)
+    bundle.pop("signing_public_key", None)
+
     bundle["rooms"] = [
         {k: v for k, v in asdict(room).items() if k != "resource_id"}
         for room in rooms
     ]
     bundle["rooms_synced_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    if args.sign_key:
+        bundle = _sign_bundle(bundle, args.sign_key)
+
     out_path.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {out_path} with {len(rooms)} room(s).")
+    print(f"Wrote {out_path} with {len(rooms)} room(s), signed={'signature' in bundle}.")
     print(
         'Distribute the updated org_config.json to your users as usual (via "Install/Update '
         'Organization Config…" on the General page of PrivacyFence Settings). Do NOT distribute the '
