@@ -105,9 +105,12 @@ token then simply can't read your Workspace directory, no matter what.
    → **Download JSON**. This is a *second*, separate `client_secret.json` — keep it at least as
    private as the first one, and never add it to `org_config.json` or hand it to end users.
 5. Run the sync, signed in with an account that holds the Workspace **Directory Reader** role (or
-   super admin):
+   super admin). Like `build_org_bundle.py`, this script doesn't need a full PrivacyFence install
+   — copy it out of the repo if you like — just the same three Google client libraries PrivacyFence
+   itself depends on:
    ```bash
-   .venv/bin/python scripts/sync_room_directory.py \
+   pip install google-auth google-auth-oauthlib google-api-python-client
+   python3 scripts/sync_room_directory.py \
      --admin-client-secret /path/to/room_sync_client_secret.json \
      --org-config org_config.json
    ```
