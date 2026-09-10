@@ -187,7 +187,7 @@ class TestGetService:
         client = sync_room_directory.RoomDirectoryClient(client_config={}, token_file="/tmp/unused-room-token.json")
         mock_build = MagicMock(side_effect=lambda *a, **k: MagicMock())
         monkeypatch.setattr("sync_room_directory.build", mock_build)
-        monkeypatch.setattr(client, "_load_credentials", lambda: MagicMock())
+        monkeypatch.setattr(client, "_load_credentials", MagicMock(side_effect=MagicMock))
 
         assert client._get_service() is client._get_service()
         assert mock_build.call_count == 1
