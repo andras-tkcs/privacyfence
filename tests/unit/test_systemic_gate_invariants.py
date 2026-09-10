@@ -25,12 +25,15 @@ guard before this module existed:
   layer to strip -- documented rather than silently excluded, per this
   repo's own "where the codebase is inconsistent, call it out explicitly"
   convention (docs/coding-and-testing-guidelines.md).
-- All eleven credential/token-file writers across the ``*_client.py``/
-  ``*_oauth.py`` modules go through ``secure_files.py``'s
+- All ten remaining credential/token-file writers across the
+  ``*_client.py``/``*_oauth.py`` modules go through ``secure_files.py``'s
   ``atomic_write_text``/``atomic_write_json`` rather than a hand-rolled
   ``open()``/``.write()`` -- the SEC-09 invariant (secure_files.py's own
   module docstring) checked per call site here, rather than trusted to have
-  been done once at each site and stay that way.
+  been done once at each site and stay that way. (Eleven at the time the
+  review was written; see ``TOKEN_WRITE_SITES``'s own comment for why
+  ``room_directory_client.py``'s site doesn't count against this specific
+  check anymore -- it's still covered, just separately.)
 """
 from __future__ import annotations
 
@@ -149,14 +152,27 @@ _PII_SCAN_TEXT_EXEMPT = {
     "salesforce_search",
 }
 
-# The eleven credential/token-file write sites (TST-13's own count) --
-# (module, class-or-None, function/method name) triples, one per site. See
-# this module's own docstring for how that count was derived: every
-# *_client.py's private Client._save_token(self, creds) *method*, plus the
-# three module-level function helpers (atlassian_oauth.save_token_file,
-# google_oauth.save_credentials, slack_client.save_token_record) and
-# salesforce_client's real writer (_save_token_file -- save_token_file is a
-# thin public wrapper around it, not a second independent write site).
+# The credential/token-file write sites -- (module, class-or-None,
+# function/method name) triples, one per site. See this module's own
+# docstring for how that count was derived: every *_client.py's private
+# Client._save_token(self, creds) *method*, plus the three module-level
+# function helpers (atlassian_oauth.save_token_file, google_oauth.
+# save_credentials, slack_client.save_token_record) and salesforce_client's
+# real writer (_save_token_file -- save_token_file is a thin public wrapper
+# around it, not a second independent write site).
+#
+# TST-13 named eleven at the time the review was written; room_directory_
+# client.py's own _save_token (once counted here) was retired along with
+# the rest of that module once scripts/sync_room_directory.py became its
+# only caller -- that script now carries its own standalone copy of the
+# atomic-write pattern (deliberately, same as build_org_bundle.py: it must
+# not import the privacyfence package at all, see its own module
+# docstring), so it was never a fair fit for *this* check (which is
+# specifically "does it call the shared helper" -- a script that can't
+# import that helper by design isn't a violation of the invariant). Ten
+# real sites remain here; the standalone script's own copy is checked
+# separately below for the pattern it stands in for, not for calling the
+# helper it deliberately can't reach.
 TOKEN_WRITE_SITES: tuple[tuple[str, str | None, str], ...] = (
     ("apps_script_client", "AppsScriptClient", "_save_token"),
     ("atlassian_oauth", None, "save_token_file"),
@@ -165,11 +181,15 @@ TOKEN_WRITE_SITES: tuple[tuple[str, str | None, str], ...] = (
     ("drive_client", "DriveClient", "_save_token"),
     ("gmail_client", "GmailClient", "_save_token"),
     ("google_oauth", None, "save_credentials"),
-    ("room_directory_client", "RoomDirectoryClient", "_save_token"),
     ("salesforce_client", None, "_save_token_file"),
     ("slack_client", None, "save_token_record"),
     ("tasks_client", "TasksClient", "_save_token"),
 )
+
+# scripts/sync_room_directory.py's own standalone _atomic_write_text -- see
+# TOKEN_WRITE_SITES's own comment above for why it's checked separately
+# rather than folded into that tuple/parametrize.
+_SYNC_ROOM_DIRECTORY_PATH = SRC_ROOT.parent.parent / "scripts" / "sync_room_directory.py"
 
 
 class TestReasonParamOnEveryGatedTool:
@@ -218,11 +238,12 @@ class TestPiiScanTextOnEveryReviewGatedTool:
 
 
 class TestTokenSitesUseTheSharedSecureWriteHelper:
-    def test_eleven_token_write_sites_are_listed(self):
-        # TST-13 names this count explicitly -- a token writer added or
-        # removed without updating TOKEN_WRITE_SITES above is itself worth
-        # catching, not just silently checking whatever's currently listed.
-        assert len(TOKEN_WRITE_SITES) == 11
+    def test_ten_token_write_sites_are_listed(self):
+        # A token writer added or removed without updating TOKEN_WRITE_SITES
+        # above is itself worth catching, not just silently checking
+        # whatever's currently listed -- see that tuple's own comment for
+        # why this is ten, not the review's original eleven.
+        assert len(TOKEN_WRITE_SITES) == 10
 
     @pytest.mark.parametrize(
         "module_name, class_name, func_name", TOKEN_WRITE_SITES,
@@ -238,4 +259,31 @@ class TestTokenSitesUseTheSharedSecureWriteHelper:
             f"{site} no longer calls secure_files.atomic_write_text/atomic_write_json -- "
             "SEC-09 (docs/security-remediation-plan.md Phase 1 item 1.4) requires every credential/token "
             "writer to go through the shared atomic, 0600-permissioned helper, not a hand-rolled open()/write()."
+        )
+
+    def test_sync_room_directory_script_still_carries_the_safe_atomic_write_pattern(self):
+        # This standalone script (see TOKEN_WRITE_SITES's own comment)
+        # deliberately can't import secure_files.atomic_write_text -- it
+        # keeps its own copy of the same write-then-rename-plus-chmod core
+        # instead. Checked here for that pattern's own hallmarks rather
+        # than for calling a helper it can never call by design, so a
+        # regression to a naive open()/write() still fails this test.
+        assert _SYNC_ROOM_DIRECTORY_PATH.is_file(), (
+            f"{_SYNC_ROOM_DIRECTORY_PATH} not found -- update this test (and TOKEN_WRITE_SITES's own "
+            "comment) if it moved, was renamed, or its OAuth token write was retired entirely."
+        )
+        source = _SYNC_ROOM_DIRECTORY_PATH.read_text(encoding="utf-8")
+        func_start = source.index("def _atomic_write_text(")
+        func_source = source[func_start:source.index("\ndef ", func_start + 1)]
+        assert "os.O_CREAT" in func_source and "os.O_EXCL" in func_source, (
+            f"{_SYNC_ROOM_DIRECTORY_PATH}'s _atomic_write_text no longer creates its temp file with "
+            "O_CREAT|O_EXCL -- that's the collision-safety half of the atomic-write pattern it exists to copy."
+        )
+        assert "os.replace(" in func_source, (
+            f"{_SYNC_ROOM_DIRECTORY_PATH}'s _atomic_write_text no longer renames into place with os.replace -- "
+            "that's the atomicity half of the pattern (a partial write must never be observable at the real path)."
+        )
+        assert "os.chmod(" in func_source or ", mode)" in func_source, (
+            f"{_SYNC_ROOM_DIRECTORY_PATH}'s _atomic_write_text no longer sets restrictive permissions on the "
+            "OAuth token file it writes."
         )

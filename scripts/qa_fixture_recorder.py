@@ -1359,6 +1359,16 @@ EXPECTED_FIXTURES: dict[str, tuple[str, ...]] = {
     "telegram": ("get_messages.json",),
 }
 
+# In-module consistency check, not just the deferred one in
+# tests/unit/test_qa_fixture_recorder.py's TestFixturePresence: fails at
+# import time (so a straight `python scripts/qa_fixture_recorder.py`, not
+# only `pytest`, catches it too) if a connector is ever added to one dict
+# without the other -- see EXPECTED_FIXTURES's own comment above.
+assert set(EXPECTED_FIXTURES) == set(CONNECTOR_CHECKS), (
+    f"EXPECTED_FIXTURES and CONNECTOR_CHECKS have drifted apart: "
+    f"{set(EXPECTED_FIXTURES) ^ set(CONNECTOR_CHECKS)}"
+)
+
 
 # ---------------------------------------------------------------------------- #
 # CLI
