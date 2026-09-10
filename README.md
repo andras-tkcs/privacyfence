@@ -296,11 +296,17 @@ Prefer a bare `pip`/`pipx install privacyfence` plus the repo-root `privacyfence
 
 ### Run from source
 
+Needs pip 21.3+ — this is a `pyproject.toml`-only project (no `setup.py`), and editable installs
+of those need pip's PEP 660 support, added in 21.3. An older pip fails with *"File 'setup.py' or
+'setup.cfg' not found... editable mode currently requires a setuptools-based build"*; if you hit
+that, `pip install --upgrade pip` first.
+
 ```bash
 git clone https://github.com/privacyfence/privacyfence
 cd privacyfence
 python -m venv .venv
 source .venv/bin/activate
+pip install --upgrade pip
 pip install -e .
 ```
 

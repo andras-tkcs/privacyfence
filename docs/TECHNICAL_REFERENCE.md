@@ -1445,12 +1445,15 @@ that, which today is nothing (no system-wide config exists to purge).
 
 ### From source
 
-**Requirements:** Python 3.11+, macOS or Linux
+**Requirements:** Python 3.11+, macOS or Linux, pip 21.3+ (needed for a `pyproject.toml`-only
+editable install — this repo has no `setup.py`; an older pip fails with *"File 'setup.py' or
+'setup.cfg' not found... editable mode currently requires a setuptools-based build"*)
 
 ```bash
 git clone https://github.com/privacyfence/privacyfence
 cd privacyfence
 python -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
 pip install -e .
 ```
 
