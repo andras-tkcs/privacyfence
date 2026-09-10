@@ -33,6 +33,21 @@ authorization codes, access tokens and refresh tokens are in-memory only --
 short-lived by design (§5.4's decision-ledger precedent: state that's
 supposed to expire soon anyway doesn't need to survive a restart), so
 losing them on restart just means signing in again, not a security gap.
+
+Resource controls (SEC-16, docs/security-remediation-plan.md Phase 3 item
+3.3): ``/register`` is unauthenticated by design -- that's what "dynamic"
+means in DCR -- so this class, not the reverse proxy in front of it, is
+the only thing standing between an anonymous POST loop and an unbounded
+``oauth_clients.json``. ``register_client`` enforces a total-client cap
+and a per-registration metadata-size cap (both raise ``RegistrationError``,
+surfaced by the SDK's handler as RFC 7591's ``invalid_client_metadata``),
+and opportunistically prunes clients nobody has authenticated as in
+``_STALE_CLIENT_TTL_SECONDS`` before checking the cap. ``authorize()``
+count-bounds ``_pending`` (not just TTL-expires it) so a burst of
+authorize attempts can't grow that dict without limit inside one TTL
+window. None of this replaces reverse-proxy rate-limiting in front of
+``/register``/``/authorize``/``/token`` (see the org setup guide's own
+section on it) -- it's the in-process backstop for whatever gets through.
 """
 from __future__ import annotations
 
@@ -49,7 +64,9 @@ from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
     AuthorizationParams,
+    AuthorizeError,
     RefreshToken,
+    RegistrationError,
     TokenError,
     construct_redirect_uri,
 )
@@ -68,6 +85,49 @@ IDP_CALLBACK_PATH = "/oauth/idp/callback"
 _AUTHORIZATION_CODE_TTL_SECONDS = 5 * 60
 _ACCESS_TOKEN_TTL_SECONDS = 60 * 60
 _PENDING_AUTHORIZATION_TTL_SECONDS = 5 * 60
+
+# SEC-16 (docs/security-remediation-plan.md, Phase 3 item 3.3): DCR's
+# ``/register`` endpoint is unauthenticated by design (RFC 7591 -- that's
+# the whole point of *dynamic* registration) and, before this fix, had no
+# resource controls at all: no cap on how many clients could pile up in
+# ``oauth_clients.json``, no cap on how large one registration's metadata
+# could be, and no way for a long-abandoned client to ever leave the store.
+# These four constants are that hardening's knobs -- all in-process,
+# same-process defenses, complementary to (not a replacement for) the
+# reverse-proxy rate-limiting the org setup guide now recommends in front
+# of ``/register``, ``/authorize`` and ``/token``.
+#
+# Total distinct clients this daemon will ever hold at once. Generous --
+# real orgs register one Claude Desktop/Code client per employee machine,
+# so a few hundred to a few thousand principals is the normal range this
+# has to comfortably clear -- while still bounding the disk file DCR spam
+# could otherwise grow without limit.
+_MAX_REGISTERED_CLIENTS = 2000
+# One registration's serialized metadata (client_name, redirect_uris,
+# jwks, contacts, etc.) -- bounds the per-client storage a single
+# unauthenticated POST to /register can claim. Real MCP clients' metadata
+# is a few hundred bytes; this leaves headroom for legitimate variation
+# (long client_name/logo_uri/jwks) without letting one registration write
+# an arbitrarily large blob into oauth_clients.json.
+_MAX_CLIENT_METADATA_BYTES = 8 * 1024
+# A client nobody has authenticated as (no /authorize, /token or /revoke
+# call that named it -- see get_client's last_used_at bump) for this long
+# is pruned the next time a new client registers. Long enough that a
+# legitimately-idle Claude connector (someone on leave, a machine turned
+# off for weeks) is never at real risk of losing its registration; long
+# enough that this is genuinely "stale", not "a client cap enforced via a
+# side door". Losing a stale registration just means that client
+# re-registers via DCR next time it's used, per this module's own
+# docstring precedent for why none of DCR's state needs to be permanent.
+_STALE_CLIENT_TTL_SECONDS = 180 * 24 * 60 * 60
+# Global ceiling on concurrently in-flight (not-yet-completed) /authorize
+# attempts, on top of the TTL-based _prune_pending above. The TTL alone
+# bounds how long a stale entry survives, not how many can pile up
+# *within* that window -- a client (or anyone hitting /authorize without
+# even a registered client_id's worth of legitimacy) that fires
+# /authorize in a tight loop can otherwise grow this dict without bound
+# for up to _PENDING_AUTHORIZATION_TTL_SECONDS before the next prune.
+_MAX_PENDING_AUTHORIZATIONS = 1000
 
 # SEC-12 (docs/security-remediation-plan.md, Phase 1 item 1.6): a hard cap
 # on how long one continuous refresh-token *chain* may be used, regardless
@@ -102,6 +162,19 @@ class _OrgRefreshToken(RefreshToken):
     display_name: str = ""
     is_admin: bool = False
     issued_at: float = 0.0
+
+
+@dataclass
+class _StoredClient:
+    """A DCR-registered client plus the bookkeeping SEC-16's stale-client
+    pruning needs. ``last_used_at`` starts at registration time and is
+    bumped by ``get_client`` -- called by the SDK's own handlers on every
+    ``/authorize``, ``/token`` and ``/revoke`` request that names this
+    client -- so it tracks actual use, not just how long ago DCR happened
+    once."""
+
+    info: OAuthClientInformationFull
+    last_used_at: float
 
 
 @dataclass
@@ -144,7 +217,7 @@ class OrgOAuthProvider:
         self._idp_callback_url = idp_callback_url
         self._clients_path = Path(_clients_file_path())
         self._lock = threading.Lock()
-        self._clients: dict[str, OAuthClientInformationFull] = self._load_clients()
+        self._clients: dict[str, _StoredClient] = self._load_clients()
         self._pending: dict[str, _PendingAuthorization] = {}
         self._codes: dict[str, _IssuedCode] = {}
         self._access_tokens: dict[str, AccessToken] = {}
@@ -159,30 +232,90 @@ class OrgOAuthProvider:
     # DCR client store
     # ------------------------------------------------------------------ #
 
-    def _load_clients(self) -> dict[str, OAuthClientInformationFull]:
+    def _load_clients(self) -> dict[str, _StoredClient]:
         if not self._clients_path.exists():
             return {}
         try:
             raw = json.loads(self._clients_path.read_text(encoding="utf-8"))
-            return {
-                client_id: OAuthClientInformationFull.model_validate(data)
-                for client_id, data in raw.items()
-            }
+            now = time.time()
+            clients: dict[str, _StoredClient] = {}
+            for client_id, data in raw.items():
+                # New format (SEC-16): {"client": {...}, "last_used_at": ...}.
+                # Old format (pre-SEC-16): the client's own fields directly,
+                # at the top level -- still readable so an upgrade doesn't
+                # drop every client an org already has registered. A client
+                # loaded from the old format has no recorded last-use, so it
+                # starts the clock now rather than being treated as already
+                # stale (and immediately eligible for pruning) the moment
+                # this daemon restarts on the new code.
+                if isinstance(data, dict) and "client" in data and "last_used_at" in data:
+                    info = OAuthClientInformationFull.model_validate(data["client"])
+                    last_used_at = float(data["last_used_at"])
+                else:
+                    info = OAuthClientInformationFull.model_validate(data)
+                    last_used_at = now
+                clients[client_id] = _StoredClient(info=info, last_used_at=last_used_at)
+            return clients
         except Exception as exc:
             logger.warning("Could not read %s: %s -- starting with no registered clients", self._clients_path, exc)
             return {}
 
     def _save_clients_locked(self) -> None:
-        raw = {cid: json.loads(info.model_dump_json()) for cid, info in self._clients.items()}
+        raw = {
+            cid: {"client": json.loads(stored.info.model_dump_json()), "last_used_at": stored.last_used_at}
+            for cid, stored in self._clients.items()
+        }
         atomic_write_json(self._clients_path, raw, indent=2, sort_keys=True)
+
+    def _prune_stale_clients_locked(self) -> bool:
+        """SEC-16: a client nobody has authenticated as in
+        ``_STALE_CLIENT_TTL_SECONDS`` is dropped -- called from
+        ``register_client`` (mirroring ``authorize``'s own
+        ``_prune_pending`` precedent: pruning piggybacks on the operation
+        that would otherwise grow the store, rather than needing its own
+        background scheduler). Returns whether anything was pruned, so the
+        caller can persist the smaller store even on a path (e.g. the
+        total-client cap still being hit right after pruning) that
+        wouldn't otherwise write -- leaving a pruned client sitting in
+        ``oauth_clients.json`` until some *other* registration happens to
+        succeed would make the on-disk store outlive its own prune."""
+        now = time.time()
+        stale = [
+            cid for cid, stored in self._clients.items()
+            if (now - stored.last_used_at) > _STALE_CLIENT_TTL_SECONDS
+        ]
+        for cid in stale:
+            del self._clients[cid]
+        if stale:
+            logger.info("Pruned %d stale DCR client(s) unused for over %d days", len(stale), _STALE_CLIENT_TTL_SECONDS // 86400)
+        return bool(stale)
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         with self._lock:
-            return self._clients.get(client_id)
+            stored = self._clients.get(client_id)
+            if stored is None:
+                return None
+            stored.last_used_at = time.time()
+            self._save_clients_locked()
+            return stored.info
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        metadata_bytes = len(client_info.model_dump_json().encode("utf-8"))
+        if metadata_bytes > _MAX_CLIENT_METADATA_BYTES:
+            raise RegistrationError(
+                error="invalid_client_metadata",
+                error_description=f"registration metadata exceeds {_MAX_CLIENT_METADATA_BYTES} bytes",
+            )
         with self._lock:
-            self._clients[client_info.client_id] = client_info
+            pruned = self._prune_stale_clients_locked()
+            if client_info.client_id not in self._clients and len(self._clients) >= _MAX_REGISTERED_CLIENTS:
+                if pruned:
+                    self._save_clients_locked()
+                raise RegistrationError(
+                    error="invalid_client_metadata",
+                    error_description="this server has reached its registered-client limit; contact your administrator",
+                )
+            self._clients[client_info.client_id] = _StoredClient(info=client_info, last_used_at=time.time())
             self._save_clients_locked()
         logger.info("Registered OAuth client %r via DCR", client_info.client_id)
 
@@ -196,6 +329,16 @@ class OrgOAuthProvider:
         idp_nonce = secrets.token_urlsafe(16)
         idp_code_verifier, idp_code_challenge = org_identity.generate_pkce_pair()
         with self._lock:
+            # SEC-16: the TTL-based prune above bounds how long a pending
+            # authorization survives, not how many can accumulate *within*
+            # that window -- this bounds that too, so a burst of
+            # /authorize calls can't grow this dict without limit before
+            # the next natural prune.
+            if len(self._pending) >= _MAX_PENDING_AUTHORIZATIONS:
+                raise AuthorizeError(
+                    error="temporarily_unavailable",
+                    error_description="too many sign-ins in progress; please try again shortly",
+                )
             self._pending[own_state] = _PendingAuthorization(
                 client_id=client.client_id, params=params, idp_nonce=idp_nonce,
                 idp_code_verifier=idp_code_verifier, created_at=time.time(),

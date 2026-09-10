@@ -1,0 +1,29 @@
+Source: privacyfence
+Section: utils
+Priority: optional
+Maintainer: Andras Takacs <info@privacyfence.eu>
+Rules-Requires-Root: no
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/privacyfence/privacyfence
+
+Package: privacyfence
+Architecture: amd64 arm64
+# arm64 is listed as a supported architecture (docs/linux-local-deb-packaging-plan.md P4.2), but
+# scripts/build_deb.sh only actually builds for the host it runs on, and CI (P5.1) currently runs
+# only an amd64 leg -- arm64 is a follow-up once there's a concrete request, not a build-script
+# code change (PyInstaller needs a real arm64 build host; it doesn't cross-compile).
+Depends: ${misc:Depends}
+Description: Privacy proxy between Claude (MCP) and your personal data
+ PrivacyFence sits between Claude (or any other MCP client) and your personal
+ data -- Gmail, Google Drive, Calendar, Contacts, Tasks, Slack, Telegram,
+ Salesforce, Jira, and Confluence -- gating every read and write through a
+ human-readable approval UI, policy-based auto-accept rules, and an audit
+ log, all served from a local embedded web UI (no cloud dependency for the
+ review flow itself).
+ .
+ This package installs a self-contained PyInstaller build of the daemon
+ (Python interpreter and all dependencies bundled): it declares no
+ python3-* dependencies beyond what's already part of a standard Debian/
+ Ubuntu desktop (glibc and friends). See
+ https://github.com/privacyfence/privacyfence for full documentation.

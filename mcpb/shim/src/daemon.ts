@@ -14,6 +14,7 @@
 import { spawn } from "node:child_process";
 import fs, { constants as fsConstants } from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { ShimExitError } from "./errors.js";
 import { MCP_URL_FILE } from "./protocol.js";
@@ -48,6 +49,10 @@ export interface FindDaemonCmdOptions {
   pathEnv?: string;
   /** Defaults to the real PrivacyFenceApp.app path; overridable for tests. */
   defaultAppPath?: string;
+  /** Defaults to os.homedir(); overridable for tests. */
+  homeDir?: string;
+  /** Defaults to process.platform; overridable for tests. */
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -55,12 +60,16 @@ export interface FindDaemonCmdOptions {
  * bridge/src/daemon.ts's findDaemonCmd: the shim ships inside the .mcpb,
  * never as a sibling of privacyfence-app on disk, so this normally only
  * matters as a fallback -- the daemon should already be running via its
- * LaunchAgent by the time Claude Desktop spawns the shim.
+ * LaunchAgent (macOS) / systemd --user unit or XDG autostart entry (Linux,
+ * per docs/linux-local-deb-packaging-plan.md's Phase 3) by the time Claude
+ * Desktop spawns the shim.
  */
 export function findDaemonCmd(opts: FindDaemonCmdOptions = {}): string[] {
   const scriptPath = opts.scriptPath ?? process.argv[1] ?? process.execPath;
   const pathEnv = opts.pathEnv ?? process.env.PATH ?? "";
   const defaultAppPath = opts.defaultAppPath ?? DEFAULT_APP_PATH;
+  const homeDir = opts.homeDir ?? os.homedir();
+  const platform = opts.platform ?? process.platform;
 
   const here = path.dirname(path.resolve(scriptPath));
   const sibling = path.join(here, "privacyfence-app");
@@ -70,6 +79,20 @@ export function findDaemonCmd(opts: FindDaemonCmdOptions = {}): string[] {
   if (found) return [found];
 
   if (isExecutable(defaultAppPath)) return [defaultAppPath];
+
+  // Linux fallback: a `.deb` install puts a wrapper at /usr/bin/privacyfence-app
+  // (normally already on PATH, so the which() lookup above would have found
+  // it), but a `pipx install privacyfence` (windows-linux-support-plan.md's
+  // Track A2 "verify the pip/pipx path" item) drops the console script at
+  // ~/.local/bin/privacyfence-app instead -- a location that's on a user's
+  // interactive shell PATH but not necessarily on the trimmed-down PATH a
+  // graphical session (and therefore Claude Desktop, and this spawned shim)
+  // inherits. Check it explicitly before giving up, same spirit as
+  // DEFAULT_APP_PATH above for the macOS .app case.
+  if (platform === "linux") {
+    const linuxPipxDefault = path.join(homeDir, ".local", "bin", "privacyfence-app");
+    if (isExecutable(linuxPipxDefault)) return [linuxPipxDefault];
+  }
 
   // Development fallback: run the daemon as a Python module. Relies on a
   // `python3` already on PATH with privacyfence installed (e.g. an

@@ -16,6 +16,7 @@ from privacyfence.web.csp import build_csp
 from privacyfence.web.server import (
     DEFAULT_PORT,
     WebServer,
+    _parse_host_header,
     _PrincipalScopeMiddleware,
     _SecurityHeadersMiddleware,
     build_app,
@@ -39,9 +40,9 @@ def _signed_in(client: TestClient, sessions: LocalSessionStore) -> str:
 
 
 class TestHostAllowlist:
-    def _client(self):
+    def _client(self, allowed_hosts=frozenset({"localhost"})):
         sessions = LocalSessionStore()
-        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, allowed_hosts=frozenset({"localhost"}))
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, allowed_hosts=allowed_hosts)
         client = TestClient(app, base_url="http://localhost")
         _signed_in(client, sessions)
         return client
@@ -57,6 +58,74 @@ class TestHostAllowlist:
     def test_port_suffix_on_the_host_header_is_ignored_for_matching(self):
         r = self._client().get("/approvals", headers={"Host": "localhost:9999"})
         assert r.status_code == 200
+
+    def test_ipv4_host_with_port_matches_the_bare_address(self):
+        client = self._client(allowed_hosts=frozenset({"127.0.0.1"}))
+        r = client.get("/approvals", headers={"Host": "127.0.0.1:9999"})
+        assert r.status_code == 200
+
+    def test_ipv6_literal_host_matches_after_stripping_brackets(self):
+        # SEC-17: the old split(":", 1)[0] returned "[" for this, which
+        # could never be in any real allowlist.
+        client = self._client(allowed_hosts=frozenset({"::1"}))
+        r = client.get("/approvals", headers={"Host": "[::1]"})
+        assert r.status_code == 200
+
+    def test_ipv6_literal_host_with_port_matches_after_stripping_brackets(self):
+        client = self._client(allowed_hosts=frozenset({"::1"}))
+        r = client.get("/approvals", headers={"Host": "[::1]:9999"})
+        assert r.status_code == 200
+
+    def test_malformed_host_header_is_rejected(self):
+        r = self._client().get("/approvals", headers={"Host": "[::1"})
+        assert r.status_code == 400
+
+
+class TestParseHostHeader:
+    """Direct coverage of the RFC-3986-aware parser SEC-17 (docs/security-
+    remediation-plan.md Phase 3 item 3.4) replaced the manual
+    ``split(":", 1)[0]`` with -- TestHostAllowlist above covers it wired
+    into the real middleware, this covers every branch of the parser
+    itself."""
+
+    def test_bare_hostname(self):
+        assert _parse_host_header("localhost") == "localhost"
+
+    def test_hostname_is_lowercased(self):
+        assert _parse_host_header("LocalHost") == "localhost"
+
+    def test_ipv4_without_port(self):
+        assert _parse_host_header("127.0.0.1") == "127.0.0.1"
+
+    def test_ipv4_with_port(self):
+        assert _parse_host_header("127.0.0.1:8080") == "127.0.0.1"
+
+    def test_ipv6_without_port(self):
+        assert _parse_host_header("[::1]") == "::1"
+
+    def test_ipv6_with_port(self):
+        assert _parse_host_header("[::1]:8443") == "::1"
+
+    def test_empty_header_is_rejected(self):
+        assert _parse_host_header("") is None
+
+    def test_unparsable_port_is_rejected(self):
+        assert _parse_host_header("[::1]:not-a-port") is None
+
+    def test_userinfo_is_rejected(self):
+        # A Host header never carries "user@host" -- accepting it would
+        # let an attacker-controlled prefix ride along to a hostname that
+        # happens to be allowed.
+        assert _parse_host_header("attacker@localhost") is None
+
+    def test_path_smuggled_after_the_host_is_rejected(self):
+        assert _parse_host_header("localhost/evil") is None
+
+    def test_query_smuggled_after_the_host_is_rejected(self):
+        assert _parse_host_header("localhost?x=1") is None
+
+    def test_fragment_smuggled_after_the_host_is_rejected(self):
+        assert _parse_host_header("localhost#frag") is None
 
 
 class TestPrincipalScopeMiddleware:
@@ -140,6 +209,69 @@ class TestSecurityHeaders:
         r = TestClient(app, base_url="http://localhost").get("/approvals")  # unauthenticated -> 401
         assert r.status_code == 401
         assert r.headers.get("x-frame-options") == "DENY"
+
+    def test_permissions_policy_denies_unused_powerful_features(self):
+        # SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5).
+        r = self._client().get("/approvals")
+        policy = r.headers.get("permissions-policy", "")
+        assert "camera=()" in policy
+        assert "microphone=()" in policy
+        assert "geolocation=()" in policy
+
+    def test_permissions_policy_leaves_webauthn_at_its_self_default(self):
+        # web/routes_security.py's step-up flow needs these from this same
+        # origin -- see _PERMISSIONS_POLICY's own comment.
+        r = self._client().get("/approvals")
+        policy = r.headers.get("permissions-policy", "")
+        assert "publickey-credentials-get=(self)" in policy
+        assert "publickey-credentials-create=(self)" in policy
+
+    def test_cross_origin_opener_policy_is_same_origin(self):
+        r = self._client().get("/approvals")
+        assert r.headers.get("cross-origin-opener-policy") == "same-origin"
+
+    def test_no_strict_transport_security_in_local_mode(self):
+        # Local mode is plain http://localhost by design (module docstring)
+        # -- sending HSTS there would be at best inert, at worst harmful
+        # (see _SecurityHeadersMiddleware's own docstring).
+        r = self._client().get("/approvals")
+        assert "strict-transport-security" not in r.headers
+
+
+class TestCacheControlOnSensitivePages:
+    """SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): a sweep
+    across every local-mode page that carries session- or approval-specific
+    content, rather than trusting that each route author remembered
+    Cache-Control: no-store on their own -- a future new page that forgets
+    it fails here instead of shipping silently cacheable."""
+
+    def test_the_approvals_page_is_no_store(self):
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions)
+        client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
+        r = client.get("/approvals")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store"
+
+    def test_the_settings_page_is_no_store(self, tmp_path, monkeypatch):
+        controller = _controller(tmp_path, monkeypatch)
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions, controller=controller)
+        client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
+        r = client.get("/settings")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store"
+
+    def test_the_unauthorized_landing_page_is_no_store(self):
+        # Regression test: this page names a live bearer-secret command
+        # (session_auth.unauthorized_html) and, before SEC-18, shipped with
+        # no Cache-Control header at all.
+        app = build_app(WebApprovalUI(), token=TOKEN)
+        r = TestClient(app, base_url="http://localhost").get("/approvals")
+        assert r.status_code == 401
+        assert r.headers.get("cache-control") == "no-store"
 
 
 class TestCspNonce:

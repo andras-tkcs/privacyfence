@@ -1,0 +1,50 @@
+#!/usr/bin/make -f
+#
+# debhelper boilerplate for the privacyfence .deb -- see
+# docs/linux-local-deb-packaging-plan.md Phase 2 for the reasoning.
+#
+# NOTE on how this repo actually builds the package: scripts/build_deb.sh does NOT invoke
+# `dpkg-buildpackage`/`fakeroot debian/rules binary` against this file. It builds the PyInstaller
+# onedir output itself (Phase 1, outside any Debian build-system concept -- there's no Python
+# extension to compile, no upstream tarball to unpack), stages debian/control + debian/install's
+# file mappings directly into a package tree under build/deb-stage/, and invokes `dpkg-deb --build
+# --root-owner-group` on that tree directly, rather than going through the full dh sequencer. This
+# file exists so debian/ is still a policy-conformant, lintian-checkable Debian source package
+# (Standards-Version 4.6.2's own recommendation, and useful if this project's release process ever
+# grows into a real archive/PPA upload that *does* need dpkg-buildpackage) even though the
+# project's own build script takes the simpler, more controllable direct-staging path described
+# above -- consistent with scripts/build_dmg.sh not going through Xcode either.
+#
+# If you do run the full pipeline (`dpkg-buildpackage -b -us -uc --root-owner-group`) against this
+# file directly: it expects dist/PrivacyFenceApp/ (Phase 1's PyInstaller onedir output) to already
+# exist -- run `pyinstaller PrivacyFenceApp.linux.spec` first. debian/install's mappings are the
+# single source of truth for what gets installed where; keep this file and debian/install in sync
+# with scripts/build_deb.sh if either changes.
+
+%:
+	dh $@
+
+# The PyInstaller onedir output (dist/PrivacyFenceApp/) is fully self-contained -- it bundles its
+# own copies of every shared library it needs and was never built to be relinked against the
+# *build host's* system libraries. dh_shlibdeps scanning those bundled .so files would compute
+# spurious ${shlibs:Depends} bounds tied to the build host's package versions, not what the
+# bundle actually carries -- exactly the "no python3-* dependency requirements" property the "key
+# decision" in docs/linux-local-deb-packaging-plan.md is built around. Skip it entirely.
+override_dh_shlibdeps:
+
+# Same reasoning as dh_shlibdeps: PyInstaller's bootloader embeds the frozen application's PKG
+# archive inside a custom ELF section (see PrivacyFenceApp.linux.spec's Analysis/EXE step) --
+# stripping post hoc via dh_strip is untested against that layout and unnecessary (the spec
+# already builds with strip=False, matching PrivacyFenceApp.spec's macOS build).
+override_dh_strip:
+
+# No Python build step to run -- Phase 1's PyInstaller build already produced dist/PrivacyFenceApp/
+# before this file would ever run; nothing here re-invokes it.
+override_dh_auto_build:
+
+override_dh_auto_test:
+
+# debian/install already declares every file mapping dh_install needs (which is what the default
+# dh sequence's dh_install step reads); there's no separate "install into a build dir" step for a
+# pre-built binary bundle like there would be for `setup.py install`.
+override_dh_auto_install:

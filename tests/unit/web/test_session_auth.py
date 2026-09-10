@@ -289,3 +289,18 @@ class TestVerifyBearerSecret:
         assert sa.verify_bearer_secret(Request(scope), "s3cr3t") is True
 
         assert calls == [("s3cr3t", "s3cr3t")]
+
+
+class TestUnauthorizedHtml:
+    def test_is_no_store(self):
+        # SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5):
+        # this page names a live bearer-secret command (the exact
+        # ~/.privacyfence/web_token curl invocation) -- it must never be
+        # cached, and previously carried no Cache-Control header at all.
+        scope = {
+            "type": "http", "headers": [], "method": "GET", "path": "/approvals",
+            "scheme": "http", "server": ("localhost", 8765),
+        }
+        response = sa.unauthorized_html(Request(scope))
+        assert response.status_code == 401
+        assert response.headers["cache-control"] == "no-store"

@@ -43,7 +43,12 @@ collapsed back into one.
 This tier is fully self-contained: no network calls to Gmail/Slack/Jira/etc., no credentials, no
 manual steps. It includes:
 
-- Every module under `tests/unit/`, one test module per `src/privacyfence/` module.
+- Every module under `tests/unit/`, one test module per `src/privacyfence/` module — with one
+  deliberate exception: `connector_host.py`'s `ConnectorHost` (the live `{name: Connector}` map) has
+  no `test_connector_host.py` of its own; its behavior is exercised through its three consumers'
+  own test modules instead (`test_settings_controller.py`, `test_daemon_main.py`,
+  `tests/unit/web/test_routes_settings.py`, `tests/unit/web/test_server.py`), since it's a thin
+  enough holder that testing it in isolation would just re-mock what those already cover for real.
 - Each connector's `TestLiveFixtureParsing` class (in `tests/unit/test_<connector>_client.py`),
   which replays a **previously recorded** fixture from `tests/fixtures/live/<connector>/` through
   the real `_parse_*` method — still fully offline, since it's reading a committed JSON file, not

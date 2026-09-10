@@ -1473,8 +1473,8 @@ class TestRulePersistence:
 
 # --------------------------------------------------------------------------- #
 # remove_auto_accept_rule / get_current_config / mutate_grants -- the
-# bridge-facing write/read primitives gate.propose_rule_change() and
-# ipc_server.py's list_rules handler build on (see gate.py's docstring).
+# write/read primitives gate.propose_rule_change() and web/mcp_dispatch.py's
+# McpDispatcher.list_rules() build on (see gate.py's docstring).
 # --------------------------------------------------------------------------- #
 
 class TestRemoveAutoAcceptRule:
