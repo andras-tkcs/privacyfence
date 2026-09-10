@@ -157,3 +157,20 @@ class TestClaimFailures:
         _signed_in(client, sessions, ALICE)
         r = client.get(f"/downloads/{_url_token(token)}", headers={"Origin": "https://evil.example.com"})
         assert r.status_code == 403
+
+    def test_404_and_403_responses_are_no_store(self):
+        # SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): a
+        # per-token path is low caching risk either way, but this route
+        # never sent Cache-Control at all on its error branches before.
+        app, sessions, store = _app()
+        token = store.stage(ALICE, b"data", "f.txt", "text/plain")
+        client = _client(app)
+        _signed_in(client, sessions, ALICE)
+
+        unknown = client.get(f"/downloads/{_url_token(bytes(32))}")
+        assert unknown.status_code == 404
+        assert unknown.headers["cache-control"] == "no-store"
+
+        forbidden = client.get(f"/downloads/{_url_token(token)}", headers={"Origin": "https://evil.example.com"})
+        assert forbidden.status_code == 403
+        assert forbidden.headers["cache-control"] == "no-store"

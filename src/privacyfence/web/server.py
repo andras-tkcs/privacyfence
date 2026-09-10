@@ -131,6 +131,34 @@ _CSP = (
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 
+# SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): every
+# browser feature this app never uses, denied outright -- the same "narrow,
+# explicit exceptions for exactly what these pages actually use" posture
+# _CSP already takes. ``publickey-credentials-get``/``-create`` are the one
+# exception left at their browser default (``self``) rather than denied:
+# web/routes_security.py's step-up flow calls ``navigator.credentials.get``/
+# ``.create`` from this same origin, and Permissions-Policy's own default
+# allowlist for both directives is already ``self`` -- naming them
+# explicitly here just documents that on purpose instead of leaving a
+# future reader to wonder whether they were overlooked.
+_PERMISSIONS_POLICY = (
+    "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), "
+    "fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), "
+    "midi=(), payment=(), picture-in-picture=(), publickey-credentials-create=(self), "
+    "publickey-credentials-get=(self), screen-wake-lock=(), usb=(), xr-spatial-tracking=()"
+)
+
+# SEC-18: one year, subdomains included -- the usual conservative starting
+# point (see e.g. OWASP's HSTS cheat sheet) short of the two-year "preload"
+# submission length, which this app has no business requesting: preload is
+# a permanent, browser-vendor-controlled commitment keyed on the exact
+# public hostname, wrong for a value that varies per self-hosted org
+# deployment (``org.issuer_url``'s host) rather than being one fixed domain
+# this project itself controls. Only ever added in org mode -- see
+# _SecurityHeadersMiddleware's own docstring for why local mode never sends
+# this header at all.
+_HSTS = "max-age=31536000; includeSubDomains"
+
 
 def load_or_create_token() -> str:
     """The persistent local-mode secret -- see module docstring. Reused
@@ -185,15 +213,34 @@ class _SecurityHeadersMiddleware:
     """Plain ASGI middleware (not starlette.middleware.base.
     BaseHTTPMiddleware, which buffers the whole response) adding the fixed
     header set every response from this app needs -- see
-    docs/https-connector-refactor-plan.md §10.5. Cache-Control: no-store is
-    also set per-route (web/routes_approvals.py) for the routes that
-    actually carry approval content, since a static blanket no-store here
-    would be redundant with, not a replacement for, being deliberate about
-    it at the route that matters.
+    docs/https-connector-refactor-plan.md §10.5 and, for the three added by
+    SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5), the
+    module-level ``_PERMISSIONS_POLICY``/``_HSTS`` constants' own comments.
+    Cache-Control: no-store is also set per-route (web/routes_approvals.py
+    and friends) for the routes that actually carry sensitive content,
+    since a static blanket no-store here would be redundant with, not a
+    replacement for, being deliberate about it at the route that matters --
+    see test_server.py's ``TestCacheControlOnSensitivePages`` for the sweep
+    that checks every one of those routes actually does.
+
+    ``hsts`` gates ``Strict-Transport-Security`` alone: local mode (``org``
+    is ``None`` in build_app()) binds to plain ``http://localhost`` by
+    design (this module's own docstring), where the header is at best
+    inert and at worst actively wrong -- a browser that honored it would
+    start refusing plain-HTTP connections to ``localhost`` for every *other*
+    app on the machine too, since HSTS is scoped by hostname, not by port
+    or origin. Org mode is the one caller that passes ``hsts=True``: its
+    ``issuer_url`` is a real, single-purpose public hostname reached over
+    HTTPS (TLS terminated here or, just as often, at a reverse proxy in
+    front of this daemon -- either way the browser's own connection is
+    HTTPS, which is what HSTS actually governs), so pinning that hostname
+    to HTTPS-only is exactly the SEC-18 win intended, with none of local
+    mode's collateral risk.
     """
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, *, hsts: bool = False) -> None:
         self._app = app
+        self._hsts = hsts
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -208,7 +255,11 @@ class _SecurityHeadersMiddleware:
                     (b"x-content-type-options", b"nosniff"),
                     (b"referrer-policy", b"no-referrer"),
                     (b"content-security-policy", _CSP.encode("ascii")),
+                    (b"permissions-policy", _PERMISSIONS_POLICY.encode("ascii")),
+                    (b"cross-origin-opener-policy", b"same-origin"),
                 ])
+                if self._hsts:
+                    headers.append((b"strict-transport-security", _HSTS.encode("ascii")))
                 message = {**message, "headers": headers}
             await send(message)
 
@@ -625,7 +676,7 @@ def _build_org_app(
     resolver = principal_resolver or _org_principal_resolver(org.sessions)
     scoped: ASGIApp = _PrincipalScopeMiddleware(app, resolver)
     wrapped: ASGIApp = _HostAllowlistMiddleware(scoped, allowed_hosts)
-    return _SecurityHeadersMiddleware(wrapped)
+    return _SecurityHeadersMiddleware(wrapped, hsts=True)
 
 
 class WebServer:

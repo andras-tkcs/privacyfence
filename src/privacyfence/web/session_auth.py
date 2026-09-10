@@ -218,6 +218,11 @@ def unauthorized_html(request: Request) -> Response:
         f"{origin}/api/bootstrap</pre>"
         "</body></html>",
         status_code=401,
+        # SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): this
+        # page carries a live bearer-secret path (the exact curl command a
+        # reader is meant to copy-paste) -- no-store even on the 401 branch,
+        # not just the authenticated pages it stands in for.
+        headers={"Cache-Control": "no-store"},
     )
 
 
