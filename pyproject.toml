@@ -81,6 +81,17 @@ dependencies = [
     # already made for the MCP SDK -- see webauthn_stepup.py's own module
     # docstring.
     "webauthn>=3.0,<4.0",
+    # Cross-platform single-instance file locking for daemon_main.py's
+    # _acquire_instance_lock()/_release_instance_lock() (docs/windows-
+    # support-plan.md Phase 1, B1 in docs/windows-linux-support-plan.md):
+    # picks the right OS primitive itself (fcntl.flock on POSIX,
+    # msvcrt/LockFileEx on Windows), the same "don't hand-roll a
+    # platform-locking primitive" reasoning already given above for
+    # PyJWT/webauthn. Not a platform-conditional extra -- it's a small,
+    # pure-Python-plus-stdlib-ctypes library that's a no-op cost on every
+    # platform, so every install gets it rather than branching the
+    # dependency list by sys_platform.
+    "portalocker>=2.8",
 ]
 
 [project.scripts]
@@ -123,6 +134,14 @@ dev = [
     # in as CI.
     "build>=1.2",
     "twine>=5.0",
+    # Build-time-only PNG -> multi-resolution .ico conversion for the
+    # Windows build (docs/windows-support-plan.md Phase 2.3): unlike
+    # macOS's sips/iconutil (used by build_dmg.sh), there's no Windows-
+    # native icon-conversion tool available cross-platform in CI, so
+    # scripts/build_installer.ps1 does it with Pillow instead. Not a
+    # runtime dependency -- mirrors how pyinstaller itself is dev-extra-
+    # only above.
+    "Pillow>=10.0",
 ]
 test = [
     "pytest>=8.0",

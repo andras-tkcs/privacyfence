@@ -70,7 +70,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import fcntl
 import json
 import logging
 import os
@@ -81,6 +80,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import portalocker
 import yaml
 
 from . import audit_forwarding, org_bundle_signing, org_mode
@@ -170,11 +170,19 @@ _lock_fd: int | None = None
 # ---------------------------------------------------------------------------- #
 
 def _acquire_instance_lock() -> bool:
+    # portalocker picks the right OS primitive itself -- fcntl.flock on
+    # POSIX, msvcrt/LockFileEx on Windows (which has no fcntl module at
+    # all: importing it unconditionally used to crash the daemon at
+    # startup on Windows before it got anywhere near this function). Same
+    # "don't hand-roll a platform-locking primitive" reasoning pyproject.
+    # toml already gives for PyJWT/webauthn. It's handed the raw fd
+    # directly (accepted alongside file objects/fileno()-havers), so the
+    # rest of this function -- and every caller/test -- is unchanged.
     global _lock_fd
     fd = os.open(LOCK_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+        portalocker.lock(fd, portalocker.LOCK_EX | portalocker.LOCK_NB)
+    except portalocker.exceptions.LockException:
         os.close(fd)
         return False
     os.ftruncate(fd, 0)
@@ -187,10 +195,14 @@ def _release_instance_lock() -> None:
     global _lock_fd
     if _lock_fd is not None:
         try:
-            fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+            portalocker.unlock(_lock_fd)
             os.close(_lock_fd)
-        except OSError:
-            pass
+        except (OSError, portalocker.exceptions.LockException) as exc:
+            # Best-effort release on shutdown -- swallowed deliberately (the
+            # process is on its way out either way), but logged so a closed/
+            # already-unlocked fd here isn't silently invisible if something
+            # about shutdown ordering ever needs debugging.
+            logger.debug("Failed to release instance lock cleanly: %s", exc)
         _lock_fd = None
 
 
