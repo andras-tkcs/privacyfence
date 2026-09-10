@@ -1445,12 +1445,19 @@ that, which today is nothing (no system-wide config exists to purge).
 
 ### From source
 
-**Requirements:** Python 3.11+, macOS or Linux
+**Requirements:** Python 3.11+, macOS or Linux, pip 21.3+ (needed for a `pyproject.toml`-only
+editable install — this repo has no `setup.py`; an older pip fails with *"File 'setup.py' or
+'setup.cfg' not found... editable mode currently requires a setuptools-based build"*)
+
+Use a 3.11+ interpreter explicitly when creating the venv — a bare `python3` often resolves to an
+older system Python (e.g. macOS's stock 3.9), which fails install with *"Package 'privacyfence'
+requires a different Python: 3.9.6 not in '>=3.11'"*.
 
 ```bash
 git clone https://github.com/privacyfence/privacyfence
 cd privacyfence
-python -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
 pip install -e .
 ```
 
