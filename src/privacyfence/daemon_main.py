@@ -197,8 +197,12 @@ def _release_instance_lock() -> None:
         try:
             portalocker.unlock(_lock_fd)
             os.close(_lock_fd)
-        except (OSError, portalocker.exceptions.LockException):
-            pass
+        except (OSError, portalocker.exceptions.LockException) as exc:
+            # Best-effort release on shutdown -- swallowed deliberately (the
+            # process is on its way out either way), but logged so a closed/
+            # already-unlocked fd here isn't silently invisible if something
+            # about shutdown ordering ever needs debugging.
+            logger.debug("Failed to release instance lock cleanly: %s", exc)
         _lock_fd = None
 
 
