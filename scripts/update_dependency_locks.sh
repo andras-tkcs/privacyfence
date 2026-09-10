@@ -41,11 +41,24 @@ fi
 # requires *every* installed package to be pinned with a hash -- including
 # those. --generate-hashes: the whole point of this file (see module
 # docstring above).
-"$compiler" -m piptools compile --generate-hashes --allow-unsafe \
+#
+# --upgrade: without it, pip-compile treats an existing output file as a
+# constraint and keeps whatever it already has pinned, resolving a newer
+# transitive dependency only when something *forces* it to -- it does NOT
+# re-check whether a newer compatible release has shipped for a package
+# that's already pinned. dependency-audit.yml's lockfile-freshness job
+# compiles into a scratch file that doesn't exist yet, so it always gets a
+# true from-scratch resolve against whatever's on PyPI right now; without
+# --upgrade here, a plain rerun of this script against the already-
+# committed lock files would silently drift behind that and get flagged as
+# stale on the very next dependency-audit.yml run, even with no
+# pyproject.toml change at all -- exactly the trap this script exists to
+# prevent.
+"$compiler" -m piptools compile --generate-hashes --allow-unsafe --upgrade \
   --output-file=requirements/runtime.lock.txt \
   pyproject.toml
 
-"$compiler" -m piptools compile --generate-hashes --allow-unsafe \
+"$compiler" -m piptools compile --generate-hashes --allow-unsafe --upgrade \
   --extra dev --extra test --extra lint \
   --output-file=requirements/dev.lock.txt \
   pyproject.toml

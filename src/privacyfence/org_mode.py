@@ -304,9 +304,70 @@ class AuditForwardingConfig:
         )
 
 
+@dataclass(frozen=True)
+class AuthzPolicyConfig:
+    """SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7): an
+    optional PrivacyFence-level allowlist layered *on top of* the IdP's own
+    authentication, not a replacement for it -- the IdP has already decided
+    who this human is by the time anything here runs (org_identity.py's
+    ``check_authz_policy`` is only ever called after ``principal_from_
+    claims`` has a real ``Principal`` in hand); this decides whether
+    PrivacyFence itself is willing to admit them.
+
+    Exists because docs/org-mode-setup-guide.md §4.1 flags this as a real
+    gap: for a plain (non-Workspace) Google IdP, the OAuth consent screen's
+    own test-user list or verification status is the *only* access control
+    most org-mode deployments have -- an IdP-side setting this repo can't
+    see or audit, let alone enforce consistently across a different IdP.
+
+    Lives in ``org_config.json``'s ``authz`` section, org-mode-only like
+    every other org_mode.py config class. Absent entirely (or an ``authz``
+    section with neither list set) means ``enabled`` is ``False`` -- "no
+    additional restriction, every IdP-authenticated principal is admitted"
+    -- so an existing org-mode install with no ``authz`` section keeps
+    working exactly as before this landed, the same additive/opt-in
+    posture every other org-mode config in this module already has.
+    """
+
+    # Case-folded, leading-"@"-stripped at parse time (see from_org_config)
+    # so "acme.com", "Acme.com" and "@acme.com" in org_config.json all mean
+    # the same thing -- matched against the domain half of the principal's
+    # own (IdP-asserted) email.
+    allowed_domains: tuple[str, ...] = ()
+    # ID token claim (e.g. "groups") that carries group membership -- kept
+    # separate from IdpConfig.admin_group_claim (a different question:
+    # "is this human an admin", not "may this human sign in at all") so an
+    # org can gate sign-in on group membership without also having to
+    # configure -- or share values with -- the admin mapping.
+    groups_claim: str = ""
+    required_groups: tuple[str, ...] = ()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.allowed_domains) or bool(self.required_groups)
+
+    @staticmethod
+    def from_org_config(org_config: dict[str, Any]) -> "AuthzPolicyConfig":
+        raw = org_config.get("authz")
+        raw = raw if isinstance(raw, dict) else {}
+        raw_domains = (str(d).strip().lower().lstrip("@") for d in (raw.get("allowed_domains") or ()))
+        allowed_domains = tuple(domain for domain in raw_domains if domain)
+        required_groups = tuple(str(g) for g in (raw.get("required_groups") or ()) if str(g))
+        groups_claim = raw.get("groups_claim", "") or ""
+        if required_groups and not groups_claim:
+            raise ConfigurationError(
+                "org_config.json's \"authz\".\"required_groups\" is set but \"groups_claim\" is "
+                "empty -- PrivacyFence has no ID token claim to read group membership from"
+            )
+        return AuthzPolicyConfig(
+            allowed_domains=allowed_domains, groups_claim=groups_claim, required_groups=required_groups,
+        )
+
+
 __all__ = [
     "AuditForwardingConfig",
     "AuditForwardingKind",
+    "AuthzPolicyConfig",
     "ConfigurationError",
     "DEFAULT_AUDIT_FORWARDING_KIND",
     "DEFAULT_INLINE_MAX_BYTES",

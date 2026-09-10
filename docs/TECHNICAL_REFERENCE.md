@@ -1009,7 +1009,7 @@ on screen, walked in the fixed declaration order above — not a single top-prio
 configurable (there used to be a `rule_suggestion_priority` `settings.yaml` key controlling this;
 it's gone, since once every match gets its own button there's nothing left to prioritize or
 exclude — a pre-existing `rule_suggestion_priority` block in an older `settings.yaml` still loads
-without error, it's just logged and ignored). An item matching only one candidate still shows
+without error, it's just silently ignored like any other retired settings key). An item matching only one candidate still shows
 exactly one button, identical to every other single-candidate operation. An item matching 2+
 candidates shows one button per match, in their own
 row above Deny/Allow once — clicking any one of them goes straight to that rule's own
@@ -1426,6 +1426,35 @@ Start the daemon:
 privacyfence-app
 ```
 
+### Windows
+
+The installer carries both halves of PrivacyFence — the daemon and the Claude extension — same as
+the DMG:
+
+1. Download the latest `PrivacyFence-<version>-setup.exe` from the [Releases](../../../releases)
+   page.
+2. Run it. Releases are Authenticode-signed. It installs to `%ProgramFiles%\PrivacyFence\`,
+   registers a Task Scheduler task (`schtasks /create ... /sc onlogon`) so the daemon starts at
+   login and restarts itself if it crashes — the direct analogue of the macOS LaunchAgent's
+   `KeepAlive`/`SuccessfulExit=false` — and starts the daemon immediately, no reboot needed.
+3. Open PrivacyFence Settings — the daemon logs the exact URL (with its session token) to
+   `%USERPROFILE%\.privacyfence\logs\privacyfence.log` on startup, e.g.
+   `http://localhost:8765/settings?token=...` — then on the **General** page click
+   **Install/Update Organization Config…** and select the bundle your IT team sent you.
+4. On the **Connectors** page, click **Authenticate…** for each connector you want.
+5. Install **PrivacyFence.mcpb** (installed alongside the daemon under
+   `%ProgramFiles%\PrivacyFence\`) into Claude Desktop.
+
+Uninstalling (via **Add or Remove Programs**) removes the program files and the scheduled task
+only — `%USERPROFILE%\.privacyfence\` (credentials, settings, audit log) is left in place, same as
+the DMG doesn't touch `~/.privacyfence` on removal.
+
+**Known accepted gap:** several places `chmod` credential/token files to `0o600`/`0o700`; on
+Windows this is a silent no-op rather than an error, so credentials rely on default NTFS
+user-profile ACLs (which already restrict a single-user Windows profile to that user) rather than
+an explicit lock-down. This is a deliberate v1 decision, not an oversight — revisit only if a
+security review flags it as insufficient.
+
 ### Linux
 
 Through P9, PrivacyFence was not a working Linux daemon at all — `run_app()` always ended by
@@ -1532,6 +1561,20 @@ bash scripts/build_dmg.sh
 ```
 
 The script produces `dist/PrivacyFence-<version>.dmg` (containing `PrivacyFenceApp.app`).
+
+## Building a Windows installer
+
+On a Windows build host, with [Inno Setup](https://jrsoftware.org/isinfo.php)'s `iscc.exe` on
+PATH:
+
+```powershell
+pip install -e ".[dev]"
+pwsh ./scripts/build_installer.ps1
+```
+
+The script produces `dist/PrivacyFence-<version>-setup.exe` (containing `PrivacyFenceApp.exe`,
+`privacyfence-app.exe`, and `PrivacyFence.mcpb`). See the script's own header comment for the full
+prerequisite list and the optional `SIGN_CERT_PATH`/`SIGN_CERT_PASSWORD` signing env vars.
 
 ## Building a `.deb`
 

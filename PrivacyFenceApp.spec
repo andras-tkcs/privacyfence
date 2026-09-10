@@ -33,8 +33,8 @@ SRC = str(Path("src").resolve())
 sys.path.insert(0, SRC)
 sys.path.insert(0, str(Path("scripts").resolve()))
 
-# Shared with PrivacyFenceApp.linux.spec -- see that module's docstring for why the list itself
-# lives there instead of being hand-copied into both specs.
+# Shared with PrivacyFenceApp.linux.spec and PrivacyFenceApp.win.spec -- see that module's
+# docstring for why the list itself lives there instead of being hand-copied into every spec.
 from pyinstaller_common import DATAS, HIDDEN_IMPORTS
 
 # Version comes from the git tag via setuptools_scm now, not a hardcoded
@@ -49,7 +49,7 @@ VERSION = _pkg_version("privacyfence")
 ICON = os.environ.get("PRIVACYFENCE_ICNS", "src/privacyfence/resources/icon_512.png")
 
 # ── data files / hidden imports ───────────────────────────────────────────────
-# Shared with PrivacyFenceApp.linux.spec via scripts/pyinstaller_common.py (imported above).
+# Shared with every other platform's spec via scripts/pyinstaller_common.py (imported above).
 
 datas = DATAS
 hidden_imports = HIDDEN_IMPORTS

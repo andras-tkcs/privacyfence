@@ -44,6 +44,7 @@ list, see settings_controller.py) rather than a text input, so it commits on
 from __future__ import annotations
 
 import json
+import secrets
 from pathlib import Path
 
 # docs/https-connector-refactor-plan.md §16.2.3: the settings page's own
@@ -1190,19 +1191,28 @@ _JS = r"""
 """
 
 
-def build_html(state: dict) -> str:
+def build_html(state: dict, *, nonce: str | None = None) -> str:
     """Full self-contained HTML document for the settings window's WKWebView.
 
     ``state`` is embedded directly as ``window.__pfInitialState`` so the
     first paint needs no round trip to Python -- see this module's
     docstring for the bridge protocol Python's re-renders (``window.
     __pfRender``) follow afterwards.
+
+    ``nonce`` (SEC-08, docs/security-remediation-plan.md Phase 3.1): the
+    current response's CSP nonce (``request.state.csp_nonce``) -- this
+    fragment is rendered fresh on every ``GET /settings`` and dropped into
+    web/routes_settings.py's own web_shell.wrap() call, which must be given
+    that exact same nonce -- one document, one Content-Security-Policy
+    header. Defaults to a fresh one when omitted (every real caller passes
+    the actual per-request value explicitly).
     """
+    nonce = nonce or secrets.token_urlsafe(18)
     state_json = json.dumps(state)
     return (
         "<title>PrivacyFence Settings</title>"
-        f"<style>{_TOKENS_CSS}{_CSS}</style>"
+        f'<style nonce="{nonce}">{_TOKENS_CSS}{_CSS}</style>'
         '<div id="app"></div>'
-        f"<script>window.__pfInitialState = {state_json};</script>"
-        f"<script>{_JS}</script>"
+        f'<script nonce="{nonce}">window.__pfInitialState = {state_json};</script>'
+        f'<script nonce="{nonce}">{_JS}</script>'
     )

@@ -1165,6 +1165,9 @@ async def propose_rule_change(
                 remove_auto_accept_rule(operation_key, rule_name, old_value)
             add_auto_accept_rule(operation_key, rule_name, value)
             changed = True
+        # "..._via_bridge_proposal" is legacy vocabulary kept for audit-log
+        # continuity, not a live bridge -- see audit_log.py's AuditEntry.decision
+        # field comment (docs/security-remediation-plan.md Phase 3 PR3.9, ORP-06).
         applied_decision = "rule_removed_via_bridge_proposal" if operation == "remove" else "rule_changed_via_bridge_proposal"
         applied_rule_name = rule_name
     else:

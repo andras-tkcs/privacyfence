@@ -34,6 +34,7 @@ from ..org_mode import StepUpConfig
 from ..principal import Principal
 from ..webauthn_stepup import RegistrationChallengeStore, WebAuthnError
 from . import org_session
+from .csp import nonce_for as _csp_nonce_for
 from .org_session import OrgSessionStore
 
 logger = logging.getLogger(__name__)
@@ -47,9 +48,9 @@ logger = logging.getLogger(__name__)
 # see webauthn_stepup.py's module docstring on why hand-rolling the
 # verification side, but not this encode/decode plumbing, would be a
 # mistake). Written by hand, not loaded from a CDN: web/server.py's CSP
-# (script-src 'unsafe-inline', no external host) allows no external script
-# on any page this daemon serves -- see docs/https-connector-refactor-
-# plan.md §10.5's CSP row.
+# (script-src is a per-response nonce, no external host -- SEC-08, docs/
+# security-remediation-plan.md Phase 3.1) allows no external script on any
+# page this daemon serves -- see web/csp.py's own module docstring.
 PF_WEBAUTHN_JS = """
 function pfB64uToBuf(s) {
   var b64 = s.replace(/-/g, '+').replace(/_/g, '/');
@@ -135,7 +136,10 @@ def build_routes(*, sessions: OrgSessionStore, step_up: StepUpConfig, issuer_url
             return RedirectResponse("/login?next=/security", status_code=302, headers={"Cache-Control": "no-store"})
         session_id = request.cookies.get(org_session.SESSION_COOKIE, "")
         creds = webauthn_stepup.list_credentials(principal)
-        html = _render_security_page(principal=principal, creds=creds, csrf=session_id, step_up=step_up)
+        html = _render_security_page(
+            principal=principal, creds=creds, csrf=session_id, step_up=step_up,
+            nonce=_csp_nonce_for(request),
+        )
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     async def register_options(request: Request) -> Response:
@@ -285,7 +289,9 @@ def _credential_row_html(principal: Principal, cred, csrf: str) -> str:
     )
 
 
-def _render_security_page(*, principal: Principal, creds: list, csrf: str, step_up: StepUpConfig) -> str:
+def _render_security_page(
+    *, principal: Principal, creds: list, csrf: str, step_up: StepUpConfig, nonce: str,
+) -> str:
     who = _esc(principal.email or principal.display_name or principal.id)
     rows = "".join(_credential_row_html(principal, c, csrf) for c in creds)
     body = f'<ul class="creds">{rows}</ul>' if creds else '<div class="empty">No passkeys added yet.</div>'
@@ -295,7 +301,7 @@ def _render_security_page(*, principal: Principal, creds: list, csrf: str, step_
     )
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PrivacyFence -- Security</title><style>{_STYLE}</style></head>
+<title>PrivacyFence -- Security</title><style nonce="{nonce}">{_STYLE}</style></head>
 <body data-csrf="{_esc(csrf)}">
 <h1>Passkeys</h1>
 <p class="lead">Signed in as {who}. A passkey (Face ID, Touch ID, fingerprint, or Windows Hello) proves it's
@@ -304,7 +310,7 @@ really you before a write approval is released, even if someone else has your un
 <p><button type="button" class="add" id="pf-add-passkey">Add a passkey</button>
 <span id="pf-passkey-status" class="meta"></span></p>
 <p><a href="/connect">Back to connections</a></p>
-<script>{_PAGE_JS}</script>
+<script nonce="{nonce}">{_PAGE_JS}</script>
 </body></html>"""
 
 
