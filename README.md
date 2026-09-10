@@ -318,6 +318,7 @@ Continue with the organization configuration and connector authentication steps 
 - [Atlassian setup](docs/atlassian-setup.md)
 - [Telegram setup](docs/telegram-setup.md)
 - [Org mode setup guide](docs/org-mode-setup-guide.md) — Ubuntu server, Caddy, Google identity (ahead of the Linux headless entrypoint landing — see the guide's own status note)
+- [Org mode operational readiness](docs/org-mode-operational-readiness.md) — support/readiness level, backup/restore, upgrade/rollback, persisted-state compatibility, restart and single-daemon availability behaviour
 - [Connector QA testing](docs/connector-qa-testing.md)
 - [Manual pre-release test plan](docs/manual-pre-release-test-plan.md)
 - [Approval window content reference](docs/approval-window-content-reference.md) — what each approval dialog shows, grouped by dialog shape

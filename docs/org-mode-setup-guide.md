@@ -10,7 +10,11 @@ This documents `org` mode as implemented through P10 ("retire the native UI") of
 `https-connector-refactor-plan.md` design document that shipped this feature (removed from `docs/`
 once its plan was fully implemented) — see [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md) and
 [`security-and-compliance.md`](security-and-compliance.md) for the design this guide is a concrete
-instance of.
+instance of. Once it's running, see
+[`org-mode-operational-readiness.md`](org-mode-operational-readiness.md) for what comes after
+installation: support/readiness level, backup and restore, upgrade/rollback, persisted-state
+compatibility across versions, restart/session-invalidation behaviour, and the single-daemon
+availability model.
 
 > **Step 7 (run PrivacyFence as a service) is newly runnable, not yet battle-tested.** Through P9,
 > `daemon_main.py`'s `run_app()` unconditionally ended with `from .menu_bar import run_menu_bar`,
