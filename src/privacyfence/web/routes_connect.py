@@ -20,8 +20,8 @@ secret-token one.
 **Google** gets five separate authorize buttons (gmail/drive/calendar/
 contacts/tasks), not one "Connect Google" -- see settings_controller.py's
 own ``GOOGLE_CONNECTORS``/``_GOOGLE_CLIENTS``, which already draws this
-same distinction for local mode's own menu-bar flow: each is a distinct
-OAuth grant with its own scopes and its own token file.
+same distinction for local mode's own Connectors-page flow: each is a
+distinct OAuth grant with its own scopes and its own token file.
 
 **The one load-bearing subtlety this module exists to get right**: the
 ``pf_org_session`` cookie is ``SameSite=Strict`` (org_session.py's own
@@ -43,12 +43,12 @@ redirect round trip.
 **Atlassian's multi-site accounts** are handled with one deliberate
 simplification versus local mode: if the signed-in account can reach more
 than one Atlassian site, the first one returned is used automatically
-rather than prompting for a choice (local mode's own native/web picker has
+rather than prompting for a choice (local mode's own web picker has
 nowhere to block inside a one-shot HTTP callback -- see atlassian_oauth.
 resolve_resource_and_save's own ``pick_resource`` parameter). Anyone who
-needs a different site can still get one via local mode's menu bar, or by
-disconnecting and asking IT to scope the account down to one site. Worth
-flagging in review, not hidden in a comment only.
+needs a different site can still get one via local mode's Connectors page,
+or by disconnecting and asking IT to scope the account down to one site.
+Worth flagging in review, not hidden in a comment only.
 """
 from __future__ import annotations
 

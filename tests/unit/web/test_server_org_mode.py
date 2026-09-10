@@ -196,6 +196,96 @@ class TestApprovalsAndSecuritySurfaceOrgMode:
         assert r.status_code == 409
 
 
+class TestSecurityHeadersOrgMode:
+    """SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5):
+    Strict-Transport-Security is org mode's own addition to the header set
+    web/test_server.py's TestSecurityHeaders already covers for local
+    mode -- CSP/X-Frame-Options/Permissions-Policy/Cross-Origin-Opener-
+    Policy come from the same shared _SecurityHeadersMiddleware either way,
+    so they're not re-asserted here."""
+
+    def test_strict_transport_security_is_present(self, tmp_path, monkeypatch):
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER)
+        r = client.get("/.well-known/oauth-authorization-server")
+        assert r.headers.get("strict-transport-security") == "max-age=31536000; includeSubDomains"
+
+    def test_strict_transport_security_is_present_even_on_an_error_response(self, tmp_path, monkeypatch):
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER, follow_redirects=False)
+        r = client.get("/approvals")  # unauthenticated -> 302 to /login
+        assert r.status_code == 302
+        assert "strict-transport-security" in r.headers
+
+
+class TestCacheControlOnSensitivePagesOrgMode:
+    """SEC-18: the org-mode counterpart of web/test_server.py's own
+    TestCacheControlOnSensitivePages -- every principal-aware page org mode
+    mounts, authenticated and not."""
+
+    def _registry_org(self, org):
+        registry = ConnectorRegistry(factory=lambda principal: [])
+        return org.__class__(
+            provider=org.provider, sessions=org.sessions, idp=org.idp, issuer_url=org.issuer_url,
+            connector_registry=registry, org_config={},
+        )
+
+    def test_approvals_page_is_no_store(self, tmp_path, monkeypatch):
+        from privacyfence.principal import Principal
+
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER)
+        session_id = org.sessions.create(Principal(id="alice"))
+        client.cookies.set("pf_org_session", session_id)
+        r = client.get("/approvals")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store"
+
+    def test_approvals_page_redirect_is_no_store_when_signed_out(self, tmp_path, monkeypatch):
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER, follow_redirects=False)
+        r = client.get("/approvals")
+        assert r.status_code == 302
+        assert r.headers.get("cache-control") == "no-store"
+
+    def test_security_page_is_no_store(self, tmp_path, monkeypatch):
+        from privacyfence.principal import Principal
+
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER)
+        session_id = org.sessions.create(Principal(id="alice"))
+        client.cookies.set("pf_org_session", session_id)
+        r = client.get("/security")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store"
+
+    def test_connect_page_is_no_store(self, tmp_path, monkeypatch):
+        from privacyfence.principal import Principal
+
+        org = _org_auth(tmp_path, monkeypatch)
+        org_with_registry = self._registry_org(org)
+        app = build_app(WebApprovalUI(), org=org_with_registry, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER)
+        session_id = org_with_registry.sessions.create(Principal(id="alice"))
+        client.cookies.set("pf_org_session", session_id)
+        r = client.get("/connect")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-store"
+
+    def test_downloads_redirect_is_no_store_when_signed_out(self, tmp_path, monkeypatch):
+        org = _org_auth(tmp_path, monkeypatch)
+        app = build_app(WebApprovalUI(), org=org, allowed_hosts=frozenset({"pf.example.com"}))
+        client = TestClient(app, base_url=ISSUER, follow_redirects=False)
+        r = client.get("/downloads/abc")
+        assert r.status_code == 302
+        assert r.headers.get("cache-control") == "no-store"
+
+
 class TestDownloadsSurfaceOrgMode:
     """docs/org-mode-download-delivery-plan.md, Phase 1: /downloads/{token}
     is mounted unconditionally in org mode (like /approvals/security --
