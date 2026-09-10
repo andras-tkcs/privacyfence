@@ -32,9 +32,9 @@ from __future__ import annotations
 
 import io
 import logging
-import xml.etree.ElementTree as ET
 import zipfile
 
+import defusedxml.ElementTree as ET
 import pypdf
 
 from .html_to_text import html_to_markdown
@@ -62,6 +62,17 @@ _XLSX_MAX_COLS = 20
 
 # Archive entries listed before truncating (see _extract_archive_markdown).
 _ARCHIVE_MAX_ENTRIES = 200
+
+# SEC-14: cap on bytes decompressed from a single zip member (DOCX/PPTX's
+# word/document.xml, ppt/slides/slideN.xml) before it's handed to the XML
+# parser. A DOCX/PPTX is a zip archive of attacker-controlled content --
+# gmail.py/drive.py/confluence.py all fetch and extract attachment bytes
+# pre-approval, before a human has looked at the file -- so a crafted entry
+# that's tiny on disk but decompresses to gigabytes (a zip bomb) would
+# otherwise force this process to allocate and parse all of it before
+# extract_text()'s truncation to MAX_SCAN_CHARS ever gets a chance to run.
+# See _read_zip_member_bounded().
+_MAX_ZIP_ENTRY_BYTES = 10 * 1024 * 1024  # 10 MiB
 
 # MIME types extract_text() can do something with, beyond the text/* prefix.
 EXTRACTABLE_MIME_TYPES = frozenset({"application/pdf", _DOCX_MIME, _PPTX_MIME, _XLSX_MIME, _ARCHIVE_MIME})
@@ -178,6 +189,39 @@ def _bool_prop(elem) -> bool:
     return _attr_val(elem) not in ("false", "0")
 
 
+class _ZipEntryTooLarge(Exception):
+    """Internal signal that a zip member exceeded _MAX_ZIP_ENTRY_BYTES --
+    caught by extract_text()'s own blanket ``except Exception``, same as any
+    other parse failure, so it contributes no text rather than propagating
+    into the gate path (see this module's own docstring)."""
+
+
+def _read_zip_member_bounded(zf: zipfile.ZipFile, name: str) -> bytes:
+    """``zf.read(name)``, but capped at _MAX_ZIP_ENTRY_BYTES two ways: the
+    size the central directory declares is checked up front, before
+    decompressing anything, and the actual bytes read off the stream are
+    counted as they arrive and capped the same way -- a crafted entry can't
+    rely on an undersold ``ZipInfo.file_size`` to smuggle a bigger payload
+    past the first check alone (SEC-14). Raises _ZipEntryTooLarge rather
+    than returning a truncated result, since a truncated XML document isn't
+    parseable anyway."""
+    info = zf.getinfo(name)
+    if info.file_size > _MAX_ZIP_ENTRY_BYTES:
+        raise _ZipEntryTooLarge(name)
+    chunks = []
+    total = 0
+    with zf.open(info) as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _MAX_ZIP_ENTRY_BYTES:
+                raise _ZipEntryTooLarge(name)
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _join_markdown_lines(lines: list[str]) -> str:
     """Join extracted heading/bullet/paragraph lines with a blank line
     between distinct blocks, except a single newline between two
@@ -203,7 +247,7 @@ def _extract_docx_markdown(data: bytes) -> str:
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         if "word/document.xml" not in zf.namelist():
             return ""
-        root = ET.fromstring(zf.read("word/document.xml"))
+        root = ET.fromstring(_read_zip_member_bounded(zf, "word/document.xml"))
     raw_lines = (_docx_paragraph_markdown(p) for p in root.iter() if _local(p.tag) == "p")
     return _join_markdown_lines([line for line in raw_lines if line])
 
@@ -281,7 +325,7 @@ def _extract_pptx_markdown(data: bytes) -> str:
     sections = []
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         for i, path in enumerate(paths, start=1):
-            root = ET.fromstring(zf.read(path))
+            root = ET.fromstring(_read_zip_member_bounded(zf, path))
             raw_lines = (_pptx_paragraph_markdown(p) for p in root.iter() if _local(p.tag) == "p")
             body = _join_markdown_lines([line for line in raw_lines if line])
             sections.append(f"## Slide {i}\n\n{body}" if body else f"## Slide {i}")
