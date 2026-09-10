@@ -38,6 +38,43 @@ describe("findDaemonCmd", () => {
       scriptPath: path.join(emptyDir, "shim.js"),
       pathEnv: emptyDir, // nothing named privacyfence-app here
       defaultAppPath: "/definitely/does/not/exist/privacyfence-app",
+      platform: "linux",
+      homeDir: emptyDir, // no ~/.local/bin/privacyfence-app here either
+    });
+    assert.deepEqual(cmd, ["python3", "-m", "privacyfence.daemon_main"]);
+  });
+
+  it("on Linux, falls back to the pipx default (~/.local/bin/privacyfence-app) before python3 -m", () => {
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "pf-shim-daemon-empty3-"));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pf-shim-daemon-home-"));
+    const localBin = path.join(homeDir, ".local", "bin");
+    fs.mkdirSync(localBin, { recursive: true });
+    const pipxDefault = path.join(localBin, "privacyfence-app");
+    fs.writeFileSync(pipxDefault, "#!/bin/sh\n", { mode: 0o755 });
+
+    const cmd = findDaemonCmd({
+      scriptPath: path.join(emptyDir, "shim.js"),
+      pathEnv: emptyDir, // ~/.local/bin deliberately not on PATH here
+      defaultAppPath: "/definitely/does/not/exist/privacyfence-app",
+      platform: "linux",
+      homeDir,
+    });
+    assert.deepEqual(cmd, [pipxDefault]);
+  });
+
+  it("does not check the Linux pipx default on other platforms", () => {
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "pf-shim-daemon-empty4-"));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pf-shim-daemon-home2-"));
+    const localBin = path.join(homeDir, ".local", "bin");
+    fs.mkdirSync(localBin, { recursive: true });
+    fs.writeFileSync(path.join(localBin, "privacyfence-app"), "#!/bin/sh\n", { mode: 0o755 });
+
+    const cmd = findDaemonCmd({
+      scriptPath: path.join(emptyDir, "shim.js"),
+      pathEnv: emptyDir,
+      defaultAppPath: "/definitely/does/not/exist/privacyfence-app",
+      platform: "darwin",
+      homeDir,
     });
     assert.deepEqual(cmd, ["python3", "-m", "privacyfence.daemon_main"]);
   });
