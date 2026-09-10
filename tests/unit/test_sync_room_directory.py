@@ -16,6 +16,7 @@ test_build_org_bundle.py.
 from __future__ import annotations
 
 import importlib.util
+import json
 import stat
 import sys
 from dataclasses import asdict
@@ -24,6 +25,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from googleapiclient.errors import HttpError
+
+from privacyfence import org_bundle_signing
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "sync_room_directory.py"
 _spec = importlib.util.spec_from_file_location("sync_room_directory", _SCRIPT_PATH)
@@ -326,3 +329,152 @@ class TestMain:
         ])
 
         assert rc == 1
+
+
+def _generate_signing_key(path: Path) -> None:
+    """Test-only helper: an Ed25519 keypair, written the same way
+    build_org_bundle.py --generate-signing-key would."""
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    path.write_bytes(private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+
+
+class TestCanonicalPayloadBytes:
+    def test_excludes_signature_field(self):
+        with_sig = sync_room_directory._canonical_payload_bytes({"a": 1, "signature": "xyz"})
+        without_sig = sync_room_directory._canonical_payload_bytes({"a": 1})
+        assert with_sig == without_sig
+
+    def test_matches_org_bundle_signing_module_exactly(self):
+        """The whole reason this is a duplicate, not an import -- see
+        module docstring. Pins the two to identical output on the same
+        input so any future edit to either that breaks the other fails
+        loudly here, same as test_build_org_bundle.py's equivalent."""
+        bundle = {"rooms": [{"resource_name": "A"}], "signature": "stale"}
+        assert (
+            sync_room_directory._canonical_payload_bytes(bundle)
+            == org_bundle_signing._canonical_payload_bytes(bundle)
+        )
+
+
+class TestSignBundle:
+    def test_signed_bundle_verifies_against_org_bundle_signing(self, tmp_path):
+        """The critical cross-module check: a bundle this script signs
+        must be acceptable to the real verification path the daemon and
+        settings_controller.py actually run."""
+        key_path = tmp_path / "key.pem"
+        _generate_signing_key(key_path)
+
+        signed = sync_room_directory._sign_bundle({"rooms": []}, str(key_path))
+
+        assert "signature" in signed
+        assert "signing_public_key" in signed
+        trust = org_bundle_signing.verify_and_maybe_pin(signed, tmp_path / "orgdir")
+        assert trust.ok
+        assert trust.signed
+
+    def test_non_ed25519_key_file_is_rejected(self, tmp_path):
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
+
+        rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        key_path = tmp_path / "rsa_key.pem"
+        key_path.write_bytes(rsa_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+
+        with pytest.raises(SystemExit, match="not an Ed25519"):
+            sync_room_directory._sign_bundle({"rooms": []}, str(key_path))
+
+
+class TestMainSigningIntegration:
+    def _run_sync(self, tmp_path, monkeypatch, org_config_path, sign_key=None):
+        secret_path = tmp_path / "client_secret.json"
+        secret_path.write_text('{"installed": {"client_id": "cid"}}', encoding="utf-8")
+        token_path = tmp_path / "token.json"
+        token_path.write_text("{}", encoding="utf-8")
+
+        fake_creds = MagicMock()
+        fake_creds.valid = True
+        monkeypatch.setattr(
+            "sync_room_directory.Credentials.from_authorized_user_file",
+            MagicMock(return_value=fake_creds),
+        )
+        service = MagicMock()
+        service.resources.return_value.calendars.return_value.list.return_value.execute.return_value = {
+            "items": []
+        }
+        monkeypatch.setattr("sync_room_directory.build", MagicMock(return_value=service))
+
+        argv = [
+            "--admin-client-secret", str(secret_path),
+            "--org-config", str(org_config_path),
+            "--token-file", str(token_path),
+        ]
+        if sign_key:
+            argv += ["--sign-key", str(sign_key)]
+        return sync_room_directory.main(argv)
+
+    def test_merging_into_a_previously_signed_bundle_without_sign_key_is_refused(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        key_path = tmp_path / "key.pem"
+        _generate_signing_key(key_path)
+        org_config_path = tmp_path / "org_config.json"
+        signed = sync_room_directory._sign_bundle({"google": {"client_id": "existing"}}, str(key_path))
+        org_config_path.write_text(json.dumps(signed), encoding="utf-8")
+        original_contents = org_config_path.read_text(encoding="utf-8")
+
+        rc = self._run_sync(tmp_path, monkeypatch, org_config_path)
+
+        assert rc == 1
+        assert "already signed" in capsys.readouterr().err
+        # Refused entirely -- the stale-signature file on disk must be
+        # untouched, not silently overwritten with a broken one.
+        assert org_config_path.read_text(encoding="utf-8") == original_contents
+
+    def test_merging_into_a_previously_signed_bundle_with_sign_key_re_signs_it(
+        self, tmp_path, monkeypatch
+    ):
+        key_path = tmp_path / "key.pem"
+        _generate_signing_key(key_path)
+        org_config_path = tmp_path / "org_config.json"
+        signed = sync_room_directory._sign_bundle({"google": {"client_id": "existing"}}, str(key_path))
+        org_config_path.write_text(json.dumps(signed), encoding="utf-8")
+
+        rc = self._run_sync(tmp_path, monkeypatch, org_config_path, sign_key=key_path)
+
+        assert rc == 0
+        bundle = json.loads(org_config_path.read_text(encoding="utf-8"))
+        assert bundle["google"] == {"client_id": "existing"}
+        assert bundle["rooms"] == []
+        trust = org_bundle_signing.verify_and_maybe_pin(bundle, tmp_path / "orgdir")
+        assert trust.ok
+        assert trust.signed
+
+    def test_merging_into_an_unsigned_bundle_without_sign_key_stays_unsigned(
+        self, tmp_path, monkeypatch
+    ):
+        org_config_path = tmp_path / "org_config.json"
+        org_config_path.write_text('{"version": 1, "google": {"client_id": "existing"}}', encoding="utf-8")
+
+        rc = self._run_sync(tmp_path, monkeypatch, org_config_path)
+
+        assert rc == 0
+        bundle = json.loads(org_config_path.read_text(encoding="utf-8"))
+        assert "signature" not in bundle
+        assert "signing_public_key" not in bundle
+
+    def test_merging_into_an_unsigned_bundle_with_sign_key_signs_it(self, tmp_path, monkeypatch):
+        key_path = tmp_path / "key.pem"
+        _generate_signing_key(key_path)
+        org_config_path = tmp_path / "org_config.json"
+        org_config_path.write_text('{"version": 1}', encoding="utf-8")
+
+        rc = self._run_sync(tmp_path, monkeypatch, org_config_path, sign_key=key_path)
+
+        assert rc == 0
+        bundle = json.loads(org_config_path.read_text(encoding="utf-8"))
+        trust = org_bundle_signing.verify_and_maybe_pin(bundle, tmp_path / "orgdir")
+        assert trust.ok
+        assert trust.signed

@@ -118,6 +118,17 @@ token then simply can't read your Workspace directory, no matter what.
    Re-run it whenever your organization's rooms change; `--token-file` (default
    `.room_sync_token.json`) caches the sync's own token so you don't have to re-consent every time
    — keep that file private too, for the same reason as the client secret.
+
+   > **If `org_config.json` is already signed** (you built it with `build_org_bundle.py
+   > --sign-key`, e.g. for [org mode](org-mode-setup-guide.md)), you MUST also pass `--sign-key
+   > <path to that same signing key>` here. Merging the room directory in changes the bundle, which
+   > invalidates its existing signature — `sync_room_directory.py` refuses to write anything at all
+   > (leaving the file untouched) if you omit `--sign-key` on an already-signed bundle, precisely so
+   > you don't accidentally distribute a bundle that every install with your key already pinned (or
+   > any org-mode install, which requires signing) will then refuse to start on. An unsigned bundle
+   > is unaffected — `--sign-key` stays optional there. Needs the `cryptography` package (`pip
+   > install cryptography`) in addition to the three above, same as `build_org_bundle.py
+   > --sign-key`.
 6. Redistribute the updated `org_config.json` exactly as in step 5 above. The `rooms` data itself
    is plain metadata, not a credential, so it's fine for every user's install to have it.
 
