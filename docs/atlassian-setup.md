@@ -54,6 +54,28 @@ python3 scripts/build_org_bundle.py \
 
 Distribute the resulting `org_config.json` to your users.
 
+### 6. Org mode needs a *second*, dedicated app
+
+Unlike Slack/Salesforce/Google, an Atlassian OAuth 2.0 (3LO) app accepts only **one** registered
+Callback URL, full stop — there's no "add one more line" option here. That one URL is already spoken
+for by the loopback callback in step 2 (`http://127.0.0.1:53684/callback`, local desktop installs),
+so an [`org` mode](org-mode-setup-guide.md) deployment
+(`https://your-server-hostname/oauth/callback/atlassian` — see `web/routes_connect.py`'s
+`_GRANT_KEY`, which sends the *same* callback URL for both Jira and Confluence since they're one
+underlying grant) needs an **app of its own**:
+
+1. Repeat steps 1–4 above to create a second app (e.g. `PrivacyFence (org)`), with its Callback URL
+   set to `https://your-server-hostname/oauth/callback/atlassian` instead.
+2. Build a **separate** `org_config.json` for the server from this second app's client id/secret —
+   don't `--merge` it into the same bundle you hand out to local desktop users, since that bundle's
+   one `atlassian` section can only ever carry one app's credentials, and the server's own bundle
+   also needs the `--mode org`/`--server-*`/`--idp-*` flags from
+   [`org-mode-setup-guide.md` §5](org-mode-setup-guide.md#5-build-the-organization-config-bundle)
+   that a local-install bundle doesn't carry.
+
+If you're only ever running `org` mode (no local desktop installs), you don't need two apps or two
+bundles — just point step 2's Callback URL at the org-mode one from the start.
+
 ---
 
 ## For users
@@ -68,10 +90,17 @@ Distribute the resulting `org_config.json` to your users.
 ## Troubleshooting
 
 **"The app's callback URL is invalid" during sign-in** (IT admin)
-The Callback URL in the Atlassian app must be exactly `http://127.0.0.1:53684/callback` — not `http://localhost:53684/callback`. Atlassian matches the redirect URI as a literal string, and PrivacyFence's loopback server always sends `127.0.0.1`.
+For a local desktop install, the Callback URL in the Atlassian app must be exactly
+`http://127.0.0.1:53684/callback` — not `http://localhost:53684/callback`. Atlassian matches the
+redirect URI as a literal string, and PrivacyFence's loopback server always sends `127.0.0.1`. For an
+[`org` mode](org-mode-setup-guide.md) deployment it must instead be exactly
+`https://your-server-hostname/oauth/callback/atlassian` (see [§6](#6-org-mode-needs-a-second-dedicated-app))
+— an Atlassian app can only have one Callback URL, so it's one or the other, never both, on a given
+app.
 
 **"401 Unauthorized" right after authenticating** (IT admin)
-Double-check the **Callback URL** is exactly `http://127.0.0.1:53684/callback`, and that both the Jira API and Confluence API scopes were added under **Permissions**.
+Double-check the **Callback URL** matches the deployment mode this app is for (see the previous
+entry), and that both the Jira API and Confluence API scopes were added under **Permissions**.
 
 **Confluence connects but space/page calls fail with 401 ("scope does not match")** (IT admin)
 The Confluence scopes were added as **classic** scopes instead of **granular**. Confluence's v2 API (used for space listing) rejects classic-scoped tokens outright — re-add the scopes listed above using the granular picker, then have users **Reconnect…** to get a token with the new scopes.

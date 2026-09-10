@@ -23,6 +23,15 @@ The Connected App is organization-level config: **one IT admin creates it once**
    PrivacyFence's other OAuth connectors) specifically so it qualifies for this
    exception — enter it exactly as `http://localhost:53683/callback` or
    Salesforce's console will reject the value.
+
+   > **Deploying [`org` mode](org-mode-setup-guide.md) instead of (or in addition to) local desktop
+   > installs?** Salesforce's Callback URL field accepts more than one URL — enter each on its own
+   > line. Add a second line with `https://your-server-hostname/oauth/callback/salesforce` (org
+   > mode's server-side redirect, `web/routes_connect.py`), substituting your own hostname. Both can
+   > coexist in the same Connected App; the same consumer key/secret you build below work for either
+   > deployment. See [`org-mode-setup-guide.md`
+   > §4.2](org-mode-setup-guide.md#42-the-google-connector-client-optional) for the general pattern
+   > this follows.
 5. Under **Selected OAuth Scopes**, add:
    - `Manage user data via APIs (api)`
    - `Perform requests at any time (refresh_token, offline_access)`
@@ -63,7 +72,7 @@ Your access token is refreshed automatically in the background as needed — no 
 ## Troubleshooting
 
 **"redirect_uri_mismatch" or "invalid client credentials"** (IT admin)
-The Connected App's **Callback URL** must be exactly `http://localhost:53683/callback`. Also double-check the Consumer Key/Secret went into the bundle correctly.
+The Connected App's **Callback URL** must include `http://localhost:53683/callback` exactly (local desktop installs), and, for an [`org` mode](org-mode-setup-guide.md) deployment, `https://your-server-hostname/oauth/callback/salesforce` on its own line too. Also double-check the Consumer Key/Secret went into the bundle correctly.
 
 **Salesforce won't let me save an `http://` Callback URL** (IT admin)
 Salesforce requires callback URLs to use HTTPS except when the host is exactly `localhost` — `http://127.0.0.1:...` or any other host will be rejected. Use `http://localhost:53683/callback` exactly as shown above.

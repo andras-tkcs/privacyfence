@@ -61,6 +61,14 @@ For each: click the API in the search results, then click **Enable**.
 4. Give it a name (e.g. `PrivacyFence Desktop`) and click **Create**.
 5. In the confirmation dialog, click **Download JSON**. This is your `client_secret.json` — keep it private, treat it like a password.
 
+   > **Deploying [`org` mode](org-mode-setup-guide.md) instead of (or in addition to) local desktop
+   > installs?** Org mode's server-side redirect flow needs a **Web application** client, not a
+   > Desktop app one, with explicit HTTPS redirect URIs registered — a different client id/secret
+   > from the Desktop app client above (the two can coexist; local desktop installs and the org-mode
+   > server just use different credentials for the same Google project). See
+   > [`org-mode-setup-guide.md` §4.2](org-mode-setup-guide.md#42-the-google-connector-client-optional)
+   > for the exact steps.
+
 ### 5. Add it to the organization config bundle
 
 From the PrivacyFence repo (or anywhere with Python 3 installed — the script has no dependencies):
