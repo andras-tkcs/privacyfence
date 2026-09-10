@@ -1009,7 +1009,7 @@ on screen, walked in the fixed declaration order above — not a single top-prio
 configurable (there used to be a `rule_suggestion_priority` `settings.yaml` key controlling this;
 it's gone, since once every match gets its own button there's nothing left to prioritize or
 exclude — a pre-existing `rule_suggestion_priority` block in an older `settings.yaml` still loads
-without error, it's just logged and ignored). An item matching only one candidate still shows
+without error, it's just silently ignored like any other retired settings key). An item matching only one candidate still shows
 exactly one button, identical to every other single-candidate operation. An item matching 2+
 candidates shows one button per match, in their own
 row above Deny/Allow once — clicking any one of them goes straight to that rule's own
@@ -1248,6 +1248,35 @@ would read from still exists and is accurate — only the display is currently m
 
 Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab (the latter includes a "By PII category" breakdown when any entry has one). Each entry also records whether the [PII detection gate](#pii-detection-gate) flagged the content and which category label(s) (e.g. "IBAN (bank account number)") — never the matched text itself, unless the opt-in `pii_detection.audit_match_details` trial setting described in that section is turned on, and even then only for an approved request, and only ever in redacted form for a category whose match is itself the sensitive value.
 
+**Append-integrity, event identity, and provenance (SEC-23).** Every entry is additionally
+chained to the one before it with a keyed hash — `entry_hash` is an HMAC-SHA256 (keyed by a
+per-install key generated on first use, `.audit_chain.key` next to the `.jsonl` files) over the
+entry's own fields plus `prev_hash`, the previous entry's `entry_hash` (or a genesis value for the
+first entry in a chain). `AuditLogger.verify_chain()` (or `python3 scripts/verify_audit_log.py
+logs/audit`, standalone) recomputes and checks this: an entry edited, inserted, or removed after
+the fact breaks the chain at that point, without needing anywhere else to compare against. Honest
+caveat: the key lives next to the log it protects, so this catches accidental corruption and a
+party who can write the `.jsonl` files without also reading the key file — not a fully privileged
+local administrator who can read both; centralized forwarding (below) is what actually removes a
+tampered copy from that same trust boundary. Each entry also carries a stable `event_id` (unique
+to that one line, unlike `request_id`, which is deliberately shared across a deferred-approval's
+"pending" and its later "decided" entry), an explicit `schema_version` (bumped whenever the entry
+shape changes — see `audit_log.py`'s `CURRENT_SCHEMA_VERSION`), this install's own `deployment_id`
+(a random id persisted once at `data_dir()/deployment_id`, so entries from multiple machines/
+servers can be told apart once aggregated), and a `security_config_hash` fingerprinting the
+`settings.yaml` privacy policy in effect when the decision was recorded (`audit_log.
+compute_security_config_hash()`) — refreshed on every settings change, not just at daemon startup.
+
+**Centralized forwarding (org mode, SEC-23).** `org_config.json`'s `audit_forwarding` section
+(off by default) additionally forwards each entry, best-effort and off the decision path, to a
+syslog server (RFC 5424, RFC 6587 octet-counting for TCP) or a generic HTTPS/JSON webhook — Splunk
+HEC, Datadog's Logs API, an Elastic ingest pipeline, an OTLP-over-HTTP/JSON log receiver all speak
+this on the wire; it is not a full OTLP SDK. See
+[org-mode-setup-guide.md's "Centralized audit-log forwarding"](org-mode-setup-guide.md#11-centralized-audit-log-forwarding-optional)
+for the `build_org_bundle.py --enable-audit-forwarding` flags. A forwarding failure (collector
+down, network partition) never blocks or loses the local decision — the `.jsonl` file, with its
+own hash chain, stays the authoritative record regardless.
+
 Two decision values relate to [scheduled/unattended tasks](#scheduled--unattended-cowork-tasks):
 `denied_unattended` (a call denied without ever prompting, because the connection was in an
 unattended session and no auto-accept rule matched — kept distinct from a human's own `rejected`)
@@ -1397,6 +1426,35 @@ Start the daemon:
 privacyfence-app
 ```
 
+### Windows
+
+The installer carries both halves of PrivacyFence — the daemon and the Claude extension — same as
+the DMG:
+
+1. Download the latest `PrivacyFence-<version>-setup.exe` from the [Releases](../../../releases)
+   page.
+2. Run it. Releases are Authenticode-signed. It installs to `%ProgramFiles%\PrivacyFence\`,
+   registers a Task Scheduler task (`schtasks /create ... /sc onlogon`) so the daemon starts at
+   login and restarts itself if it crashes — the direct analogue of the macOS LaunchAgent's
+   `KeepAlive`/`SuccessfulExit=false` — and starts the daemon immediately, no reboot needed.
+3. Open PrivacyFence Settings — the daemon logs the exact URL (with its session token) to
+   `%USERPROFILE%\.privacyfence\logs\privacyfence.log` on startup, e.g.
+   `http://localhost:8765/settings?token=...` — then on the **General** page click
+   **Install/Update Organization Config…** and select the bundle your IT team sent you.
+4. On the **Connectors** page, click **Authenticate…** for each connector you want.
+5. Install **PrivacyFence.mcpb** (installed alongside the daemon under
+   `%ProgramFiles%\PrivacyFence\`) into Claude Desktop.
+
+Uninstalling (via **Add or Remove Programs**) removes the program files and the scheduled task
+only — `%USERPROFILE%\.privacyfence\` (credentials, settings, audit log) is left in place, same as
+the DMG doesn't touch `~/.privacyfence` on removal.
+
+**Known accepted gap:** several places `chmod` credential/token files to `0o600`/`0o700`; on
+Windows this is a silent no-op rather than an error, so credentials rely on default NTFS
+user-profile ACLs (which already restrict a single-user Windows profile to that user) rather than
+an explicit lock-down. This is a deliberate v1 decision, not an oversight — revisit only if a
+security review flags it as insufficient.
+
 ### Linux
 
 Through P9, PrivacyFence was not a working Linux daemon at all — `run_app()` always ended by
@@ -1504,6 +1562,20 @@ bash scripts/build_dmg.sh
 
 The script produces `dist/PrivacyFence-<version>.dmg` (containing `PrivacyFenceApp.app`).
 
+## Building a Windows installer
+
+On a Windows build host, with [Inno Setup](https://jrsoftware.org/isinfo.php)'s `iscc.exe` on
+PATH:
+
+```powershell
+pip install -e ".[dev]"
+pwsh ./scripts/build_installer.ps1
+```
+
+The script produces `dist/PrivacyFence-<version>-setup.exe` (containing `PrivacyFenceApp.exe`,
+`privacyfence-app.exe`, and `PrivacyFence.mcpb`). See the script's own header comment for the full
+prerequisite list and the optional `SIGN_CERT_PATH`/`SIGN_CERT_PASSWORD` signing env vars.
+
 ## Building a `.deb`
 
 ```bash
@@ -1529,7 +1601,8 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
   time without losing any state. All state (credentials, tokens, filters, queue) lives in the
   daemon, which stays running independently.
 - `/mcp` is a local, loopback-bound (`localhost`) Streamable HTTP endpoint, authenticated by a
-  per-launch random bearer token (`~/.privacyfence/mcp_token`) required on every request; its URL
+  persistent random bearer token (`~/.privacyfence/mcp_token`, reused across daemon restarts, not
+  regenerated per launch) required on every request; its URL
   is discovered via `~/.privacyfence/mcp_url` (see `src/privacyfence/web/server.py`'s module
   docstring). Claude Code talks to it directly; Claude Desktop's shim (`mcpb/shim/`) proxies it over
   stdio, discovering the same `mcp_url`/`mcp_token` files itself, with no config file edited and no

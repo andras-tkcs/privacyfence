@@ -70,7 +70,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import fcntl
 import json
 import logging
 import os
@@ -81,14 +80,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import portalocker
 import yaml
 
-from . import org_bundle_signing, org_mode
+from . import audit_forwarding, org_bundle_signing, org_mode
 from .paths import data_dir, org_dir, user_dir
 from .principal import LOCAL_PRINCIPAL_ID, current_principal
 from .app_credentials import telegram_app_credentials
 from .approval_ui import init_approval_ui
-from .audit_log import AuditEntry, current_week, get_audit_logger, init_audit_logger
+from .audit_log import (
+    AuditEntry,
+    compute_security_config_hash,
+    current_week,
+    get_audit_logger,
+    init_audit_logger,
+)
 from .auto_accept import (
     init_config_path,
     migrate_telegram_search_operation_key,
@@ -164,11 +170,19 @@ _lock_fd: int | None = None
 # ---------------------------------------------------------------------------- #
 
 def _acquire_instance_lock() -> bool:
+    # portalocker picks the right OS primitive itself -- fcntl.flock on
+    # POSIX, msvcrt/LockFileEx on Windows (which has no fcntl module at
+    # all: importing it unconditionally used to crash the daemon at
+    # startup on Windows before it got anywhere near this function). Same
+    # "don't hand-roll a platform-locking primitive" reasoning pyproject.
+    # toml already gives for PyJWT/webauthn. It's handed the raw fd
+    # directly (accepted alongside file objects/fileno()-havers), so the
+    # rest of this function -- and every caller/test -- is unchanged.
     global _lock_fd
     fd = os.open(LOCK_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+        portalocker.lock(fd, portalocker.LOCK_EX | portalocker.LOCK_NB)
+    except portalocker.exceptions.LockException:
         os.close(fd)
         return False
     os.ftruncate(fd, 0)
@@ -181,10 +195,14 @@ def _release_instance_lock() -> None:
     global _lock_fd
     if _lock_fd is not None:
         try:
-            fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+            portalocker.unlock(_lock_fd)
             os.close(_lock_fd)
-        except OSError:
-            pass
+        except (OSError, portalocker.exceptions.LockException) as exc:
+            # Best-effort release on shutdown -- swallowed deliberately (the
+            # process is on its way out either way), but logged so a closed/
+            # already-unlocked fd here isn't silently invisible if something
+            # about shutdown ordering ever needs debugging.
+            logger.debug("Failed to release instance lock cleanly: %s", exc)
         _lock_fd = None
 
 
@@ -399,6 +417,40 @@ def log_org_config_bundle_hash(org_config: dict[str, Any]) -> None:
         ))
     except Exception as exc:
         logger.warning("Audit log write failed for organization config startup hash: %s", exc)
+
+
+def get_or_create_deployment_id() -> str:
+    """SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6): a
+    stable, opaque identifier for *this installation* -- not per-principal,
+    and not re-generated across restarts -- stamped onto every audit entry
+    (audit_log.AuditEntry.deployment_id, filled in by AuditLogger.record())
+    so a centralized collection of entries -- forwarded (audit_forwarding.py)
+    or manually aggregated -- can tell which employee machine or org-mode
+    server produced a given decision. Persisted once at
+    ``data_dir()/deployment_id`` (install-wide, like ``org_dir()``'s own
+    bundle -- not per-principal like ``user_dir()``, since one daemon
+    process is one deployment regardless of how many principals it serves
+    in org mode) and read back on every later startup. A random hex id,
+    not a hostname/MAC address -- it identifies "which install", not
+    anything about the machine itself.
+    """
+    path = data_dir() / "deployment_id"
+    try:
+        if path.exists():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+    except OSError as exc:
+        logger.warning("Could not read deployment id at %s: %s", path, exc)
+    new_id = uuid.uuid4().hex
+    try:
+        atomic_write_text(str(path), new_id)
+    except OSError as exc:
+        logger.warning(
+            "Could not persist deployment id at %s: %s -- a new one will be generated next "
+            "startup", path, exc,
+        )
+    return new_id
 
 
 def check_storage_permissions(org_mode_active: bool) -> None:
@@ -713,7 +765,15 @@ def _start_org_web_server(
 
     connector_registry = ConnectorRegistry(factory=_connectors_for_principal)
 
-    provider = OrgOAuthProvider(idp, idp_callback_url=f"{server_config.issuer_url.rstrip('/')}/oauth/idp/callback")
+    # SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7): layered
+    # on top of the IdP's own authentication above -- see org_identity.
+    # check_authz_policy's own docstring for what this does and doesn't
+    # change. Absent "authz" section in org_config.json -> disabled,
+    # every IdP-authenticated principal is admitted, unchanged from before.
+    authz_policy = org_mode.AuthzPolicyConfig.from_org_config(org_config)
+    provider = OrgOAuthProvider(
+        idp, idp_callback_url=f"{server_config.issuer_url.rstrip('/')}/oauth/idp/callback", policy=authz_policy,
+    )
     sessions = OrgSessionStore()
     mcp_dispatcher = McpDispatcher(
         lambda: connector_registry.get(current_principal()).connectors,
@@ -738,9 +798,11 @@ def _start_org_web_server(
     step_up = org_mode.StepUpConfig.from_org_config(org_config)
     logger.info(
         "Org mode active -- MCP-over-HTTP at %s (OAuth 2.1, DCR at %s/register), IdP %s, "
-        "WebAuthn step-up %s",
+        "WebAuthn step-up %s, app-level authz policy %s",
         server.mcp_url, server.base_url, idp.issuer,
         f"enabled (scope={step_up.scope})" if step_up.enabled else "disabled",
+        f"enabled ({len(authz_policy.allowed_domains)} allowed domain(s), "
+        f"{len(authz_policy.required_groups)} required group(s))" if authz_policy.enabled else "disabled",
     )
     return server
 
@@ -1269,17 +1331,15 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
             logger.warning("Could not persist auto-accept config migration: %s", exc)
 
     reload_rules(build_effective_rules(config))
-    if "rule_suggestion_priority" in config:
-        # Issue #151: every matching auto-accept rule now gets its own
-        # "Always allow" button, so there's nothing left to prioritize or
-        # exclude -- same forward-compatible "unknown key is inert" posture
-        # used elsewhere, not a dedicated migration (nothing to migrate
-        # *to*). A pre-existing settings.yaml with this key still loads
-        # without error; it's just never consulted again.
-        logger.info(
-            "rule_suggestion_priority is no longer used -- every matching rule now gets its own "
-            "\"Always allow\" button. Ignoring this settings.yaml key."
-        )
+    # Issue #151 retired the settings.yaml-configurable rule_suggestion_priority
+    # (every matching auto-accept rule now gets its own "Always allow" button, so
+    # there's nothing left to prioritize or exclude) and this function logged an
+    # explicit "ignoring this key" notice for anyone with a pre-existing config
+    # block for it. That notice has served its purpose (docs/security-
+    # remediation-plan.md Phase 3 PR3.9, ORP-04) and is gone -- a leftover
+    # rule_suggestion_priority block in an old settings.yaml now falls through to
+    # the same silent "unknown key is inert" handling as any other retired
+    # settings.yaml key, per auto_accept.py's SUGGESTION_FAMILIES comment.
     pii_config = config.get("pii_detection", {}) or {}
     init_pii_detection(
         pii_config.get("enabled", True),
@@ -1301,7 +1361,28 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     for warning in check_consistency_warnings():
         logger.warning(warning)
 
-    audit_logger = init_audit_logger(str(Path(data_dir()) / "logs" / "audit"))
+    # SEC-23: centralized forwarding is org-mode-only (see
+    # org_mode.AuditForwardingConfig's own docstring) -- a local-mode
+    # install's org_config.json could theoretically carry an
+    # "audit_forwarding" section, but there is no "centralize" to speak of
+    # for a single employee's own machine, so it's ignored outside org
+    # mode regardless of what the section says.
+    audit_forwarder = None
+    audit_forwarding_config = org_mode.AuditForwardingConfig.from_org_config(org_config)
+    if audit_forwarding_config.enabled and org_mode.resolve_mode(org_config) == "org":
+        try:
+            sender = audit_forwarding.build_sender(audit_forwarding_config)
+            audit_forwarder = audit_forwarding.AuditForwarder(sender)
+            logger.info("Audit-log forwarding enabled (%s)", audit_forwarding_config.kind)
+        except Exception as exc:
+            logger.warning("Could not start audit-log forwarding -- continuing without it: %s", exc)
+
+    audit_logger = init_audit_logger(
+        str(Path(data_dir()) / "logs" / "audit"),
+        deployment_id=get_or_create_deployment_id(),
+        security_config_hash=compute_security_config_hash(config),
+        forwarder=audit_forwarder,
+    )
     audit_logger.export_all_pending()
 
     # log_org_config_bundle_hash() needs the audit logger initialized above
@@ -1366,6 +1447,7 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
     except KeyboardInterrupt:
         logger.info("Interrupted; shutting down")
     finally:
+        audit_logger.close()
         _release_instance_lock()
     return 0
 

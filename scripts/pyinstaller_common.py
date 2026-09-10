@@ -1,13 +1,15 @@
-# PyInstaller `datas`/`hidden_imports` shared between PrivacyFenceApp.spec (macOS) and
-# PrivacyFenceApp.linux.spec (Linux, docs/linux-local-deb-packaging-plan.md Phase 1). Both specs
+# PyInstaller `datas`/`hidden_imports` shared between PrivacyFenceApp.spec (macOS),
+# PrivacyFenceApp.linux.spec (Linux, docs/linux-local-deb-packaging-plan.md Phase 1), and
+# PrivacyFenceApp.win.spec (Windows, docs/windows-support-plan.md Phase 2.1). All three specs
 # build the same daemon entry point (src/_daemon_entry.py) against the same dependency set --
 # the only things that differ between platforms are the packaging step around the PyInstaller
-# output (BUNDLE() + .icns + codesign on macOS; a bare onedir + `debian/` packaging on Linux), not
-# what goes into the frozen daemon itself. Factored out here instead of duplicated in both spec
-# files so the two can't quietly drift (a hidden import added for one platform but not the other,
-# discovered only when that platform's build breaks).
+# output (BUNDLE() + .icns + codesign on macOS; a bare onedir + `debian/` packaging on Linux; a
+# bare onedir + .ico + Inno Setup on Windows), not what goes into the frozen daemon itself.
+# Factored out here instead of duplicated in three spec files so they can't quietly drift (a
+# hidden import added for one platform but not the others, discovered only when that platform's
+# build breaks).
 #
-# Both specs import this the same way:
+# Every spec imports this the same way:
 #
 #   import sys
 #   from pathlib import Path
@@ -63,6 +65,11 @@ HIDDEN_IMPORTS = [
     "openpyxl",
     # telethon (optional – Telegram; bundled so the connector works)
     "telethon",
+    # portalocker (docs/windows-support-plan.md Phase 1): imported
+    # unconditionally by daemon_main.py, but its Windows/POSIX backends are
+    # selected dynamically at import time inside the package itself, which
+    # is exactly the shape PyInstaller's static analysis can miss.
+    "portalocker",
     # privacyfence connectors -- all ten, imported directly by daemon_main.py;
     # listed explicitly anyway as a defensive backstop against PyInstaller's
     # static analysis missing one.

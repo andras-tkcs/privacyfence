@@ -15,6 +15,7 @@ from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
 from privacyfence import org_identity as oi
+from privacyfence.org_mode import AuthzPolicyConfig
 from privacyfence.web import oauth_provider as op
 
 IDP_CALLBACK_URL = "https://pf.example.com/oauth/idp/callback"
@@ -42,9 +43,9 @@ def _params(*, state="orig-state", redirect_uri="https://claude.example.com/call
     )
 
 
-def _provider(tmp_path, monkeypatch) -> op.OrgOAuthProvider:
+def _provider(tmp_path, monkeypatch, *, policy: AuthzPolicyConfig | None = None) -> op.OrgOAuthProvider:
     monkeypatch.setattr(op, "_clients_file_path", lambda: str(tmp_path / "oauth_clients.json"))
-    return op.OrgOAuthProvider(_idp(), idp_callback_url=IDP_CALLBACK_URL)
+    return op.OrgOAuthProvider(_idp(), idp_callback_url=IDP_CALLBACK_URL, policy=policy)
 
 
 def _patch_idp_exchange(monkeypatch, *, claims: dict):
@@ -183,6 +184,32 @@ class TestAuthorizeAndIdpCallback:
         state = dict(up.parse_qsl(up.urlparse(auth_url).query))["state"]
         with pytest.raises(ValueError):
             await provider.handle_idp_callback(state=state, code="idp-code")
+
+    async def test_idp_callback_denied_by_authz_policy_raises(self, tmp_path, monkeypatch):
+        # SEC-22: layered on top of the IdP leg -- a principal the IdP
+        # itself authenticated can still be turned away here.
+        import urllib.parse as up
+        policy = AuthzPolicyConfig(allowed_domains=("acme.com",))
+        provider = _provider(tmp_path, monkeypatch, policy=policy)
+        client = _client_info()
+        await provider.register_client(client)
+        _patch_idp_exchange(monkeypatch, claims={"sub": "mallory", "email": "mallory@evil.example.com"})
+        auth_url = await provider.authorize(client, _params())
+        state = dict(up.parse_qsl(up.urlparse(auth_url).query))["state"]
+        with pytest.raises(oi.AuthorizationDenied):
+            await provider.handle_idp_callback(state=state, code="idp-code")
+
+    async def test_idp_callback_admitted_by_authz_policy_succeeds(self, tmp_path, monkeypatch):
+        import urllib.parse as up
+        policy = AuthzPolicyConfig(allowed_domains=("acme.com",))
+        provider = _provider(tmp_path, monkeypatch, policy=policy)
+        client = _client_info()
+        await provider.register_client(client)
+        _patch_idp_exchange(monkeypatch, claims={"sub": "alice", "email": "alice@acme.com"})
+        auth_url = await provider.authorize(client, _params())
+        state = dict(up.parse_qsl(up.urlparse(auth_url).query))["state"]
+        redirect_url = await provider.handle_idp_callback(state=state, code="idp-code")
+        assert "code=" in redirect_url
 
 
 class TestAuthorizationCodeExchange:
@@ -387,3 +414,118 @@ class TestRevokeToken:
     async def test_revoking_an_unknown_token_is_a_no_op(self, tmp_path, monkeypatch):
         provider = _provider(tmp_path, monkeypatch)
         await provider.revoke_token(RefreshToken(token="never-issued", client_id="c", scopes=[]))  # must not raise
+
+
+class TestDcrResourceControls:
+    """SEC-16 (docs/security-remediation-plan.md, Phase 3 item 3.3):
+    unauthenticated ``/register`` gets a total-client cap, a
+    per-registration size cap, and stale-client pruning; unauthenticated
+    ``/authorize`` gets a count bound on ``_pending`` on top of its
+    existing TTL prune."""
+
+    async def test_registration_beyond_the_total_client_cap_is_rejected(self, tmp_path, monkeypatch):
+        provider = _provider(tmp_path, monkeypatch)
+        monkeypatch.setattr(op, "_MAX_REGISTERED_CLIENTS", 2)
+        await provider.register_client(_client_info(client_id="one"))
+        await provider.register_client(_client_info(client_id="two"))
+
+        with pytest.raises(op.RegistrationError) as exc_info:
+            await provider.register_client(_client_info(client_id="three"))
+        assert exc_info.value.error == "invalid_client_metadata"
+        assert await provider.get_client("three") is None
+
+    async def test_re_registering_an_existing_client_id_does_not_count_against_the_cap(self, tmp_path, monkeypatch):
+        provider = _provider(tmp_path, monkeypatch)
+        monkeypatch.setattr(op, "_MAX_REGISTERED_CLIENTS", 1)
+        await provider.register_client(_client_info(client_id="one"))
+
+        await provider.register_client(_client_info(client_id="one"))  # must not raise -- same client_id
+
+    async def test_oversized_registration_metadata_is_rejected(self, tmp_path, monkeypatch):
+        provider = _provider(tmp_path, monkeypatch)
+        monkeypatch.setattr(op, "_MAX_CLIENT_METADATA_BYTES", 64)
+        huge_client = _client_info()
+        huge_client.client_name = "x" * 10_000
+
+        with pytest.raises(op.RegistrationError) as exc_info:
+            await provider.register_client(huge_client)
+        assert exc_info.value.error == "invalid_client_metadata"
+        assert await provider.get_client(huge_client.client_id) is None
+
+    async def test_a_stale_unused_client_is_pruned_on_the_next_registration(self, tmp_path, monkeypatch):
+        provider = _provider(tmp_path, monkeypatch)
+        fake_now = [1000.0]
+        monkeypatch.setattr(op.time, "time", lambda: fake_now[0])
+        await provider.register_client(_client_info(client_id="stale-one"))
+
+        fake_now[0] += op._STALE_CLIENT_TTL_SECONDS + 1
+        await provider.register_client(_client_info(client_id="fresh-one"))  # triggers the prune
+
+        assert await provider.get_client("stale-one") is None
+        assert await provider.get_client("fresh-one") is not None
+
+    async def test_get_client_bumps_last_used_at_so_an_active_client_is_not_pruned_as_stale(self, tmp_path, monkeypatch):
+        provider = _provider(tmp_path, monkeypatch)
+        fake_now = [1000.0]
+        monkeypatch.setattr(op.time, "time", lambda: fake_now[0])
+        await provider.register_client(_client_info(client_id="active-one"))
+
+        fake_now[0] += op._STALE_CLIENT_TTL_SECONDS - 1
+        await provider.get_client("active-one")  # keeps it fresh just under the TTL
+
+        fake_now[0] += op._STALE_CLIENT_TTL_SECONDS - 1  # still < TTL since the bump above
+        await provider.register_client(_client_info(client_id="other"))  # triggers the prune
+
+        assert await provider.get_client("active-one") is not None
+
+    async def test_a_pre_sec_16_flat_format_clients_file_loads_without_being_treated_as_already_stale(
+        self, tmp_path, monkeypatch,
+    ):
+        import json as _json
+        clients_path = tmp_path / "oauth_clients.json"
+        old_format_client = _client_info(client_id="legacy")
+        clients_path.write_text(_json.dumps({"legacy": _json.loads(old_format_client.model_dump_json())}))
+
+        provider = _provider(tmp_path, monkeypatch)
+
+        got = await provider.get_client("legacy")
+        assert got is not None
+        assert got.client_id == "legacy"
+
+    async def test_a_pruned_stale_client_stays_pruned_on_disk_even_when_the_registration_is_then_rejected(
+        self, tmp_path, monkeypatch,
+    ):
+        provider = _provider(tmp_path, monkeypatch)
+        monkeypatch.setattr(op, "_MAX_REGISTERED_CLIENTS", 1)
+        fake_now = [1000.0]
+        monkeypatch.setattr(op.time, "time", lambda: fake_now[0])
+        # Seed one stale and one active client directly -- bypassing the
+        # cap this test sets to 1 -- to reproduce "pruning frees a slot,
+        # but the surviving (non-stale) clients still fill the cap on
+        # their own", which is the one path where the prune happens but
+        # the registration it was running inside still gets rejected.
+        provider._clients["stale"] = op._StoredClient(info=_client_info(client_id="stale"), last_used_at=fake_now[0])
+        fake_now[0] += op._STALE_CLIENT_TTL_SECONDS + 1
+        provider._clients["active"] = op._StoredClient(info=_client_info(client_id="active"), last_used_at=fake_now[0])
+        provider._save_clients_locked()
+
+        with pytest.raises(op.RegistrationError):
+            await provider.register_client(_client_info(client_id="new"))
+
+        # The stale entry was pruned -- and that prune was persisted to
+        # disk -- even though the registration attempt itself failed.
+        reloaded = _provider(tmp_path, monkeypatch)
+        assert await reloaded.get_client("stale") is None
+        assert await reloaded.get_client("active") is not None
+
+    async def test_pending_authorizations_are_count_bounded_within_the_ttl_window(self, tmp_path, monkeypatch):
+        provider = _provider(tmp_path, monkeypatch)
+        monkeypatch.setattr(op, "_MAX_PENDING_AUTHORIZATIONS", 2)
+        client = _client_info()
+        await provider.register_client(client)
+        await provider.authorize(client, _params(state="s1"))
+        await provider.authorize(client, _params(state="s2"))
+
+        with pytest.raises(op.AuthorizeError) as exc_info:
+            await provider.authorize(client, _params(state="s3"))
+        assert exc_info.value.error == "temporarily_unavailable"

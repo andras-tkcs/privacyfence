@@ -31,8 +31,10 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import BaseRoute, Route
 
-from .. import approval_list_html, web_shell
+from .. import approval_list_html, approval_window_html, web_shell
 from ..web_approval_ui import WebApprovalUI
+from .csp import nonce_for as _csp_nonce_for
+from .csp import set_nonce as _set_csp_nonce
 from .session_auth import SESSION_COOKIE as _SESSION_COOKIE
 from .session_auth import LocalSessionStore
 from .session_auth import authenticated as _session_authenticated
@@ -71,7 +73,7 @@ _ALREADY_DECIDED_MESSAGE = "Already decided elsewhere."
 _FAILED_MESSAGE = "Could not record this decision — please reload and try again."
 
 
-def _bridge_shim(*, decide_url: str, csrf: str) -> str:
+def _bridge_shim(*, decide_url: str, csrf: str, nonce: str) -> str:
     """Runtime shim swapping approval_window_html.py's/dialog_window_html.py's
     own ``window.webkit.messageHandlers.pf.postMessage(payload)`` call for a
     ``fetch()`` POST here -- see module docstring. ``csrf`` is folded into
@@ -89,9 +91,16 @@ def _bridge_shim(*, decide_url: str, csrf: str) -> str:
     (see approval_list_html.py's own JS). Only a genuine failure (network
     error, an unexpected status) leaves the card on screen with an inline
     message -- there is nothing to navigate back to for those.
+
+    ``nonce`` (SEC-08, docs/security-remediation-plan.md Phase 3.1): this
+    shim is a real ``<script>`` element injected into an already-rendered
+    card document (see ``_inject_shim`` below), so it has to carry the same
+    nonce that document's own ``<script>``/``<style>`` tags already do --
+    ``show_approval`` below recovers that value via
+    approval_window_html.extract_csp_nonce and passes it straight through.
     """
     return (
-        "<script>(function(){"
+        f'<script nonce="{nonce}">(function(){{'
         "window.webkit = window.webkit || {};"
         "window.webkit.messageHandlers = window.webkit.messageHandlers || {};"
         "window.webkit.messageHandlers.pf = {postMessage: function(payload) {"
@@ -201,11 +210,18 @@ def create_app(
     async def list_approvals(request: Request) -> Response:
         if not _authenticated(request):
             return _unauthorized(request)
+        # SEC-08 (docs/security-remediation-plan.md Phase 3.1): this page is
+        # rendered fresh every request, so it just takes the nonce
+        # _SecurityHeadersMiddleware already generated for this response
+        # (web/csp.py's nonce_for) -- both build_list_html's own <style>/
+        # <script> and web_shell.wrap's shell chrome must carry the exact
+        # same value.
+        nonce = _csp_nonce_for(request)
         csrf = request.cookies.get(_SESSION_COOKIE, "")
         rows = [approval_list_html.row_from_approval(card) for card in _list_rows()]
-        body = approval_list_html.build_list_html(rows, csrf=csrf)
+        body = approval_list_html.build_list_html(rows, csrf=csrf, nonce=nonce)
         html = web_shell.wrap(
-            body, title="PrivacyFence — Approvals", active="approvals",
+            body, title="PrivacyFence — Approvals", active="approvals", nonce=nonce,
             notifications_enabled=notifications_enabled, notifications_detail=notifications_detail,
         )
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
@@ -231,7 +247,17 @@ def create_app(
                 headers={"Cache-Control": "no-store"},
             )
         csrf = request.cookies.get(_SESSION_COOKIE, "")
-        shim = _bridge_shim(decide_url=f"/api/approvals/{card.id}/decide", csrf=csrf)
+        # SEC-08 (docs/security-remediation-plan.md Phase 3.1): card.html
+        # was rendered once, at approval-creation time -- long before this
+        # request/response existed -- so its own nonce was picked then, not
+        # now (see approval_window_html.py's module docstring). Recover it
+        # and make *this* response's CSP header match it, rather than the
+        # fresh per-request nonce _SecurityHeadersMiddleware assigned by
+        # default; a mismatch would make the browser reject the card's own
+        # already-rendered <style>/<script> tags outright.
+        nonce = approval_window_html.extract_csp_nonce(card.html) or _csp_nonce_for(request)
+        _set_csp_nonce(request, nonce)
+        shim = _bridge_shim(decide_url=f"/api/approvals/{card.id}/decide", csrf=csrf, nonce=nonce)
         return HTMLResponse(_inject_shim(card.html, shim), headers={"Cache-Control": "no-store"})
 
     async def approvals_stream(request: Request) -> Response:

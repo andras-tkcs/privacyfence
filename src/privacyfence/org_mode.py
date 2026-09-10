@@ -218,17 +218,170 @@ class DownloadDeliveryConfig:
         )
 
 
+AuditForwardingKind = Literal["syslog", "http"]
+DEFAULT_AUDIT_FORWARDING_KIND: AuditForwardingKind = "syslog"
+
+SyslogProtocol = Literal["udp", "tcp"]
+DEFAULT_SYSLOG_PROTOCOL: SyslogProtocol = "tcp"
+# IANA's syslog-tls port (RFC 5425), not 514 (RFC 5424's plaintext-only
+# default) -- see audit_forwarding.py's own module docstring for why this
+# module doesn't speak TLS itself and expects this port to be fronted by a
+# TLS-terminating relay when that matters.
+DEFAULT_SYSLOG_PORT = 6514
+
+
+@dataclass(frozen=True)
+class AuditForwardingConfig:
+    """SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6): org
+    mode's centralized audit-log forwarding destination. Lives in
+    ``org_config.json``'s ``audit_forwarding`` section, org-mode-only like
+    ``ServerConfig``/``StepUpConfig``/``DownloadDeliveryConfig`` above --
+    local mode never looks at this at all (there is no "centralize" to
+    speak of for a single employee's own machine); see daemon_main.py's
+    ``run_app`` for the ``resolve_mode(org_config) == "org"`` gate.
+
+    Forwarding is *additional* visibility, never a replacement for the
+    local audit log ``audit_log.py``'s ``AuditLogger`` always writes --
+    that JSONL file (with its own append-integrity hash chain, SEC-23's
+    other half, always on regardless of this config) stays the
+    authoritative record even when forwarding is enabled and even when a
+    specific entry fails to forward. See ``audit_forwarding.py`` for what
+    each ``kind`` actually sends on the wire.
+    """
+
+    enabled: bool = False
+    kind: AuditForwardingKind = DEFAULT_AUDIT_FORWARDING_KIND
+    syslog_host: str = ""
+    syslog_port: int = DEFAULT_SYSLOG_PORT
+    syslog_protocol: SyslogProtocol = DEFAULT_SYSLOG_PROTOCOL
+    http_url: str = ""
+    # Name of an environment variable *this daemon's own process*  reads a
+    # bearer token from at forward-send time -- never itself stored in
+    # org_config.json, so a leaked or mis-shared bundle doesn't also leak
+    # the SIEM credential (the same reasoning behind every OAuth client
+    # secret in this file being a real secret, just via env var since
+    # there's no build-time secrets store equivalent for an IT-run
+    # server's own SIEM API key).
+    http_bearer_token_env: str = ""
+
+    @staticmethod
+    def from_org_config(org_config: dict[str, Any]) -> "AuditForwardingConfig":
+        raw = org_config.get("audit_forwarding")
+        raw = raw if isinstance(raw, dict) else {}
+        enabled = bool(raw.get("enabled", False))
+        kind = raw.get("kind", DEFAULT_AUDIT_FORWARDING_KIND)
+        if kind not in ("syslog", "http"):
+            raise ConfigurationError(
+                f"org_config.json's \"audit_forwarding\".\"kind\" must be \"syslog\" or \"http\", "
+                f"got {kind!r}"
+            )
+        syslog_raw = raw.get("syslog")
+        syslog_raw = syslog_raw if isinstance(syslog_raw, dict) else {}
+        http_raw = raw.get("http")
+        http_raw = http_raw if isinstance(http_raw, dict) else {}
+
+        syslog_protocol = syslog_raw.get("protocol", DEFAULT_SYSLOG_PROTOCOL)
+        if syslog_protocol not in ("udp", "tcp"):
+            raise ConfigurationError(
+                f"org_config.json's \"audit_forwarding\".\"syslog\".\"protocol\" must be \"udp\" "
+                f"or \"tcp\", got {syslog_protocol!r}"
+            )
+        http_url = str(http_raw.get("url", "") or "")
+        if enabled and kind == "http" and http_url and not http_url.startswith("https://"):
+            raise ConfigurationError(
+                "org_config.json's \"audit_forwarding\".\"http\".\"url\" must use https:// -- "
+                "audit entries are sensitive, and this endpoint is otherwise reached over "
+                "plaintext HTTP."
+            )
+        return AuditForwardingConfig(
+            enabled=enabled,
+            kind=kind,
+            syslog_host=str(syslog_raw.get("host", "") or ""),
+            syslog_port=int(syslog_raw.get("port", DEFAULT_SYSLOG_PORT)),
+            syslog_protocol=syslog_protocol,
+            http_url=http_url,
+            http_bearer_token_env=str(http_raw.get("bearer_token_env", "") or ""),
+        )
+
+
+@dataclass(frozen=True)
+class AuthzPolicyConfig:
+    """SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7): an
+    optional PrivacyFence-level allowlist layered *on top of* the IdP's own
+    authentication, not a replacement for it -- the IdP has already decided
+    who this human is by the time anything here runs (org_identity.py's
+    ``check_authz_policy`` is only ever called after ``principal_from_
+    claims`` has a real ``Principal`` in hand); this decides whether
+    PrivacyFence itself is willing to admit them.
+
+    Exists because docs/org-mode-setup-guide.md §4.1 flags this as a real
+    gap: for a plain (non-Workspace) Google IdP, the OAuth consent screen's
+    own test-user list or verification status is the *only* access control
+    most org-mode deployments have -- an IdP-side setting this repo can't
+    see or audit, let alone enforce consistently across a different IdP.
+
+    Lives in ``org_config.json``'s ``authz`` section, org-mode-only like
+    every other org_mode.py config class. Absent entirely (or an ``authz``
+    section with neither list set) means ``enabled`` is ``False`` -- "no
+    additional restriction, every IdP-authenticated principal is admitted"
+    -- so an existing org-mode install with no ``authz`` section keeps
+    working exactly as before this landed, the same additive/opt-in
+    posture every other org-mode config in this module already has.
+    """
+
+    # Case-folded, leading-"@"-stripped at parse time (see from_org_config)
+    # so "acme.com", "Acme.com" and "@acme.com" in org_config.json all mean
+    # the same thing -- matched against the domain half of the principal's
+    # own (IdP-asserted) email.
+    allowed_domains: tuple[str, ...] = ()
+    # ID token claim (e.g. "groups") that carries group membership -- kept
+    # separate from IdpConfig.admin_group_claim (a different question:
+    # "is this human an admin", not "may this human sign in at all") so an
+    # org can gate sign-in on group membership without also having to
+    # configure -- or share values with -- the admin mapping.
+    groups_claim: str = ""
+    required_groups: tuple[str, ...] = ()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.allowed_domains) or bool(self.required_groups)
+
+    @staticmethod
+    def from_org_config(org_config: dict[str, Any]) -> "AuthzPolicyConfig":
+        raw = org_config.get("authz")
+        raw = raw if isinstance(raw, dict) else {}
+        raw_domains = (str(d).strip().lower().lstrip("@") for d in (raw.get("allowed_domains") or ()))
+        allowed_domains = tuple(domain for domain in raw_domains if domain)
+        required_groups = tuple(str(g) for g in (raw.get("required_groups") or ()) if str(g))
+        groups_claim = raw.get("groups_claim", "") or ""
+        if required_groups and not groups_claim:
+            raise ConfigurationError(
+                "org_config.json's \"authz\".\"required_groups\" is set but \"groups_claim\" is "
+                "empty -- PrivacyFence has no ID token claim to read group membership from"
+            )
+        return AuthzPolicyConfig(
+            allowed_domains=allowed_domains, groups_claim=groups_claim, required_groups=required_groups,
+        )
+
+
 __all__ = [
+    "AuditForwardingConfig",
+    "AuditForwardingKind",
+    "AuthzPolicyConfig",
     "ConfigurationError",
+    "DEFAULT_AUDIT_FORWARDING_KIND",
     "DEFAULT_INLINE_MAX_BYTES",
     "DEFAULT_LINK_TTL_SECONDS",
     "DEFAULT_MODE",
     "DEFAULT_RP_NAME",
     "DEFAULT_STEP_UP_SCOPE",
+    "DEFAULT_SYSLOG_PORT",
+    "DEFAULT_SYSLOG_PROTOCOL",
     "DownloadDeliveryConfig",
     "Mode",
     "ServerConfig",
     "StepUpConfig",
     "StepUpScope",
+    "SyslogProtocol",
     "resolve_mode",
 ]

@@ -5,7 +5,7 @@ Run this once per organization after registering each cloud app (see the
 "For IT admins" section of docs/google-cloud-setup.md, docs/slack-setup.md,
 docs/salesforce-setup.md, and docs/atlassian-setup.md). The output file is
 what you distribute to your users — they install it via "Install/Update
-Organization Config…" in the PrivacyFence menu bar.
+Organization Config…" on the General page of PrivacyFence Settings (the embedded web page).
 
 Telegram is not part of this bundle: its api_id/api_hash identify the
 PrivacyFence app itself (not your organization) and are baked into the
@@ -132,7 +132,10 @@ def _load_google_client_secret(path: str) -> dict[str, Any]:
             f"{path} doesn't look like a Google OAuth client_secret.json "
             '(expected a top-level "installed" or "web" key). Download it from '
             "Google Cloud Console -> APIs & Services -> Credentials, for an "
-            "OAuth client of type 'Desktop app'."
+            "OAuth client of type 'Desktop app' (local mode's loopback flow) or "
+            "'Web application' (org mode's server-redirect flow needs an "
+            "explicit, registered HTTPS redirect URI -- see docs/org-mode-"
+            "setup-guide.md's §4.2)."
         )
     return inner
 
@@ -155,7 +158,9 @@ def build_parser() -> argparse.ArgumentParser:
     google.add_argument(
         "--google-client-secret", metavar="PATH",
         help="Path to the client_secret.json downloaded from Google Cloud Console "
-             "(OAuth client of type 'Desktop app').",
+             "(OAuth client of type 'Desktop app' for local mode, or 'Web "
+             "application' for org mode -- see docs/org-mode-setup-guide.md's "
+             "§4.2).",
     )
 
     slack = parser.add_argument_group("Slack")
@@ -240,6 +245,28 @@ def build_parser() -> argparse.ArgumentParser:
              "--idp-admin-group-value it-admins).",
     )
 
+    authz = parser.add_argument_group(
+        "App-level authorization policy (SEC-22, docs/security-remediation-plan.md, Phase 3 item 3.7)",
+    )
+    authz.add_argument(
+        "--authz-allowed-domain", action="append", default=[], metavar="DOMAIN", dest="authz_allowed_domains",
+        help="Only admit a principal whose (IdP-asserted) email is at this domain -- repeat for "
+             "more than one. Layered on top of the IdP's own authentication, not a replacement "
+             "for it. Omit to leave this unrestricted (the default).",
+    )
+    authz.add_argument(
+        "--authz-groups-claim", metavar="CLAIM",
+        help="ID token claim (e.g. \"groups\") whose value --authz-required-group is checked "
+             "against -- required if --authz-required-group is given. Independent of "
+             "--idp-admin-group-claim (a different question: who's an admin, not who may sign in "
+             "at all) even if your IdP happens to use the same claim name for both.",
+    )
+    authz.add_argument(
+        "--authz-required-group", action="append", default=[], metavar="VALUE", dest="authz_required_groups",
+        help="Only admit a principal whose --authz-groups-claim contains one of these -- repeat "
+             "for more than one. Requires --authz-groups-claim.",
+    )
+
     step_up = parser.add_argument_group(
         "WebAuthn step-up (P9, docs/https-connector-refactor-plan.md §10.6/§15 D7)",
     )
@@ -307,6 +334,56 @@ def build_parser() -> argparse.ArgumentParser:
         help="Refuse (rather than stage to disk, encrypted) a download too large for "
              "--downloads-inline-max-bytes. Off by default -- see the plan doc's \"Org-level "
              "opt-out\" section for when to turn this on.",
+    )
+
+    audit_forwarding = parser.add_argument_group(
+        "Centralized audit-log forwarding (org mode, SEC-23, "
+        "src/privacyfence/audit_forwarding.py)",
+    )
+    audit_forwarding.add_argument(
+        "--audit-forwarding-kind", choices=("syslog", "http"), default=None,
+        help='Forward every audit-log entry to a syslog server ("syslog") or post it as JSON to '
+             'an HTTPS webhook -- Splunk HEC, Datadog Logs API, an Elastic ingest pipeline, an '
+             'OTLP-over-HTTP/JSON log receiver ("http"). Default: "syslog". The local audit log '
+             '(with its own append-integrity hash chain) stays the authoritative record either '
+             "way -- this is additional visibility, not a replacement.",
+    )
+    audit_forwarding_toggle = audit_forwarding.add_mutually_exclusive_group()
+    audit_forwarding_toggle.add_argument(
+        "--enable-audit-forwarding", action="store_true",
+        help="Turn on centralized audit-log forwarding. Requires --audit-forwarding-kind and "
+             "the matching --audit-forwarding-syslog-host or --audit-forwarding-http-url.",
+    )
+    audit_forwarding_toggle.add_argument(
+        "--disable-audit-forwarding", action="store_true",
+        help="Explicitly turn audit-log forwarding back off (useful with --merge).",
+    )
+    audit_forwarding.add_argument(
+        "--audit-forwarding-syslog-host", metavar="HOST", default=None,
+        help="syslog server hostname/IP. Required (with --enable-audit-forwarding) when "
+             "--audit-forwarding-kind syslog.",
+    )
+    audit_forwarding.add_argument(
+        "--audit-forwarding-syslog-port", type=int, metavar="PORT", default=None,
+        help="Default: 6514 (RFC 5425's syslog-tls port -- see audit_forwarding.py's module "
+             "docstring for why TLS itself isn't implemented there and this port is still the "
+             "sane default).",
+    )
+    audit_forwarding.add_argument(
+        "--audit-forwarding-syslog-protocol", choices=("udp", "tcp"), default=None,
+        help="Default: tcp.",
+    )
+    audit_forwarding.add_argument(
+        "--audit-forwarding-http-url", metavar="URL", default=None,
+        help="HTTPS endpoint to POST each audit entry to (as one JSON object per request). "
+             "Required (with --enable-audit-forwarding) when --audit-forwarding-kind http. Must "
+             "start with https:// -- audit entries are sensitive.",
+    )
+    audit_forwarding.add_argument(
+        "--audit-forwarding-http-bearer-token-env", metavar="ENV_VAR", default=None,
+        help="Name of an environment variable the daemon process itself reads a bearer token "
+             "from at send time -- never stored in this bundle. Set that variable in the "
+             "systemd unit/environment on the server, not here.",
     )
 
     signing = parser.add_argument_group(
@@ -419,6 +496,8 @@ def main(argv: list[str] | None = None) -> int:
         bundle.pop("idp", None)
         bundle.pop("step_up", None)
         bundle.pop("download_delivery", None)
+        bundle.pop("authz", None)
+        bundle.pop("audit_forwarding", None)
     elif any([
         args.server_issuer_url, args.idp_issuer, args.idp_client_id, args.idp_client_secret,
         args.server_tls_cert, args.server_tls_key, args.server_trusted_proxies, args.idp_step_up_acr_values,
@@ -463,6 +542,69 @@ def main(argv: list[str] | None = None) -> int:
             downloads_section["allow_disk_staging"] = False
         bundle["download_delivery"] = downloads_section
 
+    if args.authz_allowed_domains or args.authz_groups_claim or args.authz_required_groups:
+        if bundle.get("mode") != "org":
+            raise SystemExit("--authz-* flags require --mode org (or --merge against an existing org-mode bundle).")
+        if args.authz_required_groups and not args.authz_groups_claim:
+            raise SystemExit("--authz-required-group requires --authz-groups-claim.")
+        authz_section: dict[str, Any] = dict(bundle.get("authz") or {})
+        if args.authz_allowed_domains:
+            authz_section["allowed_domains"] = args.authz_allowed_domains
+        if args.authz_groups_claim:
+            authz_section["groups_claim"] = args.authz_groups_claim
+        if args.authz_required_groups:
+            authz_section["required_groups"] = args.authz_required_groups
+        bundle["authz"] = authz_section
+
+    if (
+        args.enable_audit_forwarding or args.disable_audit_forwarding
+        or args.audit_forwarding_kind or args.audit_forwarding_syslog_host
+        or args.audit_forwarding_syslog_port is not None or args.audit_forwarding_syslog_protocol
+        or args.audit_forwarding_http_url or args.audit_forwarding_http_bearer_token_env
+    ):
+        if bundle.get("mode") != "org":
+            raise SystemExit(
+                "--audit-forwarding-* flags require --mode org (or --merge against an existing "
+                "org-mode bundle)."
+            )
+        forwarding_section: dict[str, Any] = dict(bundle.get("audit_forwarding") or {})
+        if args.enable_audit_forwarding:
+            forwarding_section["enabled"] = True
+        elif args.disable_audit_forwarding:
+            forwarding_section["enabled"] = False
+        if args.audit_forwarding_kind:
+            forwarding_section["kind"] = args.audit_forwarding_kind
+        kind = forwarding_section.get("kind", "syslog")
+        if kind == "syslog":
+            syslog_section: dict[str, Any] = dict(forwarding_section.get("syslog") or {})
+            if args.audit_forwarding_syslog_host:
+                syslog_section["host"] = args.audit_forwarding_syslog_host
+            if args.audit_forwarding_syslog_port is not None:
+                syslog_section["port"] = args.audit_forwarding_syslog_port
+            if args.audit_forwarding_syslog_protocol:
+                syslog_section["protocol"] = args.audit_forwarding_syslog_protocol
+            if syslog_section:
+                forwarding_section["syslog"] = syslog_section
+            if forwarding_section.get("enabled") and not syslog_section.get("host"):
+                raise SystemExit(
+                    "--enable-audit-forwarding with --audit-forwarding-kind syslog (the default) "
+                    "requires --audit-forwarding-syslog-host."
+                )
+        elif kind == "http":
+            http_section: dict[str, Any] = dict(forwarding_section.get("http") or {})
+            if args.audit_forwarding_http_url:
+                http_section["url"] = args.audit_forwarding_http_url
+            if args.audit_forwarding_http_bearer_token_env:
+                http_section["bearer_token_env"] = args.audit_forwarding_http_bearer_token_env
+            if http_section:
+                forwarding_section["http"] = http_section
+            if forwarding_section.get("enabled") and not http_section.get("url"):
+                raise SystemExit(
+                    "--enable-audit-forwarding with --audit-forwarding-kind http requires "
+                    "--audit-forwarding-http-url."
+                )
+        bundle["audit_forwarding"] = forwarding_section
+
     services = [k for k in ("google", "slack", "salesforce", "atlassian") if k in bundle]
     if not services and "unattended_sessions" not in bundle and "mode" not in bundle:
         raise SystemExit(
@@ -492,6 +634,12 @@ def main(argv: list[str] | None = None) -> int:
         summary += f", step_up.enabled={bundle['step_up'].get('enabled', False)}"
     if "download_delivery" in bundle:
         summary += f", download_delivery.allow_disk_staging={bundle['download_delivery'].get('allow_disk_staging', True)}"
+    if "authz" in bundle:
+        n_domains = len(bundle["authz"].get("allowed_domains") or [])
+        n_groups = len(bundle["authz"].get("required_groups") or [])
+        summary += f", authz.allowed_domains={n_domains}, authz.required_groups={n_groups}"
+    if "audit_forwarding" in bundle:
+        summary += f", audit_forwarding.enabled={bundle['audit_forwarding'].get('enabled', False)}"
     summary += f", signed={'signature' in bundle}"
     print(f"Wrote {out_path} with: {summary}")
     if bundle.get("mode") == "org":
@@ -508,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(
         'Distribute this file to your users. They install it via "Install/Update '
-        'Organization Config…" in the PrivacyFence menu bar.'
+        'Organization Config…" on the General page of PrivacyFence Settings.'
     )
     return 0
 

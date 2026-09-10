@@ -18,6 +18,7 @@ from privacyfence.approval_window_html import (
     build_card_stack_html,
     build_preview_body_html,
     disclosure_rows_from_visibility,
+    extract_csp_nonce,
     line_clamp_for,
 )
 
@@ -744,9 +745,39 @@ class TestEscapingAndNoNetwork:
 
 class TestCardStackIsAPureFunction:
     def test_same_input_same_output(self):
-        assert build_card_stack_html(**_minimal_kwargs()) == build_card_stack_html(**_minimal_kwargs())
+        # SEC-08 (docs/security-remediation-plan.md Phase 3.1): ``nonce``
+        # defaults to a fresh random value per call by design (it's a CSP
+        # nonce -- see build_card_stack_html's own docstring), so two calls
+        # with otherwise-identical arguments are deliberately *not* required
+        # to produce identical output unless the nonce is pinned explicitly,
+        # same as any other declared argument.
+        assert (
+            build_card_stack_html(**_minimal_kwargs(), nonce="fixed")
+            == build_card_stack_html(**_minimal_kwargs(), nonce="fixed")
+        )
 
     def test_different_input_different_output(self):
         a = build_card_stack_html(**_minimal_kwargs(title="A"))
         b = build_card_stack_html(**_minimal_kwargs(title="B"))
         assert a != b
+
+
+class TestCspNonce:
+    """SEC-08 (docs/security-remediation-plan.md Phase 3.1)."""
+
+    def test_each_call_gets_its_own_random_nonce(self):
+        a = build_card_stack_html(**_minimal_kwargs())
+        b = build_card_stack_html(**_minimal_kwargs())
+        assert extract_csp_nonce(a) != extract_csp_nonce(b)
+
+    def test_style_and_script_tags_carry_the_same_nonce(self):
+        html = build_card_stack_html(**_minimal_kwargs(), nonce="fixed-nonce")
+        assert '<style nonce="fixed-nonce">' in html
+        assert '<script nonce="fixed-nonce">' in html
+
+    def test_extract_csp_nonce_recovers_the_baked_in_value(self):
+        html = build_card_stack_html(**_minimal_kwargs(), nonce="abc123")
+        assert extract_csp_nonce(html) == "abc123"
+
+    def test_extract_csp_nonce_returns_none_for_html_with_no_nonce(self):
+        assert extract_csp_nonce("<html><body>hi</body></html>") is None

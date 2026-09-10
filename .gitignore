@@ -20,6 +20,9 @@ config/settings.local.yaml
 # Local runtime caches (dev-mode data_dir() is the repo root -- see paths.py)
 resource_name_cache.json
 update_check_cache.json
+# SEC-23: this install's own random id (daemon_main.get_or_create_deployment_id) --
+# dev-mode data_dir() is the repo root, same as the caches above.
+deployment_id
 
 # QA fixture manifest (keep only the .example) -- reveals which real
 # project/space/folder/calendar/list/channel/chat a QA environment uses,

@@ -5,9 +5,9 @@ into.
 ``StaticTokenVerifier`` below is a ``TokenVerifier`` (the official SDK's
 protocol, ``mcp.server.auth.provider.TokenVerifier``) checking a single
 shared secret -- the same "possession of this file is the authority"
-posture ``~/.privacyfence/ipc_token`` already has for the bridge (see
-ipc.py's module docstring) and ``web_token`` has for the approval surface
-(see server.py's module docstring). Not real OAuth 2.1 -- that's org mode
+posture ``web_token`` has for the approval surface (see server.py's module
+docstring), and the same one ``~/.privacyfence/ipc_token`` had for the
+bridge before P5 retired both. Not real OAuth 2.1 -- that's org mode
 (D5 in docs/https-connector-refactor-plan.md §15, landed at P7 as
 ``OrgOAuthProvider``, which satisfies the exact same ``TokenVerifier``
 protocol via its own ``verify_token``). Using the SDK's own

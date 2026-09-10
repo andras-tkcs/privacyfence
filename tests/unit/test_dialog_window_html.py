@@ -17,6 +17,7 @@ build_card_stack_html takes with details_text.
 """
 from __future__ import annotations
 
+from privacyfence.approval_window_html import extract_csp_nonce
 from privacyfence.dialog_window_html import (
     CONFIRM_WIDTH,
     PICKER_WIDTH,
@@ -160,3 +161,26 @@ class TestBuildChoiceHtml:
         html = build_choice_html(title="T", prompt="p", options=["a", "b"])
         # Two option rows + the Cancel button, all start disabled.
         assert html.count('role="button" aria-disabled="true"') == 3
+
+
+class TestCspNonce:
+    """SEC-08 (docs/security-remediation-plan.md Phase 3.1) -- both shapes
+    share approval_window_html.py's own document-shell/extraction
+    conventions (see that module's own docstring on the CSP nonce)."""
+
+    def test_confirmation_html_style_and_script_share_a_random_nonce(self):
+        html = build_confirmation_html(title="T", message_lines=["m"], cancel_label="Cancel", confirm_label="OK")
+        nonce = extract_csp_nonce(html)
+        assert nonce
+        assert f'<style nonce="{nonce}">' in html
+
+    def test_choice_html_style_and_script_share_a_random_nonce(self):
+        html = build_choice_html(title="T", prompt="p", options=["a"])
+        nonce = extract_csp_nonce(html)
+        assert nonce
+        assert f'<style nonce="{nonce}">' in html
+
+    def test_each_call_gets_its_own_nonce(self):
+        a = build_confirmation_html(title="T", message_lines=["m"], cancel_label="Cancel", confirm_label="OK")
+        b = build_confirmation_html(title="T", message_lines=["m"], cancel_label="Cancel", confirm_label="OK")
+        assert extract_csp_nonce(a) != extract_csp_nonce(b)
