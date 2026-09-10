@@ -62,12 +62,14 @@ Budget summary (Phase A total, monthly, single-seat):
 | Service | Plan | Cost | Why this tier |
 |---|---|---|---|
 | Google | Google Workspace Business Starter, 1 user | ~$7/user/month (varies by region/billing term) | Needed for `calendar_list_rooms` (TST coverage of the Workspace-admin room-directory path in `qa-environment-setup.md` §4) and Admin SDK access; a free consumer Gmail account works for every other connector if you'd rather skip this and accept that one gap |
-| Slack | Pro plan, 1 user | ~$7.25/user/month (billed annually is cheaper) | Free plan's 90-day message-history limit will eventually age out the seeded `[QATEST]` thread the recorder replays against; Pro removes that limit |
+| Slack | Developer Program sandbox (free) | $0 | See A.2 — [api.slack.com/developer-program](https://api.slack.com/developer-program) gives a free Enterprise Grid sandbox, a strictly better fit than a paid Pro workspace: Enterprise Grid has no 90-day history cutoff, and (per Slack's own May 2025 rate-limit change) an *internal, non-distributed* app built inside it still keeps full Tier 3 `conversations.history`/`conversations.replies` limits, same as `slack-setup.md`'s existing "never distribute" guidance already assumes |
 | Atlassian | Free (Jira + Confluence Cloud, up to 10 users) | $0 | Free tier is sufficient for everything `atlassian-setup.md`/`qa-environment-setup.md` need — one small project/space, low request volume |
 | Salesforce | Developer Edition org | $0 | Purpose-built free tier for exactly this; not a trial, doesn't expire |
 
-Total: roughly **$14–15/month** (Google + Slack) if you want full coverage including the Workspace
-room-directory path; **~$7/month** (Slack only) if a free consumer Google account is acceptable.
+Total: roughly **$7/month** (Google Workspace only) for full coverage including the Workspace
+room-directory path; **$0/month** if a free consumer Google account is acceptable instead. A
+payment method is still required on the Slack Developer Program account for identity verification
+(§A.2) even though nothing is charged.
 
 ### A.1 Google — dedicated Workspace account
 
@@ -97,28 +99,41 @@ room-directory path; **~$7/month** (Slack only) if a free consumer Google accoun
    project with Admin SDK API enabled, and run `scripts/sync_room_directory.py` once to populate
    `org_config.qa.json`'s `rooms` list.
 
-### A.2 Slack — dedicated workspace + app registration
+### A.2 Slack — free Developer Program sandbox + app registration
 
-1. Go to [slack.com/get-started](https://slack.com/get-started#/create) and create a new workspace,
-   e.g. `PrivacyFence QA`. Use a dedicated email (e.g. an alias on the Google Workspace domain from
-   A.1, `qa@privacyfence-qa.dev`) as the workspace owner — don't reuse a personal or production
-   Slack identity.
-2. Skip inviting teammates (or invite nobody) — this workspace exists solely to host the
-   `[QATEST]`-tagged channels `qa-environment-setup.md` §3 describes.
-3. Upgrade to the **Pro** plan: workspace name (top-left) → **Settings & administration** →
-   **Billing** → **Upgrade to Pro**. Monthly billing, 1 active user.
-4. Register the app: go to [api.slack.com/apps](https://api.slack.com/apps) (sign in as the
-   workspace owner from step 1) → **Create New App** → **From scratch** → name it `PrivacyFence QA`
-   → select the `PrivacyFence QA` workspace → **Create App**.
+Use the free **Slack Developer Program** rather than paying for a Pro-plan workspace — it provisions
+a full Enterprise Grid environment at no cost, which is a better match for this project's needs than
+a paid single-workspace Pro plan (no message-history cutoff, full API feature set), with the one
+trade-off that the sandbox itself has a rolling expiry (see step 6).
+
+1. Go to [api.slack.com/developer-program](https://api.slack.com/developer-program) and click
+   **Join the Program**. Sign up with a dedicated email (e.g. an alias on the Google Workspace domain
+   from A.1, `qa@privacyfence-qa.dev`) — don't reuse a personal or production Slack identity.
+   Confirm via the activation email.
+2. Signed in to your new developer account, go to **Sandboxes** → **Provision Sandbox**. You'll be
+   asked for a payment method if the account isn't already on a paid plan — this is for identity
+   verification only; provisioning and running a sandbox is not billed.
+3. Fill in the sandbox details (an org/workspace name, e.g. `PrivacyFence QA`) and click
+   **Provision Sandbox** again to confirm. This creates an Enterprise Grid org with one workspace —
+   sign in to it via the time-limited PIN sent to your verified email (no SSO to configure).
+4. Register the app inside this sandbox: go to [api.slack.com/apps](https://api.slack.com/apps)
+   (signed in as the same account) → **Create New App** → **From scratch** → name it
+   `PrivacyFence QA` → select the sandbox's workspace → **Create App**.
 5. Follow `docs/slack-setup.md` **"For IT admins"** section exactly as written, in this new app:
-   add every listed User Token Scope, **do not** click "Activate Public Distribution" (the doc's own
-   warning about the internal-app rate-limit cliff applies here too — this is exactly the kind of
-   app that would otherwise get silently rate-limited), and get the client id/secret for
-   `build_org_bundle.py`.
+   add every listed User Token Scope, **do not** click "Activate Public Distribution". This matters
+   even inside a sandbox: Slack's own May 2025 rate-limit change exempts *internal, non-distributed*
+   apps from the 1-request-per-minute/15-message cap on `conversations.history`/
+   `conversations.replies` — the same property `slack-setup.md`'s existing warning already depends
+   on, sandbox or not. Get the client id/secret for `build_org_bundle.py`.
 6. Add the Slack client id/secret into the same `org_config.qa.json` from A.1 (`--merge`).
 7. Authenticate PrivacyFence's Slack connector against this workspace once, locally.
 8. Follow `qa-environment-setup.md` §3: create the approved channel, create and seed the
    `privacyfence-qa-control` channel with a `[QATEST]`-tagged thread.
+9. **Sandbox renewal**: a provisioned sandbox is active for six months by default, and the org admin
+   can extend its archive date another six months at a time before it lapses (**Sandboxes** →
+   select the sandbox → **Extend**). Fold this into the same recurring reminder as Phase B.3's
+   quarterly credential rotation — check the sandbox's expiry date at each rotation and extend it if
+   it's within the next rotation window, so it never lapses out from under the recorded fixtures.
 
 ### A.3 Atlassian — free developer registration
 
@@ -514,4 +529,5 @@ remediation plan sooner, start there while account/runner provisioning is in fli
 | Malicious workflow-file change merged to `main` | Require review on `.github/workflows/connector-live-check.yml` changes specifically; scope job permissions to the minimum (`contents: write` only) |
 | Provider ToS concerns around automated test traffic | All four providers (Google Workspace, Slack, Atlassian, Salesforce) explicitly offer developer/sandbox tiers meant for exactly this; weekly read-mostly traffic against synthetic `[QATEST]` data is well within normal developer use |
 | Runner goes offline, scheduled job silently stops running | `schedule:` triggers on a dead runner just queue and eventually show as failed/stale in the Actions tab — add a `send_later`-style check-in or a separate lightweight "did the weekly job run" alert if this matters; not automated by this plan as written |
-| Cost creep (four paid-ish accounts) | Budget is ~$15/month as scoped in Phase A; re-evaluate if a fifth connector (Telegram is already free/personal-account-based) or additional seats are ever needed |
+| Slack sandbox lapses (6-month expiry) unnoticed, breaking the live check | Fold the sandbox-expiry check into the same recurring reminder as credential rotation (A.2 step 9, B.3) rather than a separate cadence to track |
+| Cost creep | Only Google Workspace is a recurring cost as scoped in Phase A (~$7/month) — Slack, Atlassian, and Salesforce are all free tiers; re-evaluate if a fifth connector (Telegram is already free/personal-account-based) or additional seats are ever needed |
