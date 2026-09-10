@@ -153,17 +153,27 @@ class AuditEntry:
                             #  tool call was involved)
                             # ("rule_changed_via_bridge_proposal"/"rule_removed_via_bridge_proposal"/
                             #  "grant_changed_via_bridge_proposal"/"grant_removed_via_bridge_proposal":
-                            #  gate.py's propose_rule_change() -- a Claude-initiated auto_accept_rules/
-                            #  auto_accept_grants edit that a human confirmed via the same
+                            #  gate.py's propose_rule_change() -- an auto_accept_rules/auto_accept_grants
+                            #  edit Claude proposed that a human confirmed via the same
                             #  show_rule_confirmation_popup() the "Always allow" flow uses, and that
                             #  actually changed something (config's own `changed` return value was
                             #  True). "rejected" is reused, not a new value, when the human declines
-                            #  instead. The "_via_bridge_proposal" name is historical -- it predates
-                            #  P5's retirement of the bridge, and this is stored, already-written
-                            #  audit data, so the string itself is not being renamed here (see
-                            #  docs/security-remediation-plan.md's ORP-06 for that call); it still
-                            #  means "Claude proposed this via the MCP meta-tool", now over ``/mcp``
-                            #  rather than the bridge socket)
+                            #  instead. NOTE (docs/security-remediation-plan.md Phase 3 PR3.9,
+                            #  ORP-06): "bridge_proposal" here is legacy vocabulary from when this
+                            #  flow really was posted by a separate Node bridge process over IPC
+                            #  (pre-P5, see docs/https-connector-refactor-plan.md §12) -- Claude now
+                            #  reaches propose_rule_change() via web/mcp_dispatch.py's MCP meta-tool,
+                            #  over ``/mcp`` rather than the bridge socket. The four decision strings
+                            #  above and "bridge_proposal_no_op" below are deliberately NOT renamed to
+                            #  match: they're already written, unversioned, into every existing
+                            #  install's logs/audit/*.jsonl history, and any consumer of that history
+                            #  (the weekly Excel export's own PatternFill lookup below, a maintainer's
+                            #  ad hoc log grep, a future analytics pass) matches on the literal string.
+                            #  Renaming the constant would either silently stop matching old entries
+                            #  or require a one-off migration script rewriting historical JSONL files
+                            #  in place -- mutating already-written audit records is a bigger risk
+                            #  than a slightly dated name. Documenting the vocabulary as legacy (here)
+                            #  is the review's recommended fix, not a migration.)
                             # ("bridge_proposal_no_op": same propose_rule_change() confirmation flow,
                             #  but the human's "yes" didn't actually change anything -- e.g. Claude
                             #  proposed removing a rule/grant value that was already gone. Distinct

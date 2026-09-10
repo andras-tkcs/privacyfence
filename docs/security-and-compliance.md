@@ -39,7 +39,7 @@ your organization runs and controls, not a PrivacyFence-operated service:
 |---|---|---|
 | Who it's for | One employee, one machine | An organization's whole user base, from one shared install |
 | Where it runs | On the employee's own Mac, as a local daemon reachable over its own embedded, loopback-only (`localhost`) `/mcp` HTTP endpoint — directly (Claude Code) or via a thin stdio-to-HTTP shim Claude Desktop's `.mcpb` installs (no service credentials, no tool-schema knowledge of its own) | On a server IT provisions and operates (documented for Ubuntu in [`org-mode-setup-guide.md`](org-mode-setup-guide.md)), reachable over HTTPS — directly or, as that guide sets up, behind a reverse proxy (e.g. Caddy) that terminates TLS and forwards plaintext to PrivacyFence's own loopback bind |
-| Who authenticates, and how | Nobody signs in as anybody — there is exactly one implicit local principal, and every request to the daemon is authorized by possession of a random secret written to a file on that same machine (see §8) | Each person signs in as themselves via **OIDC against the organization's own identity provider** (Google Workspace, Okta, Entra ID, or any OIDC-compliant IdP, discovered from its `/.well-known/openid-configuration`) — the same login, for a browser or for an MCP client's OAuth 2.1 handshake, resolves to the same `Principal`, so a browser session and an MCP token issued for the same sign-in are provably the same identity |
+| Who authenticates, and how | Nobody signs in as anybody — there is exactly one implicit local principal, and every request to the daemon is authorized by possession of a random secret written to a file on that same machine (see §8) | Each person signs in as themselves via **OIDC against the organization's own identity provider** (Google Workspace, Okta, Entra ID, or any OIDC-compliant IdP, discovered from its `/.well-known/openid-configuration`) — the same login, for a browser or for an MCP client's OAuth 2.1 handshake, resolves to the same `Principal`, so a browser session and an MCP token issued for the same sign-in are provably the same identity. Optionally, an `authz` section in `org_config.json` layers a PrivacyFence-level allowlist (email domain and/or IdP group claim) on top of that IdP authentication — a principal the IdP itself successfully authenticates can still be turned away by PrivacyFence if it doesn't match (`org_identity.py`'s `check_authz_policy`); absent, every IdP-authenticated principal is admitted, same as before this existed |
 | Where data is processed | Locally, in-process, on that machine | In-process, on the org-mode server IT operates — still not a PrivacyFence-operated destination |
 | Where data is stored | Locally: OS credential storage / local token files, and a local audit log (`logs/audit/*.jsonl`, `*.xlsx`) | On the org-mode server, under a per-principal directory; still a local audit log, on that server, not a PrivacyFence-hosted one |
 | Vendor-operated infrastructure | None, either mode. There is no multi-tenant service, no hosted database, and no PrivacyFence API that traffic passes through — org mode's server is infrastructure your organization stands up and operates from PrivacyFence's own source, same as local mode's `.app` |
@@ -66,7 +66,10 @@ existing, approved services.
 is newer and has run in fewer production environments than local mode. Treat the two modes'
 relative maturity as part of your own risk assessment — see
 [`org-mode-setup-guide.md`](org-mode-setup-guide.md) for its current caveats (e.g. the Linux service
-packaging noted there as not yet battle-tested end to end) and
+packaging noted there as not yet battle-tested end to end),
+[`org-mode-operational-readiness.md`](org-mode-operational-readiness.md) for its explicit support
+level and the operational questions that follow deployment (backup/restore, upgrade/rollback,
+restart behaviour, the single-daemon availability model), and
 [`docs/security-remediation-plan.md`](security-remediation-plan.md)'s Phase 1 for the org-mode
 hardening work still in flight as of this writing.
 

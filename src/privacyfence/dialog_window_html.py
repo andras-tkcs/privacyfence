@@ -51,7 +51,7 @@ from __future__ import annotations
 
 from html import escape as _html_escape
 
-from .approval_window_html import _STYLES_CSS
+from .approval_window_html import _STYLES_CSS, _new_nonce
 
 # Public (no leading underscore): dialog_window.py's own window-width
 # constants derive from these directly rather than duplicating them, so the
@@ -168,13 +168,21 @@ def _document(*, width: int, body_html: str) -> str:
     approval_window_html.build_card_stack_html's own returned document
     (vendored styles.css, a couple of small overrides, the bridge script),
     just without that function's per-layout width/rail-color logic, since
-    both shapes here are one fixed narrow width apiece."""
+    both shapes here are one fixed narrow width apiece.
+
+    Generates its own fresh CSP nonce (SEC-08, see approval_window_html.py's
+    module-level note on why this document -- rendered once, served
+    unchanged thereafter -- needs one baked in at build time rather than
+    per response) and reuses ``approval_window_html.extract_csp_nonce``'s
+    own ``<script nonce="...">`` tag shape so the same extraction code
+    recovers it later, from either kind of document."""
+    nonce = _new_nonce()
     return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="color-scheme" content="light dark">
-<style>
+<style nonce="{nonce}">
 {_STYLES_CSS}
 html {{ height: 100%; }}
 html, body {{ overflow-y: auto; }}
@@ -198,7 +206,7 @@ h2 {{ font-size: 19px; margin-bottom: 12px; }}
 .pf-choice-row[aria-disabled="true"] {{ opacity: .45; pointer-events: none; cursor: default; }}
 </style>
 </head>
-<body>{body_html}<script>{_JS}</script></body>
+<body>{body_html}<script nonce="{nonce}">{_JS}</script></body>
 </html>
 """
 

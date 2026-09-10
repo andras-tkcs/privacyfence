@@ -75,6 +75,7 @@ from ..gmail_client import SCOPES as _GMAIL_SCOPES
 from ..principal import Principal, principal_scope
 from ..tasks_client import SCOPES as _TASKS_SCOPES
 from . import org_session
+from .csp import nonce_for as _csp_nonce_for
 from .org_session import OrgSessionStore
 
 logger = logging.getLogger(__name__)
@@ -91,9 +92,14 @@ GOOGLE_SERVICES = frozenset(GOOGLE_SCOPES)
 ATLASSIAN_SERVICES = frozenset({"jira", "confluence"})
 OAUTH_SERVICES = GOOGLE_SERVICES | ATLASSIAN_SERVICES | frozenset({"slack", "salesforce"})
 
-# service -> daemon_main.TOKEN_FILES key (jira/confluence share one Atlassian grant).
-_TOKEN_FILE_KEY: dict[str, str] = {s: s for s in GOOGLE_SERVICES}
-_TOKEN_FILE_KEY.update({"slack": "slack", "salesforce": "salesforce", "jira": "atlassian", "confluence": "atlassian"})
+# service -> the shared-OAuth-grant identity jira/confluence collapse into
+# (one Atlassian app, one token). Doubles as both the daemon_main.TOKEN_FILES
+# key *and* the redirect-URI path segment (see _build_routes' start/callback
+# below) -- both need to agree on "jira and confluence are the same grant",
+# since Atlassian's OAuth 2.0 (3LO) apps accept only one registered callback
+# URL, unlike Slack/Salesforce/Google (docs/atlassian-setup.md).
+_GRANT_KEY: dict[str, str] = {s: s for s in GOOGLE_SERVICES}
+_GRANT_KEY.update({"slack": "slack", "salesforce": "salesforce", "jira": "atlassian", "confluence": "atlassian"})
 
 SERVICE_LABELS: dict[str, str] = {
     "gmail": "Gmail", "drive": "Drive", "calendar": "Calendar", "contacts": "Contacts", "tasks": "Tasks",
@@ -111,7 +117,7 @@ def _token_files() -> dict[str, str]:
 
 
 def _token_file_path(principal: Principal, service: str) -> str:
-    return str(paths.user_dir(principal) / _token_files()[_TOKEN_FILE_KEY[service]])
+    return str(paths.user_dir(principal) / _token_files()[_GRANT_KEY[service]])
 
 
 def _is_connected(principal: Principal, service: str) -> bool:
@@ -331,7 +337,14 @@ def build_routes(
         if service not in OAUTH_SERVICES:
             return PlainTextResponse("Unknown service.", status_code=404)
 
-        redirect_uri = f"{base_url}/oauth/callback/{service}"
+        # Built from _GRANT_KEY, not the literal `service`: jira and
+        # confluence must redirect through the exact same URL
+        # (/oauth/callback/atlassian) regardless of which of the two the
+        # user clicked "Connect" on, since they're one Atlassian OAuth app
+        # that can only have one callback URL registered (see _GRANT_KEY's
+        # own comment). Every other service's grant key equals itself, so
+        # this is a no-op change for them.
+        redirect_uri = f"{base_url}/oauth/callback/{_GRANT_KEY[service]}"
         state = secrets.token_urlsafe(32)
         try:
             authorize_url, code_verifier = _build_authorize_url(service, org_config, redirect_uri, state)
@@ -345,18 +358,25 @@ def build_routes(
         # session cookie -- see module docstring's own note on why it
         # can't be relied on here. Trust is rooted entirely in the
         # single-use `state` value, popped exactly once.
-        service = request.path_params["service"]
+        #
+        # The path segment here is a *grant key* (see _GRANT_KEY), not
+        # necessarily the real service the user asked to connect -- for
+        # jira/confluence it's always literally "atlassian" (start() above
+        # builds the redirect_uri that way). The real service comes back out
+        # of `pending`, keyed by the single-use `state` instead.
+        grant_key = request.path_params["service"]
         provider_error = request.query_params.get("error")
         state = request.query_params.get("state", "")
         code = request.query_params.get("code", "")
         pending = attempts.pop(state) if state else None
-        if pending is None or pending.service != service:
+        if pending is None or _GRANT_KEY.get(pending.service) != grant_key:
             return PlainTextResponse("Invalid or expired sign-in attempt. Return to /connect and try again.", status_code=400)
+        service = pending.service
         if provider_error or not code:
             return RedirectResponse(f"/connect?error={service}", status_code=302, headers={"Cache-Control": "no-store"})
 
         principal = Principal(id=pending.principal_id)
-        redirect_uri = f"{base_url}/oauth/callback/{service}"
+        redirect_uri = f"{base_url}/oauth/callback/{grant_key}"
         try:
             with principal_scope(principal):
                 _exchange_and_save(service, org_config, redirect_uri, code, pending.code_verifier, principal)
@@ -377,7 +397,7 @@ def build_routes(
             principal=principal, org_config=org_config, telegram_state=telegram_state,
             flash_connected=request.query_params.get("connected", ""),
             flash_error=request.query_params.get("error", ""),
-            csrf=session_id,
+            csrf=session_id, nonce=_csp_nonce_for(request),
         )
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
@@ -614,7 +634,7 @@ def _telegram_box_html(principal: Principal, org_config: dict[str, Any], telegra
 
 def _render_connect_page(
     *, principal: Principal, org_config: dict[str, Any], telegram_state: _TelegramState,
-    flash_connected: str, flash_error: str, csrf: str,
+    flash_connected: str, flash_error: str, csrf: str, nonce: str,
 ) -> str:
     google_rows = "".join(_service_row_html(principal, org_config, s) for s in ("gmail", "drive", "calendar", "contacts", "tasks"))
     other_rows = "".join(_service_row_html(principal, org_config, s) for s in ("slack", "salesforce", "jira", "confluence"))
@@ -624,7 +644,7 @@ def _render_connect_page(
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PrivacyFence -- Connect your accounts</title>
-<style>{_STYLE}</style></head>
+<style nonce="{nonce}">{_STYLE}</style></head>
 <body>
 <h1>Connect your accounts</h1>
 <p class="lead">Signed in as {who}. Connecting a service lets PrivacyFence act on it for you, still gated by

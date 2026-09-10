@@ -10,7 +10,11 @@ This documents `org` mode as implemented through P10 ("retire the native UI") of
 `https-connector-refactor-plan.md` design document that shipped this feature (removed from `docs/`
 once its plan was fully implemented) — see [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md) and
 [`security-and-compliance.md`](security-and-compliance.md) for the design this guide is a concrete
-instance of.
+instance of. Once it's running, see
+[`org-mode-operational-readiness.md`](org-mode-operational-readiness.md) for what comes after
+installation: support/readiness level, backup and restore, upgrade/rollback, persisted-state
+compatibility across versions, restart/session-invalidation behaviour, and the single-daemon
+availability model.
 
 > **Step 7 (run PrivacyFence as a service) is newly runnable, not yet battle-tested.** Through P9,
 > `daemon_main.py`'s `run_app()` unconditionally ended with `from .menu_bar import run_menu_bar`,
@@ -91,8 +95,9 @@ instance of.
 - A Google Cloud project you can create OAuth clients in. A Google Workspace organization lets you
   restrict sign-in to your own domain (**Internal** consent-screen user type); a plain Google
   account works too, but then access control has to happen at the OAuth consent screen (test-user
-  allowlist, or submitting for verification) since PrivacyFence itself has no separate user
-  allowlist yet — see [§4.1](#41-the-oidc-sign-in-client-required).
+  allowlist, or submitting for verification) unless you also configure PrivacyFence's own
+  `--authz-allowed-domain`/`--authz-required-group` allowlist — see
+  [§4.1](#41-the-oidc-sign-in-client-required) and [§5](#5-build-the-organization-config-bundle).
 - Nothing PrivacyFence-specific installed anywhere yet.
 
 ---
@@ -190,8 +195,10 @@ section (§9.4).
 
 1. **OAuth consent screen** (APIs & Services → OAuth consent screen):
    - **User type**: **Internal** if this is a Google Workspace organization (restricts sign-in to
-     your own domain — the strongest access control available here, since PrivacyFence has no
-     separate email allowlist of its own yet). Otherwise **External**, and see the note below.
+     your own domain at the IdP level — the strongest access control available here). Otherwise
+     **External**, and see the note below; either way, `--authz-allowed-domain`/
+     `--authz-required-group` ([§5](#5-build-the-organization-config-bundle)) let you additionally
+     restrict who PrivacyFence itself admits, on top of whatever the consent screen already does.
    - App name: `PrivacyFence`. No scopes need adding here — `openid email profile` (what
      `org_identity.py` requests) are Google's default, non-sensitive scopes and need no
      verification, unlike the connector scopes in §4.2.
@@ -225,6 +232,16 @@ document lives at `https://accounts.google.com/.well-known/openid-configuration`
 > (`Principal.is_admin`) for future use. Leave `--idp-admin-group-claim` unset for a Google IdP;
 > everyone who can sign in is a plain, equally-privileged user.
 
+> **On the app-level allowlist (`--authz-allowed-domain`/`--authz-required-group`, SEC-22):** this
+> is a separate, independent restriction from `admin_group_claim` above — it decides who may sign
+> in at all, not who's an admin — and layers on top of, never replaces, the IdP's own
+> authentication (§4.1's consent-screen restriction is still the first line of defense). A plain
+> Google IdP with no Cloud Identity group-claim configuration can still use `--authz-allowed-domain
+> acme.com`, since it only reads the (always-present) `email` claim —
+> `--authz-required-group`/`--authz-groups-claim` need the same Cloud Identity setup
+> `admin_group_claim` does, since
+> both read group membership off the ID token.
+
 ### 4.2 The Google connector client (optional)
 
 Only needed if you also want people to use the Gmail/Drive/Calendar/Contacts/Tasks connectors
@@ -252,11 +269,20 @@ doc's step 4 ("Create OAuth 2.0 credentials"):
   reads that file directly, same as a local-mode bundle.
 
 Other connectors' org-mode setup follows the same pattern (§9.3: "for [Slack, Salesforce and
-Atlassian] this is a listener swap") — add `https://pf.example.com/oauth/callback/<service>` as one
-more redirect URI on the app registration you'd otherwise create per
-[`slack-setup.md`](slack-setup.md), [`salesforce-setup.md`](salesforce-setup.md) or
-[`atlassian-setup.md`](atlassian-setup.md) (`<service>` is `slack`, `salesforce`, `jira` or
-`confluence`). Not covered further here since the assumptions for this guide only called out Google.
+Atlassian] this is a listener swap") — for **Slack** and **Salesforce**, both of which accept more
+than one registered redirect URI per app, add `https://pf.example.com/oauth/callback/<service>`
+(`<service>` is `slack` or `salesforce`) as one more redirect URI on the app registration you'd
+otherwise create per [`slack-setup.md`](slack-setup.md) or [`salesforce-setup.md`](salesforce-setup.md) —
+each has its own dedicated org-mode section covering this. **Atlassian is different**: an OAuth 2.0
+(3LO) app accepts only one Callback URL, period, and Jira/Confluence share a single redirect
+(`https://pf.example.com/oauth/callback/atlassian`, one URL for both — they're one underlying grant,
+see `web/routes_connect.py`'s `_GRANT_KEY`), so it needs an app of its own rather than a URL added to
+the local-mode one; see [`atlassian-setup.md` §6](atlassian-setup.md#6-org-mode-needs-a-second-dedicated-app)
+for the full walkthrough. **Telegram needs none of this** — see
+[`telegram-setup.md`](telegram-setup.md) — since its `api_id`/`api_hash` identify the PrivacyFence
+*application*, not an organization, and are baked into the build the same way for a local install or
+an org-mode server; there's no app registration, redirect URI, or `org_config.json` section for it at
+all. Not covered further here since the assumptions for this guide only called out Google.
 
 ---
 
@@ -545,14 +571,16 @@ other).
 
 ## 10. Day-to-day admin
 
-- **Adding a user**: nothing to do on the PrivacyFence side. Anyone who can complete the Google
-  sign-in (i.e., anyone your consent screen's Internal/test-user/verification posture from
-  [§4.1](#41-the-oidc-sign-in-client-required) allows through) gets a `Principal` the first time
-  they sign in — access control lives entirely at that layer today, not in a PrivacyFence-side
-  allowlist.
+- **Adding a user**: nothing to do on the PrivacyFence side (beyond, if you've set
+  `--authz-required-group`, adding them to that group at the IdP). Anyone who can complete the
+  Google sign-in (i.e., anyone your consent screen's Internal/test-user/verification posture from
+  [§4.1](#41-the-oidc-sign-in-client-required) allows through) *and* passes any authz allowlist
+  you've configured (`--authz-allowed-domain`/`--authz-required-group`,
+  [§5](#5-build-the-organization-config-bundle)) gets a `Principal` the first time they sign in.
 - **Removing a user**: revoke their access at the IdP (remove them from the Workspace domain, the
-  test-user list, or the relevant Google group) — they simply can't sign in again. Their
-  `~/.privacyfence/users/<id>/` directory on the server is untouched by this; delete it by hand if
+  test-user list, or the relevant Google group) — they simply can't sign in again; removing them
+  from a `--authz-required-group` group, or narrowing `--authz-allowed-domain`, works the same way.
+  Their `~/.privacyfence/users/<id>/` directory on the server is untouched by this; delete it by hand if
   you want their credentials and settings gone too.
 - **Rotating a connector secret** (e.g. the Google connector client secret): rebuild the bundle with
   `--merge` so you don't have to re-specify the IdP section, and redeploy it exactly as in

@@ -423,6 +423,10 @@ cryptography==50.0.1 \
     #   pyjwt
     #   pyopenssl
     #   webauthn
+defusedxml==0.7.1 \
+    --hash=sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69 \
+    --hash=sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61
+    # via privacyfence (pyproject.toml)
 deprecated==1.3.1 \
     --hash=sha256:597bfef186b6f60181535a29fbe44865ce137a5079f295b479886c82729d5f3f \
     --hash=sha256:b1b50e0ff0c1fddaa5708a2c6b0a6588bb09b892825ab2b214ac9ea9d92a5223
@@ -439,9 +443,9 @@ google-api-python-client==2.200.0 \
     --hash=sha256:82aa18b851328ea04867fd51c5a0c8da2e1b86ec45ce08487e902e7726d4ee50 \
     --hash=sha256:c0c2c4072a110b7fcc30ac151744d4410cddaba99c53cb4e815463308952b638
     # via privacyfence (pyproject.toml)
-google-auth==2.57.1 \
-    --hash=sha256:ab439dee60a6856412bc058f13a68eb6a59c5b81526bb89cfdcf89ce9c0a48c9 \
-    --hash=sha256:eb47b230fc6707eed4aee1c9cef55ec05bc1785eecba74ff8b572d531e921b1e
+google-auth==2.58.0 \
+    --hash=sha256:55e30cf15e737de92c5323d78cda8a83fcd57e7ffbaf900c4600039fd60a80fd \
+    --hash=sha256:8a9c4645bb4c8e91668fb1934b95ae6a8687084232753639220ba9bf04a1610d
     # via
     #   google-api-core
     #   google-api-python-client
@@ -711,6 +715,10 @@ platformdirs==4.11.8 \
     --hash=sha256:52f2f181bbfde907966932cc8312d967d02976422d66d537ea16092b8e291081 \
     --hash=sha256:f23abafea7dd4276d1f29104b83598d7dcc567cafd07c9c951e66665645437fc
     # via zeep
+portalocker==4.3.0 \
+    --hash=sha256:69bf8e46769d66eb0a23219b9550253d2c3b5f03400202a2333784c1e6395e32 \
+    --hash=sha256:aa91709ccfc322b8225171392d64a2f9fc833f15f5ab741cfba6d3fba285ce31
+    # via privacyfence (pyproject.toml)
 proto-plus==1.28.4 \
     --hash=sha256:4b01341272f8a348db3f003b6143109f83ab43091019d5181b3fcdf500ab32aa \
     --hash=sha256:5ff7ecad828e032a491fcb86947801768e32237f99dd049b649965b892ae9a63
