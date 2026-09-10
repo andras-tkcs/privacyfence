@@ -69,6 +69,7 @@ import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Callable
+from urllib.parse import urlsplit
 
 import uvicorn
 from starlette.applications import Starlette
@@ -350,6 +351,41 @@ class _PrincipalScopeMiddleware:
             await self._app(scope, receive, send)
 
 
+def _parse_host_header(raw: str) -> str | None:
+    """Standards-aware ``Host`` header -> bare hostname (SEC-17,
+    docs/security-remediation-plan.md Phase 3 item 3.4). The manual
+    ``split(":", 1)[0]`` this replaced assumed the first colon always
+    separates host from port, which is only true for a bare name or IPv4
+    address -- an IPv6 literal has colons *in* the host itself
+    (``[::1]:8443``, or even a port-less ``[::1]``), so that split just
+    returned the literal ``"["`` -- every IPv6 request either got rejected
+    outright, or wrongly let through by whatever else happened to compare
+    equal to ``"["``.
+
+    Delegating to ``urlsplit`` on a synthesized ``//<raw>`` authority
+    gets RFC 3986's bracket-aware host/port grammar for free -- its
+    ``.hostname`` is already lowercased and has the brackets stripped, so
+    ``"[::1]"`` and ``"[::1]:8443"`` both normalize to ``"::1"``, matching
+    the plain ``urlsplit(...).hostname`` used for the org issuer host
+    below.
+
+    Returns ``None`` -- treat exactly like a disallowed host -- for
+    anything that isn't a clean ``host[:port]`` authority: an unparsable
+    port, userinfo (``user@host``, never valid in a Host header), or a
+    stray path/query/fragment component smuggled in behind the host.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(f"//{raw}")
+        parsed.port  # noqa: B018 -- validated lazily; unparsable ports raise here, not on urlsplit()
+    except ValueError:
+        return None
+    if parsed.username is not None or parsed.path or parsed.query or parsed.fragment:
+        return None
+    return parsed.hostname
+
+
 class _HostAllowlistMiddleware:
     """DNS-rebinding defense (docs/https-connector-refactor-plan.md §10.5,
     §9.4): reject any request whose Host header isn't in the configured
@@ -368,8 +404,8 @@ class _HostAllowlistMiddleware:
             await self._app(scope, receive, send)
             return
         request = Request(scope)
-        host = (request.headers.get("host") or "").split(":", 1)[0].lower()
-        if host not in self._allowed_hosts:
+        host = _parse_host_header(request.headers.get("host") or "")
+        if host is None or host not in self._allowed_hosts:
             response = PlainTextResponse("Invalid Host header", status_code=400)
             await response(scope, receive, send)
             return
@@ -763,11 +799,13 @@ class WebServer:
         # the direct successor of the old IPCServerThread's own ``_ready``
         # Event) blocks on to learn that loop.
         self._loop_ready = threading.Event()
-        allowed_hosts = frozenset({host, "127.0.0.1", "[::1]"})
+        # "::1" (not the bracketed "[::1]" a Host header would spell it
+        # as) -- _parse_host_header normalizes every incoming Host header
+        # the same way urlsplit's own .hostname does below, brackets
+        # stripped, so the allowlist has to speak that same bare form.
+        allowed_hosts = frozenset({host, "127.0.0.1", "::1"})
         if org is not None:
-            from urllib.parse import urlparse
-
-            issuer_host = urlparse(org.issuer_url).hostname
+            issuer_host = urlsplit(org.issuer_url).hostname
             if issuer_host:
                 allowed_hosts = allowed_hosts | {issuer_host}
         wrapped = build_app(
