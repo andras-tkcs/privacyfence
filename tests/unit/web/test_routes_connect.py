@@ -151,6 +151,13 @@ class TestOAuthStart:
         assert "code_challenge" in qs
 
     def test_atlassian_covers_both_jira_and_confluence(self):
+        # Jira and Confluence are one Atlassian OAuth app under the hood
+        # (one grant, one token -- see _GRANT_KEY), and Atlassian's OAuth
+        # 2.0 (3LO) apps accept only a single registered callback URL
+        # (unlike Slack/Salesforce/Google). So both must redirect through
+        # the exact same URL regardless of which one the user clicked --
+        # a per-service URL here would mean whichever one isn't registered
+        # on the Atlassian app always fails with redirect_uri_mismatch.
         app, sessions, _registry = _app()
         session_id, _principal = _signed_in(sessions)
         for service in ("jira", "confluence"):
@@ -159,7 +166,7 @@ class TestOAuthStart:
             location = r.headers["location"]
             assert location.startswith("https://auth.atlassian.com/authorize?")
             qs = dict(up.parse_qsl(up.urlparse(location).query))
-            assert qs["redirect_uri"] == f"{ISSUER}/oauth/callback/{service}"
+            assert qs["redirect_uri"] == f"{ISSUER}/oauth/callback/atlassian"
 
 
 # ---------------------------------------------------------------------------- #
@@ -235,6 +242,49 @@ class TestOAuthCallback:
 
         assert first.status_code == 302
         assert second.status_code == 400
+
+    def test_atlassian_callback_lands_on_the_shared_grant_url_not_a_per_service_one(self, monkeypatch):
+        app, sessions, registry = _app()
+        session_id, principal = _signed_in(sessions)
+        client = _client(app)
+
+        start = client.get("/oauth/start/jira", cookies={org_session.SESSION_COOKIE: session_id})
+        state = dict(up.parse_qsl(up.urlparse(start.headers["location"]).query))["state"]
+
+        def fake_exchange_code(client_id, client_secret, code, redirect_uri, code_verifier):
+            assert client_id == "acid"
+            assert redirect_uri == f"{ISSUER}/oauth/callback/atlassian"
+            return {"access_token": "tok", "refresh_token": "ref"}
+
+        monkeypatch.setattr(rc.atlassian_oauth, "exchange_code", fake_exchange_code)
+        monkeypatch.setattr(
+            rc.atlassian_oauth, "resolve_resource_and_save",
+            lambda token_file, access_token, refresh_token, pick_resource: pick_resource([{"id": "site1"}]),
+        )
+        evicted = []
+        monkeypatch.setattr(registry, "evict", lambda pid: evicted.append(pid))
+
+        # The provider redirects back to the *grant's* callback URL
+        # (/oauth/callback/atlassian), never /oauth/callback/jira -- that's
+        # the whole point of building the redirect_uri from _GRANT_KEY.
+        r = client.get(f"/oauth/callback/atlassian?code=auth-code&state={state}")
+
+        assert r.status_code == 302
+        assert r.headers["location"] == "/connect?connected=jira"
+        assert evicted == [principal.id]
+
+    def test_atlassian_callback_on_the_wrong_grant_url_is_rejected(self, monkeypatch):
+        app, sessions, _registry = _app()
+        session_id, _principal = _signed_in(sessions)
+        client = _client(app)
+        start = client.get("/oauth/start/jira", cookies={org_session.SESSION_COOKIE: session_id})
+        state = dict(up.parse_qsl(up.urlparse(start.headers["location"]).query))["state"]
+
+        # A confused/forged request hitting the per-service path the
+        # provider was never actually told about.
+        r = client.get(f"/oauth/callback/jira?code=auth-code&state={state}")
+
+        assert r.status_code == 400
 
     def test_exchange_failure_redirects_back_with_error_not_a_500(self, monkeypatch):
         app, sessions, _registry = _app()
