@@ -2,8 +2,9 @@
 normalization (all-day detection, attendees, conference links), timezone
 handling on create/update, and the events->free/busy fallback logic in
 get_colleagues_schedule. Room directory listing now lives on the separate
-RoomDirectoryClient (see test_room_directory_client.py) -- CalendarClient's
-own scope never includes Workspace-admin directory access. As with the
+RoomDirectoryClient in scripts/sync_room_directory.py (see
+test_sync_room_directory.py) -- CalendarClient's own scope never includes
+Workspace-admin directory access. As with the
 Gmail/Drive client tests, these
 call real CalendarClient methods against a MagicMock stand-in for the
 googleapiclient service object.

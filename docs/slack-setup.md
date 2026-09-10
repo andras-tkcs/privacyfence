@@ -61,6 +61,14 @@ http://127.0.0.1:53682/callback
 
 This is PrivacyFence's loopback OAuth callback — it only listens during an active sign-in, on every user's own machine.
 
+> **Deploying [`org` mode](org-mode-setup-guide.md) instead of (or in addition to) local desktop
+> installs?** Slack lets one app carry more than one Redirect URL — click **Add New Redirect URL**
+> again and also add `https://your-server-hostname/oauth/callback/slack` (org mode's server-side
+> redirect, `web/routes_connect.py`), substituting your own hostname. Both URLs can coexist on the
+> same app; the same client id/secret you build below work for either deployment. See
+> [`org-mode-setup-guide.md` §4.2](org-mode-setup-guide.md#42-the-google-connector-client-optional)
+> for the general pattern this follows.
+
 ### 4. Get the client id and secret
 
 Go to **Basic Information** in the left sidebar → **App Credentials**. Copy the **Client ID** and **Client Secret**.
@@ -82,9 +90,20 @@ python3 scripts/build_org_bundle.py \
 
 ## For users
 
+**Local desktop install:**
+
 1. Get `org_config.json` from your IT team and install it via **Organization Config…** in PrivacyFence Settings (if you haven't already for another service — if a config is already installed, click **Update…** in the status prompt).
 2. **Connectors → Slack → Authenticate…**. Your browser opens to Slack's consent screen — review the permissions and click **Allow**.
 3. Quit and reopen PrivacyFence to activate the connector.
+
+**[`org` mode](org-mode-setup-guide.md) deployment** (a server your IT team runs, not a desktop
+install — ask them which applies to you):
+
+1. Visit `https://your-server-hostname/login` and sign in with your organization identity provider.
+2. On the `/connect` page, click **Connect** next to Slack. Your browser opens to Slack's consent
+   screen — review the permissions and click **Allow**.
+3. You land back on `/connect` showing Slack as connected — nothing to quit/reopen, since there's no
+   local app. See [`org-mode-setup-guide.md` §8](org-mode-setup-guide.md#8-first-sign-in-and-connecting-a-service).
 
 ---
 
@@ -100,7 +119,7 @@ The token only sees channels you are a member of. Join the channel in Slack firs
 The token has been revoked (e.g. you removed the app from your Slack account, or an admin uninstalled it). Click **Reconnect…** in PrivacyFence Settings.
 
 **Browser doesn't return to PrivacyFence after clicking Allow**
-Make sure the redirect URL in the Slack app's **OAuth & Permissions** page is exactly `http://127.0.0.1:53682/callback` (IT admin) — Slack requires an exact match.
+Make sure the redirect URL in the Slack app's **OAuth & Permissions** page is exactly `http://127.0.0.1:53682/callback` for a local desktop install, or `https://your-server-hostname/oauth/callback/slack` for an [`org` mode](org-mode-setup-guide.md) deployment (IT admin) — Slack requires an exact match.
 
 **Slack reads got slow, or a channel history looks truncated at 15 messages** (IT admin)
 Check **Manage Distribution** on the Slack app — if **Activate Public Distribution** was ever clicked
