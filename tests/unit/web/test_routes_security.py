@@ -14,6 +14,7 @@ from privacyfence.web import org_session, routes_security as rs
 
 ISSUER = "https://pf.example.com"
 ALICE = Principal(id="alice", email="alice@example.com", display_name="Alice")
+BOB = Principal(id="bob", email="bob@example.com", display_name="Bob")
 
 
 @pytest.fixture(autouse=True)
@@ -236,3 +237,82 @@ class TestDeleteCredential:
         r = client.post("/security/credentials/Y3JlZC0x/delete", data={"csrf": "wrong"})
         assert r.status_code == 401
         assert len(wa.list_credentials(ALICE)) == 1
+
+
+class TestCrossPrincipalIsolation:
+    """TST-10 (docs/security-remediation-plan.md Phase 3.12): every route
+    here resolves ``principal`` from the request's own session
+    (``_current_principal``) and never takes an id from the request body/
+    path, so every store this module touches -- webauthn_stepup.py's
+    per-principal credential file, and this module's own
+    RegistrationChallengeStore -- is keyed by *that* principal, not
+    whatever the request happens to mention. These tests prove that
+    binding holds even when two different signed-in principals are active
+    against the same running app/challenge-store instance at once, not
+    just that each principal's own flow works in isolation (every test
+    above only ever exercises one principal at a time).
+    """
+
+    def test_a_principals_enrolled_credential_is_invisible_to_another_signed_in_principal(self):
+        app, sessions = _app()
+        wa.add_credential(ALICE, wa.WebAuthnCredential(
+            credential_id="Y3JlZC0x", public_key="cGs", sign_count=0,
+            device_type="single_device", backed_up=False, label="Alice's Phone",
+        ))
+        bob_client = _client(app)
+        _signed_in(bob_client, sessions, BOB)
+        r = bob_client.get("/security")
+        assert r.status_code == 200
+        assert "Alice's Phone" not in r.text
+        assert "No passkeys added yet." in r.text
+
+    def test_a_principal_cannot_delete_another_principals_credential(self):
+        app, sessions = _app()
+        wa.add_credential(ALICE, wa.WebAuthnCredential(
+            credential_id="Y3JlZC0x", public_key="cGs", sign_count=0, device_type="single_device", backed_up=False,
+        ))
+        bob_client = _client(app)
+        bob_session_id = _signed_in(bob_client, sessions, BOB)
+        # Bob's own CSRF token is valid for Bob's own session -- this isn't
+        # a CSRF-bypass attempt, it's Bob legitimately POSTing to delete a
+        # credential_id that happens to belong to Alice's account, not his
+        # own. remove_credential() must scope to Bob's own credential list
+        # regardless.
+        r = bob_client.post("/security/credentials/Y3JlZC0x/delete", data={"csrf": bob_session_id})
+        assert r.status_code in (302, 303)
+        assert len(wa.list_credentials(ALICE)) == 1
+        assert wa.list_credentials(ALICE)[0].credential_id == "Y3JlZC0x"
+
+    def test_a_registration_challenge_started_by_one_principal_cannot_be_completed_by_another(self):
+        app, sessions = _app()
+        alice_client = _client(app)
+        alice_session_id = _signed_in(alice_client, sessions, ALICE)
+        alice_client.post("/api/security/webauthn/register/options", json={"csrf": alice_session_id})
+
+        bob_client = _client(app)
+        bob_session_id = _signed_in(bob_client, sessions, BOB)
+        # Bob has never called register/options himself -- his own session
+        # has no pending challenge, regardless of what Alice's does.
+        # RegistrationChallengeStore.pop() is keyed by principal.id, so
+        # this must fail exactly like "no prior options call" would for a
+        # single principal, not silently consume Alice's challenge on
+        # Bob's behalf.
+        r = bob_client.post("/api/security/webauthn/register/verify", json={
+            "csrf": bob_session_id, "credential": {"id": "attacker-supplied"},
+        })
+        assert r.status_code == 400
+        assert wa.list_credentials(BOB) == []
+
+        # Alice's own still-pending challenge must be unaffected by Bob's
+        # failed attempt -- her genuine follow-up verify still succeeds.
+        fake_verified = type("V", (), {
+            "credential_id": b"raw-id", "credential_public_key": b"pub-key", "sign_count": 0,
+            "credential_device_type": type("D", (), {"value": "single_device"})(),
+            "credential_backed_up": False,
+        })()
+        with patch.object(wa.webauthn, "verify_registration_response", return_value=fake_verified):
+            r = alice_client.post("/api/security/webauthn/register/verify", json={
+                "csrf": alice_session_id, "credential": {"id": "x"},
+            })
+        assert r.status_code == 200
+        assert wa.list_credentials(ALICE) != []
