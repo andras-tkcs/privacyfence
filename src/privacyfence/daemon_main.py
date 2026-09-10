@@ -1263,6 +1263,44 @@ def run_salesforce_oauth(org_config: dict[str, Any]) -> int:
     return 0
 
 
+def _cli_pick_atlassian_resource(resources: list[dict[str, Any]]) -> dict[str, Any]:
+    """Terminal ``pick_resource`` for ``--atlassian-oauth``.
+
+    Every other caller of ``resolve_resource_and_save`` already has a
+    fallback for "can't/won't prompt": settings_controller.py's GUI picker
+    falls back to ``resources[0]`` when cancelled, and org mode's
+    routes_connect.py._first_resource always takes ``resources[0]`` outright
+    (there's no prompting surface in a server redirect flow). This CLI flow
+    is the one call site with neither -- without a ``pick_resource`` it hit
+    ``resolve_resource_and_save``'s hard failure whenever Atlassian's
+    accessible-resources response had more than one entry.
+
+    That happens even for a single-site account: mixing classic Jira scopes
+    with granular Confluence scopes (atlassian_oauth.py's DEFAULT_SCOPES) is
+    exactly the case atlassian_oauth.py's own scope comments describe as
+    "tracked separately" by Atlassian, and in practice that means the same
+    site URL comes back as more than one resource entry. Auto-pick among
+    same-URL duplicates the same way the other two callers effectively do;
+    only prompt on stdin when the URLs actually differ, i.e. a genuine
+    multi-site account.
+    """
+    urls = {r.get("url", "") for r in resources}
+    if len(urls) <= 1:
+        return resources[0]
+    print("Multiple Atlassian sites are accessible with this account:")
+    for i, resource in enumerate(resources):
+        print(f"  [{i}] {resource.get('url', '?')}")
+    while True:
+        choice = input(f"Choose a site [0-{len(resources) - 1}]: ").strip()
+        try:
+            idx = int(choice)
+        except ValueError:
+            idx = -1
+        if 0 <= idx < len(resources):
+            return resources[idx]
+        print("Invalid choice, try again.")
+
+
 def run_atlassian_oauth(org_config: dict[str, Any]) -> int:
     atlassian_org = org_config.get("atlassian") or {}
     if not atlassian_org.get("client_id") or not atlassian_org.get("client_secret"):
@@ -1273,6 +1311,7 @@ def run_atlassian_oauth(org_config: dict[str, Any]) -> int:
             client_id=atlassian_org["client_id"],
             client_secret=atlassian_org["client_secret"],
             token_file=_resolve_path(TOKEN_FILES["atlassian"]),
+            pick_resource=_cli_pick_atlassian_resource,
         )
     except AtlassianOAuthError as exc:
         print(f"Atlassian OAuth setup failed: {exc}", file=sys.stderr)

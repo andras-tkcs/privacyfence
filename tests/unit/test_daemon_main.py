@@ -1705,6 +1705,52 @@ class TestAtlassianOauthRunner:
         assert code == 1
         assert "consent denied" in capsys.readouterr().err
 
+    def test_passes_a_pick_resource_callback(self, monkeypatch):
+        # Without one, resolve_resource_and_save hard-fails the moment
+        # accessible-resources returns more than one entry -- see
+        # _cli_pick_atlassian_resource's own docstring for why that happens
+        # even for a single-site QA account.
+        captured = {}
+
+        def fake_authorize(**kw):
+            captured.update(kw)
+            return {"site_url": "https://acme.atlassian.net"}
+
+        monkeypatch.setattr(daemon_main, "atlassian_authorize_interactive", fake_authorize)
+        daemon_main.run_atlassian_oauth({"atlassian": {"client_id": "ci", "client_secret": "cs"}})
+        assert captured["pick_resource"] is daemon_main._cli_pick_atlassian_resource
+
+
+class TestCliPickAtlassianResource:
+    def test_same_url_duplicates_auto_picked_without_prompting(self, monkeypatch):
+        # The classic Jira + granular Confluence scope split (atlassian_oauth.py's
+        # DEFAULT_SCOPES) can make one site come back as two resource entries.
+        resources = [
+            {"id": "cloud1", "url": "https://acme.atlassian.net", "scopes": ["read:jira-work"]},
+            {"id": "cloud1", "url": "https://acme.atlassian.net", "scopes": ["read:space:confluence"]},
+        ]
+        monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError("should not prompt")))
+        assert daemon_main._cli_pick_atlassian_resource(resources) is resources[0]
+
+    def test_distinct_sites_prompts_and_returns_chosen_index(self, monkeypatch, capsys):
+        resources = [
+            {"id": "cloud1", "url": "https://acme.atlassian.net"},
+            {"id": "cloud2", "url": "https://other.atlassian.net"},
+        ]
+        monkeypatch.setattr("builtins.input", lambda *a: "1")
+        assert daemon_main._cli_pick_atlassian_resource(resources) is resources[1]
+        out = capsys.readouterr().out
+        assert "acme.atlassian.net" in out and "other.atlassian.net" in out
+
+    def test_distinct_sites_reprompts_on_invalid_input(self, monkeypatch):
+        resources = [
+            {"id": "cloud1", "url": "https://acme.atlassian.net"},
+            {"id": "cloud2", "url": "https://other.atlassian.net"},
+        ]
+        answers = iter(["nope", "99", "0"])
+        monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+        assert daemon_main._cli_pick_atlassian_resource(resources) is resources[0]
+
 
 class TestTelegramSetupRunner:
     def test_missing_app_credentials_prints_error_and_returns_1(self, monkeypatch, capsys):
