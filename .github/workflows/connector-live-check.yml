@@ -1,0 +1,77 @@
+name: Connector live check
+
+# Runs only on a schedule or by explicit maintainer trigger -- never on
+# pull_request, never on push from a branch a non-maintainer controls.
+# Targets the self-hosted runner provisioned in docs/connector-ci-integration-plan.md
+# Phase B (label `privacyfence-test`), which is the only place these
+# connectors' live OAuth credentials ever exist. See docs/testing-policy.md's
+# "Runner-local live tier" section.
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # weekly, Monday 06:00 UTC -- matched to how often
+                           # a provider API actually changes shape, not to
+                           # PR cadence; see the plan's rationale
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to push the drift branch
+  pull-requests: write   # needed for create-pull-request to open the PR itself
+
+concurrency:
+  group: connector-live-check
+  cancel-in-progress: false   # never cancel a run mid-way through a live
+                               # provider call sequence
+
+jobs:
+  live-check:
+    runs-on: [self-hosted, privacyfence-test]
+    timeout-minutes: 20   # generous but bounded -- this should be a few
+                           # minutes of read calls, not an open-ended job
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # No setup-python/setup-node steps here -- the self-hosted runner
+      # keeps its own persistent venv (Phase B), rebuilt manually when
+      # dependencies change, rather than a fresh install every run. A
+      # GitHub-hosted job would need setup-python; this one deliberately
+      # doesn't, since the point is minimal, auditable actions on a
+      # credential-holding machine.
+      - name: Run qa_fixture_recorder.py --check
+        id: check
+        run: |
+          .venv/bin/python scripts/qa_fixture_recorder.py --check \
+            --report-file /tmp/qa-check-report.md
+        continue-on-error: true   # a drift finding is data, not a crash --
+                                   # handled by the next step, not by failing
+                                   # the job outright
+
+      - name: Re-record on drift
+        if: steps.check.outcome == 'failure'
+        run: |
+          .venv/bin/python scripts/qa_fixture_recorder.py --record \
+            --report-file /tmp/qa-record-report.md
+
+      # Opens a PR only when --record actually changed a fixture file --
+      # a maintainer reviews the redacted diff exactly as the manual
+      # process in testing-policy.md Sec 2.1 already describes, this just
+      # removes the "someone has to remember to run it" step.
+      - name: Open drift PR
+        if: steps.check.outcome == 'failure'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: chore/connector-live-fixture-drift
+          title: "chore: connector live fixture drift detected"
+          commit-message: "Update recorded fixtures after provider API drift"
+          body-path: /tmp/qa-record-report.md
+          add-paths: tests/fixtures/live/**
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: connector-live-check-report
+          path: /tmp/qa-*-report.md
+          retention-days: 90

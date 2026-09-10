@@ -210,11 +210,11 @@ build farm).
    an organization-level runner group — start repo-scoped): **Settings → Actions → Runners → New
    self-hosted runner**.
 2. Follow GitHub's generated download/config commands as the `pf-runner` OS user. When prompted for
-   labels, add a distinctive one, e.g. `privacyfence-qa-live` — this is what the new workflow's
+   labels, add a distinctive one, e.g. `privacyfence-test` — this is what the new workflow's
    `runs-on:` targets, so no other workflow in the repo can accidentally schedule work on this
    machine.
 3. **Install it as a systemd service in ephemeral mode**, not the default persistent listening
-   mode: `./config.sh ... --ephemeral --labels privacyfence-qa-live` followed by `./svc.sh install
+   mode: `./config.sh ... --ephemeral --labels privacyfence-test` followed by `./svc.sh install
    pf-runner && ./svc.sh start`. Ephemeral mode means the runner process — and everything it can see
    in its job workspace — exits after each job and a fresh process picks up the next one, so a job
    can't leave state behind for a later job to read (relevant if this repo's default-branch workflow
@@ -252,12 +252,12 @@ this VM**, never as GitHub Actions secrets, never transmitted to GitHub at all.
 
 - **Protects against**: a malicious PR (even from a maintainer's own fork-testing habits) ever
   seeing these credentials; a compromised third-party GitHub Action in the dependency chain reading
-  them (nothing on `privacyfence-qa-live`'s job runs untrusted third-party Actions beyond what this
+  them (nothing on `privacyfence-test`'s job runs untrusted third-party Actions beyond what this
   plan's own workflow file pins); GitHub-side secret-scanning gaps (there's nothing to scan — the
   values never reach GitHub).
 - **Does not protect against**: compromise of the VM itself (patch it, key-only SSH, no other
   workloads on it), or a maintainer merging a malicious change to the *workflow file itself* that
-  then runs on `privacyfence-qa-live` on its next scheduled trigger — mitigate this the same way any
+  then runs on `privacyfence-test` on its next scheduled trigger — mitigate this the same way any
   CI/CD credential-holding pipeline does: require review on any change under
   `.github/workflows/connector-live-check.yml`, and keep the runner's job scope (see Phase C) as
   narrow as the script it's allowed to invoke.
@@ -287,7 +287,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # needed to open the drift PR (step below); nothing else
+  contents: write        # needed to push the drift branch
+  pull-requests: write   # needed for create-pull-request to open the PR itself
 
 concurrency:
   group: connector-live-check
@@ -296,7 +297,7 @@ concurrency:
 
 jobs:
   live-check:
-    runs-on: [self-hosted, privacyfence-qa-live]
+    runs-on: [self-hosted, privacyfence-test]
     timeout-minutes: 20   # generous but bounded -- this should be a few
                            # minutes of read calls, not an open-ended job
 
@@ -332,7 +333,7 @@ jobs:
       # removes the "someone has to remember to run it" step.
       - name: Open drift PR
         if: steps.check.outcome == 'failure'
-        uses: peter-evans/create-pull-request@<pin-to-a-reviewed-sha>
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           branch: chore/connector-live-fixture-drift
           title: "chore: connector live fixture drift detected"
@@ -351,9 +352,12 @@ jobs:
 
 Notes:
 
-- `peter-evans/create-pull-request` needs pinning to a reviewed commit SHA, same convention as
-  every other Action reference in this repo's existing workflows — resolve and pin it as part of
-  implementing this file, don't merge with a floating tag.
+- `peter-evans/create-pull-request` is pinned to a reviewed commit SHA (v8.1.1), same convention as
+  every other Action reference in this repo's existing workflows — re-pin (and re-review) rather
+  than moving to a floating tag if it's ever bumped.
+- `create-pull-request` needs both `contents: write` (to push the drift branch) and
+  `pull-requests: write` (to open the PR itself) — the latter is easy to miss since pushing a
+  branch alone doesn't need it.
 - The job never fails loudly on drift by itself (`continue-on-error: true` on the check step) — a
   provider API shape changing is expected, occasional, real-world drift, not a CI outage. The
   **signal** is the opened PR, reviewed like any other.
