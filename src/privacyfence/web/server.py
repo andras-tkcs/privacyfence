@@ -70,6 +70,7 @@ from typing import Callable
 
 import uvicorn
 from starlette.applications import Starlette
+from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Route
@@ -88,6 +89,8 @@ from . import routes_connect
 from . import routes_downloads
 from . import routes_org_identity
 from . import state_stream as _state_stream
+from .csp import build_csp
+from .csp import new_nonce as _new_csp_nonce
 from .mcp_auth import load_or_create_mcp_token
 from .mcp_dispatch import McpDispatcher
 from .oauth_provider import OrgOAuthProvider
@@ -115,21 +118,15 @@ TOKEN_FILE_NAME = "web_token"
 TOKEN_VERSION_FILE_NAME = "web_token_version"
 MCP_URL_FILE_NAME = "mcp_url"
 
-# Content-Security-Policy for a fully self-contained document (see
-# approval_window_html.py's own module docstring: fonts/icons are base64
-# data URIs, never a network fetch) -- default-src 'none' with narrow,
-# explicit exceptions for exactly what these pages actually use, not a
-# blanket 'unsafe-inline' grant. See docs/https-connector-refactor-plan.md
-# §10.5. worker-src 'self' (P4/W8) is the one addition since P1: without
-# it, registering resources/sw.js for tier-0/1 notifications
-# (web_shell.py's own script) is blocked by the same default-src 'none'
-# every other unlisted fetch type already is -- 'self' only, same-origin,
-# nothing external.
-_CSP = (
-    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-    "img-src data:; font-src data:; connect-src 'self'; worker-src 'self'; "
-    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-)
+# Content-Security-Policy: see web/csp.py's own module docstring for the
+# full policy and the reasoning behind each directive (SEC-08, docs/
+# security-remediation-plan.md Phase 3.1 -- this replaced a blanket
+# 'unsafe-inline' grant on both script-src and style-src, which is what
+# this comment described through v4.0.0a12; that description had grown
+# actively inaccurate, since the code below it granted exactly the
+# "blanket 'unsafe-inline'" the comment said this policy avoided). Built
+# per-response, from that request's own nonce (_SecurityHeadersMiddleware
+# below), not a fixed module-level constant any more.
 
 
 def load_or_create_token() -> str:
@@ -190,6 +187,33 @@ class _SecurityHeadersMiddleware:
     actually carry approval content, since a static blanket no-store here
     would be redundant with, not a replacement for, being deliberate about
     it at the route that matters.
+
+    **CSP nonce (SEC-08, Phase 3.1).** A fresh nonce is minted for every
+    HTTP request and placed on ``scope["state"]`` (readable downstream as
+    ``request.state.csp_nonce``, see web/csp.py's ``nonce_for``) *before*
+    the wrapped app runs -- every route that builds its document fresh
+    per-request (``/approvals``, ``/settings``, the org-mode browser pages)
+    just uses that value as-is. A route serving a document that was
+    rendered once, well before this response existed (an approval card --
+    see approval_window_html.py's own module docstring), overrides it via
+    ``web/csp.py``'s ``set_nonce`` to whatever nonce is already baked into
+    that specific document. Either way, the actual header value below is
+    read from ``scope["state"]`` at send time, *after* the app has already
+    run and had a chance to override it -- not the value minted up front --
+    so the header always matches whichever nonce actually ended up in the
+    response body.
+
+    **Replace, not extend (SEC-08, Phase 3.1).** Previously this appended
+    the fixed header set onto whatever the wrapped app already sent, which
+    would silently emit *two* headers of the same name -- ambiguous at
+    best, and for Content-Security-Policy specifically, most browsers
+    intersect multiple CSP headers into their most-restrictive combination,
+    which is not the same thing as "the value this middleware computed"
+    and isn't something any caller here actually wants. Using
+    ``MutableHeaders`` instead makes each of these four headers
+    authoritative -- set exactly once, overriding rather than
+    accumulating alongside anything a route handler already added under
+    the same name.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -200,16 +224,17 @@ class _SecurityHeadersMiddleware:
             await self._app(scope, receive, send)
             return
 
+        state = scope.setdefault("state", {})
+        state.setdefault("csp_nonce", _new_csp_nonce())
+
         async def send_with_headers(message: dict) -> None:
             if message["type"] == "http.response.start":
-                headers = list(message.get("headers", []))
-                headers.extend([
-                    (b"x-frame-options", b"DENY"),
-                    (b"x-content-type-options", b"nosniff"),
-                    (b"referrer-policy", b"no-referrer"),
-                    (b"content-security-policy", _CSP.encode("ascii")),
-                ])
-                message = {**message, "headers": headers}
+                nonce = scope.get("state", {}).get("csp_nonce") or _new_csp_nonce()
+                headers = MutableHeaders(raw=message.setdefault("headers", []))
+                headers["x-frame-options"] = "DENY"
+                headers["x-content-type-options"] = "nosniff"
+                headers["referrer-policy"] = "no-referrer"
+                headers["content-security-policy"] = build_csp(nonce)
             await send(message)
 
         await self._app(scope, receive, send_with_headers)

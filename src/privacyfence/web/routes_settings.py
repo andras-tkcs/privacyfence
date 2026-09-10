@@ -42,6 +42,7 @@ from starlette.routing import BaseRoute, Route
 
 from .. import approval_icons, settings_window_html, web_shell
 from ..settings_controller import REPO_URL, SettingsController
+from .csp import nonce_for as _csp_nonce_for
 from .session_auth import SESSION_COOKIE as _SESSION_COOKIE
 from .session_auth import LocalSessionStore
 from .session_auth import authenticated as _session_authenticated
@@ -169,10 +170,10 @@ def _snapshot(controller: SettingsController) -> dict[str, Any]:
 #     (see build_routes below) rather than the generic dispatcher.
 # ---------------------------------------------------------------------------- #
 
-def _settings_bridge_shim(*, csrf: str, repo_url: str) -> str:
+def _settings_bridge_shim(*, csrf: str, repo_url: str, nonce: str) -> str:
     return (
         "<input type=\"file\" id=\"pf-org-config-input\" accept=\".json,application/json\" style=\"display:none\">"
-        "<script>(function(){"
+        f'<script nonce="{nonce}">(function(){{'
         f"var CSRF = {csrf!r};"
         "var fileInput = document.getElementById('pf-org-config-input');"
         "fileInput.addEventListener('change', function(){"
@@ -239,10 +240,18 @@ def build_routes(
     async def settings_page(request: Request) -> Response:
         if not _authenticated(request):
             return _unauthorized_response(request)
+        # SEC-08 (docs/security-remediation-plan.md Phase 3.1): one nonce
+        # for the whole document -- web/server.py's _SecurityHeadersMiddleware
+        # already put one in request.state for this exact response, and
+        # every <style>/<script> tag below (settings_window_html.build_html's
+        # own, this page's bridge shim, and web_shell.wrap's shell chrome)
+        # has to carry it for the matching Content-Security-Policy header
+        # to actually allow any of them.
+        nonce = _csp_nonce_for(request)
         state = _snapshot(controller)
-        body = settings_window_html.build_html(state)
+        body = settings_window_html.build_html(state, nonce=nonce)
         csrf = request.cookies.get(_SESSION_COOKIE, "")
-        body += _settings_bridge_shim(csrf=csrf, repo_url=REPO_URL)
+        body += _settings_bridge_shim(csrf=csrf, repo_url=REPO_URL, nonce=nonce)
         # Read off this request's own fresh snapshot, not the notifications_
         # enabled/detail closure args above -- those are only the daemon-
         # startup defaults (server.py's own initial config read), and the
@@ -251,7 +260,7 @@ def build_routes(
         # render of this same page without restarting the daemon.
         general = state.get("general", {})
         html = web_shell.wrap(
-            body, title="PrivacyFence — Settings", active="settings",
+            body, title="PrivacyFence — Settings", active="settings", nonce=nonce,
             notifications_enabled=general.get("notifications_enabled", notifications_enabled),
             notifications_detail=general.get("notifications_detail", notifications_detail),
         )

@@ -34,6 +34,7 @@ makes "one live indicator" true instead of aspirational.
 from __future__ import annotations
 
 import json
+import secrets
 from html import escape as _html_escape
 from pathlib import Path
 
@@ -305,7 +306,7 @@ def _nav_html(active: str) -> str:
 
 
 def wrap(
-    body_html: str, *, title: str, active: str,
+    body_html: str, *, title: str, active: str, nonce: str | None = None,
     notifications_enabled: bool = True, notifications_detail: str = "minimal",
 ) -> str:
     """Full ``<!DOCTYPE html>`` document: tokens.css + the shell's own CSS,
@@ -323,7 +324,19 @@ def wrap(
     block's ``detail`` (``"minimal"``/``"standard"``/``"detailed"``, P5 --
     docs/approval-list-ui-ux.md §4.3) -- see _STREAM_JS's own
     notificationBody() for exactly what each level is allowed to say.
+
+    ``nonce`` (SEC-08, docs/security-remediation-plan.md Phase 3.1): the
+    current response's CSP nonce (``request.state.csp_nonce``, set by
+    web/server.py's ``_SecurityHeadersMiddleware``) -- this document is
+    rendered fresh on every request, so unlike approval_window_html.py's
+    card documents it always takes the caller's nonce rather than minting
+    its own. Also the nonce ``body_html`` itself must have used for its own
+    ``<style>``/``<script>`` tags (approval_list_html.build_list_html's own
+    ``nonce`` parameter) -- one document, one Content-Security-Policy
+    header, one nonce. Defaults to a fresh one when omitted (every real
+    caller passes the actual per-request value explicitly).
     """
+    nonce = nonce or secrets.token_urlsafe(18)
     stream_js = _STREAM_JS % {
         "notifications_enabled": "true" if notifications_enabled else "false",
         "notifications_detail": json.dumps(notifications_detail),
@@ -336,7 +349,7 @@ def wrap(
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="{_FAVICON_DATA_URI}">
 <title>{_html_escape(title)}</title>
-<style>{_TOKENS_CSS}{_SHELL_CSS}</style>
+<style nonce="{nonce}">{_TOKENS_CSS}{_SHELL_CSS}</style>
 </head>
 <body>
 <header class="pf-shell-header">
@@ -350,7 +363,7 @@ def wrap(
 <main class="pf-shell-main">{body_html}</main>
 <div class="pf-shell-toast" id="pf-shell-toast" role="status"></div>
 <div class="pf-sr-only" id="pf-shell-announcer" aria-live="polite"></div>
-<script>{stream_js}</script>
+<script nonce="{nonce}">{stream_js}</script>
 </body>
 </html>
 """

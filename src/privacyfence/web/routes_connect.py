@@ -75,6 +75,7 @@ from ..gmail_client import SCOPES as _GMAIL_SCOPES
 from ..principal import Principal, principal_scope
 from ..tasks_client import SCOPES as _TASKS_SCOPES
 from . import org_session
+from .csp import nonce_for as _csp_nonce_for
 from .org_session import OrgSessionStore
 
 logger = logging.getLogger(__name__)
@@ -377,7 +378,7 @@ def build_routes(
             principal=principal, org_config=org_config, telegram_state=telegram_state,
             flash_connected=request.query_params.get("connected", ""),
             flash_error=request.query_params.get("error", ""),
-            csrf=session_id,
+            csrf=session_id, nonce=_csp_nonce_for(request),
         )
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
@@ -614,7 +615,7 @@ def _telegram_box_html(principal: Principal, org_config: dict[str, Any], telegra
 
 def _render_connect_page(
     *, principal: Principal, org_config: dict[str, Any], telegram_state: _TelegramState,
-    flash_connected: str, flash_error: str, csrf: str,
+    flash_connected: str, flash_error: str, csrf: str, nonce: str,
 ) -> str:
     google_rows = "".join(_service_row_html(principal, org_config, s) for s in ("gmail", "drive", "calendar", "contacts", "tasks"))
     other_rows = "".join(_service_row_html(principal, org_config, s) for s in ("slack", "salesforce", "jira", "confluence"))
@@ -624,7 +625,7 @@ def _render_connect_page(
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PrivacyFence -- Connect your accounts</title>
-<style>{_STYLE}</style></head>
+<style nonce="{nonce}">{_STYLE}</style></head>
 <body>
 <h1>Connect your accounts</h1>
 <p class="lead">Signed in as {who}. Connecting a service lets PrivacyFence act on it for you, still gated by
