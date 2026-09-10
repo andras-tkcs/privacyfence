@@ -543,6 +543,65 @@ single-file/partial update in the underlying API), the same "show full resulting
 diff" precedent `drive_write_doc_content` set. `apps_script_write_content` has no configurable
 auto-accept rule yet — Allow-once-only, like most new write tools at first cut.
 
+### The `auto` tier, across all connectors
+
+The tables above gate 41 tools `auto` — allowed to proceed with no human in the loop, but still
+recorded in the audit log as `auto_accepted` (§4 of
+[security-and-compliance.md](security-and-compliance.md#4-human-in-the-loop-control): "Even the
+`auto` gate is a logged, IT-and-user-configured exception — never a default absence of control").
+This section gives that tier its own documented view, per the review's §14.3, rather than leaving it
+implicit across eleven separate per-connector tables.
+
+**What qualifies a tool for `auto`, as a rule rather than a case-by-case judgment call:** every tool
+below is either (a) a listing/metadata operation whose result names *what exists* (message subjects
+lists, channel names, calendar names, project keys) without returning a message body, document
+content, or any other free-text personal data, or (b) a narrow administrative action with no data
+disclosure of its own (creating a blank spreadsheet, refreshing a name-resolution cache). Nothing
+that returns full message/document/record content is ever `auto` — that boundary is what keeps this
+tier's risk bounded regardless of how many tools sit in it; see
+[claude-knowledge-boundary.md](claude-knowledge-boundary.md) for the exact fields each `review`-gated
+tool discloses once a human does approve it.
+
+| Connector | Auto tools | Count |
+|---|---|---|
+| Gmail | `gmail_list_messages`, `gmail_list_threads`, `gmail_list_message_attachments`, `gmail_list_filters`, `gmail_list_labels` | 5 |
+| Google Drive (incl. Sheets) | `drive_list_files`, `drive_get_file_metadata`, `drive_list_folder`, `drive_list_shared_drives`, `drive_create_blank_file`, `drive_sheets_create`, `drive_sheets_get_metadata` | 7 |
+| Slack | `slack_list_channels`, `slack_list_dms`, `slack_list_group_chats`, `slack_resolve_permalink`, `slack_refresh_user_cache`, `slack_refresh_channel_cache` | 6 |
+| Google Calendar | `calendar_list_calendars`, `calendar_list_events`, `calendar_get_free_busy`, `calendar_list_rooms`, `calendar_get_event_visibility` | 5 |
+| Google Contacts | `contacts_list`, `contacts_search`, `contacts_get` | 3 |
+| Telegram | `telegram_list_chats`, `telegram_refresh_chat_cache` | 2 |
+| Salesforce | `salesforce_list_reports` | 1 |
+| Jira | `jira_list_projects`, `jira_search_issues`, `jira_get_transitions` | 3 |
+| Confluence | `confluence_list_spaces`, `confluence_search`, `confluence_cql_search`, `confluence_list_pages`, `confluence_list_attachments` | 5 |
+| Google Tasks | `tasks_list_task_lists`, `tasks_list_tasks`, `tasks_get_task` | 3 |
+| Apps Script | `apps_script_list_projects` | 1 |
+| **Total** | | **41** |
+
+A few things worth calling out explicitly about this tier as a whole, rather than tool by tool:
+
+- **`auto` is not "unauditable" or "silent."** Every one of these 41 calls still writes an
+  `auto_accepted` entry to the same hash-chained audit log a `review`/`popup` decision writes to
+  (`audit_log.py`) — the difference from `review`/`popup` is *when* the call proceeds (immediately,
+  vs. after a human decision), not *whether* it's recorded.
+- **`auto` here means "IT and the review model decided this category is safe by design," not
+  "unconfigurable."** Nothing in this tier can be moved to `review`/`popup` by a user today — the
+  gate each tool goes through is fixed in code (`auto_accept.py`'s `TOOL_TO_GATE`, the single source
+  of truth the connector tables above are checked against —
+  `tests/unit/connectors/test_readme_manifest_alignment.py`), not a `settings.yaml` setting, so an
+  organization that wants a *narrower* `auto` tier than what ships today has no way to configure
+  that yet; this is a real, current limitation worth naming rather than leaving implicit.
+- **Two tools carry a search/filter parameter that narrows results without changing their gate.**
+  `slack_list_channels`/`slack_list_group_chats`/`slack_list_dms`'s `participant` matching and
+  `calendar_get_free_busy`'s access-fallback behavior (`calendar.free_busy_full_event_details`) both
+  still return only metadata-shaped results — narrowing *what's listed* never crosses into returning
+  message/document content, so neither changes the `auto` classification.
+- **Some `auto` tools are themselves prerequisites for a later `review`-gated call**, not endpoints
+  in their own right — e.g. `gmail_list_messages` (auto) is how a message id reaches
+  `gmail_get_message` (review); the list operation discloses subjects/senders/dates but never a body,
+  and the body-returning call is exactly where the gate steps up. See
+  [claude-knowledge-boundary.md](claude-knowledge-boundary.md) for this pattern worked through in
+  detail across every connector.
+
 ---
 
 ## Auto-accept grants
@@ -1303,7 +1362,10 @@ See [connector-qa-testing.md](connector-qa-testing.md) for a Claude Cowork promp
 For information security, IT, GDPR, and EU AI Act reviewers: see
 [security-and-compliance.md](security-and-compliance.md) for the deployment model
 (local, not SaaS), IT's connector-level access authority, the human-in-the-loop review model,
-data handling, and PrivacyFence's positioning under GDPR and the AI Act.
+data handling, and PrivacyFence's positioning under GDPR and the AI Act. For org mode specifically —
+its support/readiness level, backup/restore, upgrade/rollback, persisted-state compatibility, and
+restart/single-daemon availability behaviour — see
+[org-mode-operational-readiness.md](org-mode-operational-readiness.md).
 
 ---
 

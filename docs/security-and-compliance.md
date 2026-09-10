@@ -66,7 +66,10 @@ existing, approved services.
 is newer and has run in fewer production environments than local mode. Treat the two modes'
 relative maturity as part of your own risk assessment — see
 [`org-mode-setup-guide.md`](org-mode-setup-guide.md) for its current caveats (e.g. the Linux service
-packaging noted there as not yet battle-tested end to end) and
+packaging noted there as not yet battle-tested end to end),
+[`org-mode-operational-readiness.md`](org-mode-operational-readiness.md) for its explicit support
+level and the operational questions that follow deployment (backup/restore, upgrade/rollback,
+restart behaviour, the single-daemon availability model), and
 [`docs/security-remediation-plan.md`](security-remediation-plan.md)'s Phase 1 for the org-mode
 hardening work still in flight as of this writing.
 
