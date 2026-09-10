@@ -296,15 +296,21 @@ Prefer a bare `pip`/`pipx install privacyfence` plus the repo-root `privacyfence
 
 ### Run from source
 
-Needs pip 21.3+ — this is a `pyproject.toml`-only project (no `setup.py`), and editable installs
-of those need pip's PEP 660 support, added in 21.3. An older pip fails with *"File 'setup.py' or
-'setup.cfg' not found... editable mode currently requires a setuptools-based build"*; if you hit
-that, `pip install --upgrade pip` first.
+Needs **Python 3.11+** — the plain `python`/`python3` on PATH is often an older system Python
+(macOS in particular still ships a 3.9 `python3` on many machines), which builds a venv that then
+fails install with *"Package 'privacyfence' requires a different Python: 3.9.6 not in '>=3.11'"*.
+Point `venv` at a 3.11+ interpreter explicitly (`python3.11`, `python3.12`, etc. — whichever you
+have installed) rather than the bare `python3`.
+
+Also needs pip 21.3+ — this is a `pyproject.toml`-only project (no `setup.py`), and editable
+installs of those need pip's PEP 660 support, added in 21.3. An older pip fails with *"File
+'setup.py' or 'setup.cfg' not found... editable mode currently requires a setuptools-based
+build"*; if you hit that, `pip install --upgrade pip` first.
 
 ```bash
 git clone https://github.com/privacyfence/privacyfence
 cd privacyfence
-python -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -e .
