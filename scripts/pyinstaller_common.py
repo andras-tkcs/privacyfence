@@ -1,65 +1,46 @@
-"""Shared PyInstaller ``Analysis`` inputs for every platform's app spec.
-
-Extracted out of ``PrivacyFenceApp.spec`` (docs/windows-support-plan.md
-Phase 2.1) so the datas/hidden-imports lists that describe *what the
-daemon needs bundled* -- which has nothing to do with which platform is
-doing the bundling -- live in exactly one place, imported by
-``PrivacyFenceApp.spec`` (macOS) and ``PrivacyFenceApp.win.spec``
-(Windows), and by whichever ``PrivacyFenceApp.linux.spec`` eventually
-lands per ``docs/linux-local-deb-packaging-plan.md``. Without this, three
-platform specs would carry three independently-drifting copies of the
-same "don't forget openpyxl/telethon/the ten connectors" list.
-
-Only the parts that are genuinely platform-independent live here: data
-files and hidden imports. Everything platform-specific -- the icon
-format, whether there's a ``BUNDLE()``/``.icns`` step, ``console=``,
-target install layout -- stays in each spec file itself.
-
-Usage from a spec file::
-
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent / "scripts"))
-    from pyinstaller_common import DATAS, HIDDEN_IMPORTS
-
-Spec files are exec'd by PyInstaller from the repo root, so the relative
-``scripts/`` path above resolves the same way on every platform.
-"""
-from __future__ import annotations
+# PyInstaller `datas`/`hidden_imports` shared between PrivacyFenceApp.spec (macOS),
+# PrivacyFenceApp.linux.spec (Linux, docs/linux-local-deb-packaging-plan.md Phase 1), and
+# PrivacyFenceApp.win.spec (Windows, docs/windows-support-plan.md Phase 2.1). All three specs
+# build the same daemon entry point (src/_daemon_entry.py) against the same dependency set --
+# the only things that differ between platforms are the packaging step around the PyInstaller
+# output (BUNDLE() + .icns + codesign on macOS; a bare onedir + `debian/` packaging on Linux; a
+# bare onedir + .ico + Inno Setup on Windows), not what goes into the frozen daemon itself.
+# Factored out here instead of duplicated in three spec files so they can't quietly drift (a
+# hidden import added for one platform but not the others, discovered only when that platform's
+# build breaks).
+#
+# Every spec imports this the same way:
+#
+#   import sys
+#   from pathlib import Path
+#   sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
+#   from pyinstaller_common import DATAS, HIDDEN_IMPORTS
+#
+# (PyInstaller execs spec files without the repo root's scripts/ on sys.path by default, hence the
+# explicit insert rather than a plain top-level import.)
 
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
-# ── data files ────────────────────────────────────────────────────────────
-# Kept as a function, not a module-level constant: collect_data_files()/
-# copy_metadata() walk the *build machine's* installed packages, so this
-# must run at spec-exec time on whichever platform is actually building,
-# not be frozen once and reused.
+
+# Data files bundled into the frozen app, identical on every platform.
+DATAS = [
+    # App icons and bundled resources
+    ("src/privacyfence/resources", "privacyfence/resources"),
+    # google-auth needs its transport files
+    *collect_data_files("google"),
+    *collect_data_files("googleapiclient"),
+    # PyInstaller doesn't bundle a package's own .dist-info by default --
+    # without this, src/privacyfence/__init__.py's
+    # importlib.metadata.version("privacyfence") call would raise
+    # PackageNotFoundError at runtime *inside the frozen app* (it worked fine
+    # a moment ago in the spec file, above, only because that ran unfrozen
+    # against the build machine's installed package).
+    *copy_metadata("privacyfence"),
+]
 
 
-def collect_datas() -> list[tuple[str, str]]:
-    return [
-        # App icons and bundled resources
-        ("src/privacyfence/resources", "privacyfence/resources"),
-        # google-auth needs its transport files
-        *collect_data_files("google"),
-        *collect_data_files("googleapiclient"),
-        # PyInstaller doesn't bundle a package's own .dist-info by default --
-        # without this, src/privacyfence/__init__.py's
-        # importlib.metadata.version("privacyfence") call would raise
-        # PackageNotFoundError at runtime *inside the frozen app* (it works
-        # fine at spec-exec time only because that runs unfrozen against the
-        # build machine's installed package).
-        *copy_metadata("privacyfence"),
-    ]
-
-
-# ── hidden imports ────────────────────────────────────────────────────────
-# Modules loaded dynamically (importlib, __import__, a try/except
-# ImportError fallback) that PyInstaller's static analysis can miss. This
-# list genuinely doesn't vary by platform -- every connector ships in every
-# platform's build -- so it's a plain constant, unlike DATAS above.
-
-HIDDEN_IMPORTS: list[str] = [
+# Modules loaded dynamically (importlib, __import__) that PyInstaller can miss.
+HIDDEN_IMPORTS = [
     # google API discovery
     "googleapiclient.discovery",
     "googleapiclient.http",

@@ -1,0 +1,35 @@
+#!/bin/sh
+# postrm for the privacyfence .deb.
+#
+# Explicitly scoped to do nothing beyond a cosmetic icon-cache refresh -- see
+# docs/linux-local-deb-packaging-plan.md P2.2:
+#
+#   - `apt remove privacyfence` must leave per-user data (~/.privacyfence/ -- config/settings.yaml,
+#     credentials/, the audit log) alone. That data is created by the app itself on first run
+#     (paths.py), never by this package, so it's outside anything dpkg tracks in the first place --
+#     this is automatic as long as this script never reaches into $HOME, which it doesn't.
+#   - `apt purge` conventionally also cleans up *package-owned* system-wide config (e.g. a
+#     hypothetical /etc/privacyfence/), but there isn't any such config here to purge -- the only
+#     package-owned files outside /opt/privacyfence are the autostart .desktop entry and the icon
+#     files, both removed automatically by dpkg itself on purge (they're regular tracked package
+#     files, not conffiles needing maintainer-script cleanup).
+#
+# If a future edit adds real cleanup logic here, it must keep both of the above true: never touch
+# a user's $HOME, and only ever remove files this package itself installed under a system path.
+set -e
+
+case "$1" in
+    remove)
+        ;;
+    purge)
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+        fi
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

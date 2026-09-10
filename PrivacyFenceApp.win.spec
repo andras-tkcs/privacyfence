@@ -42,7 +42,7 @@ from pathlib import Path
 SRC = str(Path("src").resolve())
 sys.path.insert(0, SRC)
 sys.path.insert(0, str(Path("scripts").resolve()))
-from pyinstaller_common import HIDDEN_IMPORTS, collect_datas  # noqa: E402
+from pyinstaller_common import DATAS, HIDDEN_IMPORTS  # noqa: E402
 
 # Version comes from the git tag via setuptools_scm now, not a hardcoded
 # string here (see this repo's CLAUDE.md "Releasing" section) -- read back
@@ -69,7 +69,7 @@ if not Path(ICON).exists():
 # ── data files + hidden imports ─────────────────────────────────────────────
 # Shared with every other platform's spec -- see scripts/pyinstaller_common.py.
 
-datas = collect_datas()
+datas = DATAS
 hidden_imports = HIDDEN_IMPORTS
 
 daemon_a = Analysis(

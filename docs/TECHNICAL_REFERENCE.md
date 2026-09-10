@@ -19,6 +19,7 @@ For the product overview, governance model, screenshots, supported systems, and 
 - [Installation](#installation)
 - [Connecting Claude](#connecting-claude)
 - [Building a DMG](#building-a-dmg)
+- [Building a `.deb`](#building-a-deb)
 - [Configuration reference](#configuration-reference)
 - [Architecture notes](#architecture-notes)
 - [License](#license)
@@ -1247,6 +1248,35 @@ would read from still exists and is accurate — only the display is currently m
 
 Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab (the latter includes a "By PII category" breakdown when any entry has one). Each entry also records whether the [PII detection gate](#pii-detection-gate) flagged the content and which category label(s) (e.g. "IBAN (bank account number)") — never the matched text itself, unless the opt-in `pii_detection.audit_match_details` trial setting described in that section is turned on, and even then only for an approved request, and only ever in redacted form for a category whose match is itself the sensitive value.
 
+**Append-integrity, event identity, and provenance (SEC-23).** Every entry is additionally
+chained to the one before it with a keyed hash — `entry_hash` is an HMAC-SHA256 (keyed by a
+per-install key generated on first use, `.audit_chain.key` next to the `.jsonl` files) over the
+entry's own fields plus `prev_hash`, the previous entry's `entry_hash` (or a genesis value for the
+first entry in a chain). `AuditLogger.verify_chain()` (or `python3 scripts/verify_audit_log.py
+logs/audit`, standalone) recomputes and checks this: an entry edited, inserted, or removed after
+the fact breaks the chain at that point, without needing anywhere else to compare against. Honest
+caveat: the key lives next to the log it protects, so this catches accidental corruption and a
+party who can write the `.jsonl` files without also reading the key file — not a fully privileged
+local administrator who can read both; centralized forwarding (below) is what actually removes a
+tampered copy from that same trust boundary. Each entry also carries a stable `event_id` (unique
+to that one line, unlike `request_id`, which is deliberately shared across a deferred-approval's
+"pending" and its later "decided" entry), an explicit `schema_version` (bumped whenever the entry
+shape changes — see `audit_log.py`'s `CURRENT_SCHEMA_VERSION`), this install's own `deployment_id`
+(a random id persisted once at `data_dir()/deployment_id`, so entries from multiple machines/
+servers can be told apart once aggregated), and a `security_config_hash` fingerprinting the
+`settings.yaml` privacy policy in effect when the decision was recorded (`audit_log.
+compute_security_config_hash()`) — refreshed on every settings change, not just at daemon startup.
+
+**Centralized forwarding (org mode, SEC-23).** `org_config.json`'s `audit_forwarding` section
+(off by default) additionally forwards each entry, best-effort and off the decision path, to a
+syslog server (RFC 5424, RFC 6587 octet-counting for TCP) or a generic HTTPS/JSON webhook — Splunk
+HEC, Datadog's Logs API, an Elastic ingest pipeline, an OTLP-over-HTTP/JSON log receiver all speak
+this on the wire; it is not a full OTLP SDK. See
+[org-mode-setup-guide.md's "Centralized audit-log forwarding"](org-mode-setup-guide.md#11-centralized-audit-log-forwarding-optional)
+for the `build_org_bundle.py --enable-audit-forwarding` flags. A forwarding failure (collector
+down, network partition) never blocks or loses the local decision — the `.jsonl` file, with its
+own hash chain, stays the authoritative record regardless.
+
 Two decision values relate to [scheduled/unattended tasks](#scheduled--unattended-cowork-tasks):
 `denied_unattended` (a call denied without ever prompting, because the connection was in an
 unattended session and no auto-accept rule matched — kept distinct from a human's own `rejected`)
@@ -1325,9 +1355,35 @@ the only download you need:
    MCP server for you (Settings → Extensions → Install Extension… happens automatically), with no
    config file edited and no token copied — see [Connecting Claude](#connecting-claude) below.
 
+### From the `.deb` (Linux, `local` mode)
+
+The Linux equivalent of the DMG above — a `dpkg -i`-able package wrapping a self-contained
+PyInstaller build of the daemon, for someone installing PrivacyFence on their own Linux desktop
+the same way a macOS user drags `PrivacyFenceApp.app` to `/Applications`. See
+[`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md) for the full design.
+
+1. Download the latest `privacyfence_<version>_amd64.deb` from the [Releases](../../../releases)
+   page.
+2. `sudo apt install ./privacyfence_<version>_amd64.deb` (or `sudo dpkg -i` — the package declares
+   no `python3-*` dependencies to resolve). Installs the daemon to `/opt/privacyfence`, a
+   `privacyfence-app` wrapper on `PATH` at `/usr/bin/privacyfence-app`, and an XDG autostart entry
+   at `/etc/xdg/autostart/privacyfence.desktop`.
+3. Log out and back in — the autostart entry fires at the next graphical login (works the same way
+   across GNOME/KDE/XFCE/etc., no per-user `systemctl --user enable` step needed). To start it
+   immediately instead, run `privacyfence-app &`.
+4. Open PrivacyFence Settings (`http://localhost:8765/settings` — the daemon logs the exact URL,
+   with its session token, to `~/.privacyfence/logs/privacyfence.log` on startup) and continue
+   with the organization config and connector authentication steps as in the DMG instructions
+   above.
+5. Install **PrivacyFence.mcpb** into Claude Desktop, downloaded separately from the same release.
+
+`apt remove`/`dpkg -r` leaves `~/.privacyfence` (config, credentials, audit log) untouched — that
+data belongs to the app, not the package. `apt purge` cleans up anything package-owned beyond
+that, which today is nothing (no system-wide config exists to purge).
+
 ### From source
 
-**Requirements:** Python 3.11+, macOS
+**Requirements:** Python 3.11+, macOS or Linux
 
 ```bash
 git clone https://github.com/privacyfence/privacyfence
@@ -1406,12 +1462,26 @@ opening the native macOS menu bar, so `privacyfence-app` crashed right after sta
 platform. P10 (`docs/https-connector-refactor-plan.md` §12, decision D6) deleted that native UI
 layer entirely, so the daemon now starts and runs headlessly on any platform Python and its
 dependencies support — nothing left in `src/privacyfence/` imports a macOS-specific module.
-`privacyfence.service` (repo root) is a systemd `--user` unit for this; see its own header comment
-for the current status (the core blocker is fixed, but a real Linux install is still unverified end
-to end — packaging, autostart, and CI for it are the remaining work, per #121 in the issue tracker).
-Two pieces of the Linux/PyPI packaging story are already in place: publishing to PyPI (CLAUDE.md's
+
+Linux splits into two genuinely different install paths — see
+[`windows-linux-support-plan.md`](windows-linux-support-plan.md)'s "Terminology" section for why
+these are different audiences with different packaging needs, not two flavors of the same install:
+
+- **`local` mode (desktop)** — the `.deb` documented above under "Installation", or a bare
+  `pip`/`pipx install privacyfence` plus the repo-root `privacyfence.service` (a systemd `--user`
+  unit — install per its own header comment). Both give you a single-user desktop daemon with the
+  implicit `local` principal.
+- **`org` mode (server)** — `pip`/`pipx install privacyfence` plus a **system** (not `--user`)
+  systemd unit running as a dedicated service account, fronted by a reverse proxy and an org OIDC
+  IdP for sign-in. Walked through end-to-end in
+  [`org-mode-setup-guide.md`](org-mode-setup-guide.md) (Ubuntu + Caddy + Google identity) — that
+  guide's own status note is the current source of truth on how battle-tested this path is; treat
+  it as ready to try, not yet a fully verified production install, per #121 in the issue tracker.
+
+Two pieces of the Linux/PyPI packaging story underpin both paths: publishing to PyPI (CLAUDE.md's
 "Publishing to PyPI") and `~/.privacyfence` path resolution for a real `pip install privacyfence`
-(`paths.py`'s `_is_installed_package()`).
+(or a PyInstaller-frozen `.deb` install) rather than a repo checkout (`paths.py`'s
+`_is_installed_package()`/`is_bundled()`).
 
 ---
 
@@ -1506,6 +1576,17 @@ The script produces `dist/PrivacyFence-<version>-setup.exe` (containing `Privacy
 `privacyfence-app.exe`, and `PrivacyFence.mcpb`). See the script's own header comment for the full
 prerequisite list and the optional `SIGN_CERT_PATH`/`SIGN_CERT_PASSWORD` signing env vars.
 
+## Building a `.deb`
+
+```bash
+pip install pyinstaller
+apt-get install -y dpkg-dev lintian
+bash scripts/build_deb.sh
+```
+
+The script produces `dist/privacyfence_<version>_<arch>.deb`. See
+[`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md) for the packaging design.
+
 ---
 
 ## Configuration reference
@@ -1520,7 +1601,8 @@ See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml
   time without losing any state. All state (credentials, tokens, filters, queue) lives in the
   daemon, which stays running independently.
 - `/mcp` is a local, loopback-bound (`localhost`) Streamable HTTP endpoint, authenticated by a
-  per-launch random bearer token (`~/.privacyfence/mcp_token`) required on every request; its URL
+  persistent random bearer token (`~/.privacyfence/mcp_token`, reused across daemon restarts, not
+  regenerated per launch) required on every request; its URL
   is discovered via `~/.privacyfence/mcp_url` (see `src/privacyfence/web/server.py`'s module
   docstring). Claude Code talks to it directly; Claude Desktop's shim (`mcpb/shim/`) proxies it over
   stdio, discovering the same `mcp_url`/`mcp_token` files itself, with no config file edited and no

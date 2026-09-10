@@ -32,7 +32,10 @@ from pathlib import Path
 SRC = str(Path("src").resolve())
 sys.path.insert(0, SRC)
 sys.path.insert(0, str(Path("scripts").resolve()))
-from pyinstaller_common import HIDDEN_IMPORTS, collect_datas  # noqa: E402
+
+# Shared with PrivacyFenceApp.linux.spec and PrivacyFenceApp.win.spec -- see that module's
+# docstring for why the list itself lives there instead of being hand-copied into every spec.
+from pyinstaller_common import DATAS, HIDDEN_IMPORTS
 
 # Version comes from the git tag via setuptools_scm now, not a hardcoded
 # string here (see this repo's CLAUDE.md "Releasing" section) -- read back
@@ -45,10 +48,10 @@ VERSION = _pkg_version("privacyfence")
 # lets you run pyinstaller directly for quick dev iteration on Linux/CI).
 ICON = os.environ.get("PRIVACYFENCE_ICNS", "src/privacyfence/resources/icon_512.png")
 
-# ── data files + hidden imports ─────────────────────────────────────────────
-# Shared with every other platform's spec -- see scripts/pyinstaller_common.py.
+# ── data files / hidden imports ───────────────────────────────────────────────
+# Shared with every other platform's spec via scripts/pyinstaller_common.py (imported above).
 
-datas = collect_datas()
+datas = DATAS
 hidden_imports = HIDDEN_IMPORTS
 
 # ── daemon (main .app entry point) ────────────────────────────────────────────

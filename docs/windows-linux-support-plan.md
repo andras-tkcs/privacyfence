@@ -108,16 +108,26 @@ Checklist:
       `loginctl enable-linger`, since a `--user` unit's login-time behavior differs from a `--system`
       one) and that the OAuth loopback flow (`oauth_loopback.py`, already cross-platform —
       `webbrowser.open()`) opens the user's browser correctly from a systemd user session.
-- [ ] **A2.2 — Add a Linux quickstart to `README.md`** alongside the existing DMG instructions
+- [x] **A2.2 — Add a Linux quickstart to `README.md`** alongside the existing DMG instructions
       (currently the README only documents the macOS/DMG install path — "macOS host" is listed as
       an implementation assumption, but the Linux path isn't documented at all for `local` mode).
-- [ ] **A2.3 (stretch, gated on demand) — `.deb` package.** If pursued: `debian/control` +
+
+      Done — both the `.deb` (below) and the bare `pip`/`pipx` + systemd path are now documented in
+      `README.md`'s Quick start and `TECHNICAL_REFERENCE.md`'s Installation section.
+- [x] **A2.3 (stretch, gated on demand) — `.deb` package.** If pursued: `debian/control` +
       `debian/rules` (or `dpkg-deb` invoked from a new `scripts/build_deb.sh`, mirroring
       `scripts/build_dmg.sh`'s shape), packaging the `pip`-installed console script plus the systemd
       unit and a `.desktop` autostart entry, built via a new CI leg parallel to `build.yml`'s macOS
       job. No code-signing equivalent is required (apt doesn't gate on it the way macOS Gatekeeper
       does), which keeps this simpler than the Windows Authenticode story in Track B.
-- [ ] **A2.4 — mcpb shim Linux fallback.** `findDaemonCmd()` in `mcpb/shim/src/daemon.ts` has no
+
+      Implemented per [`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md)
+      (Phases 1-6 done; Phase 7 verification mostly done — see that plan's own P7.1-P7.3 notes for
+      exactly what's still open, principally a real graphical-desktop autostart test). Built and
+      packages a self-contained PyInstaller bundle (not the `pip`-installed console script — see
+      that plan's "Key decision" for why) with an XDG autostart entry rather than the systemd unit
+      this row originally sketched (again, see that plan's Phase 3 for the reasoning).
+- [x] **A2.4 — mcpb shim Linux fallback.** `findDaemonCmd()` in `mcpb/shim/src/daemon.ts` has no
       Linux-specific default path (only the macOS `DEFAULT_APP_PATH` and a generic `python3 -m`
       dev fallback). Add a `pipx`-default (`~/.local/bin/privacyfence-app`) check before falling
       back to the dev path, gated on `process.platform`.
@@ -183,8 +193,10 @@ shipped and been QA'd, not as an early checkbox).
 3. **B1–B6** (Windows) — bigger and riskier; benefits from A1/A2 having already re-confirmed the
    "daemon has zero macOS-specific behavior left" claim on Linux before spending signing-cert and
    installer effort on a second platform.
-4. **A2.3** (`.deb`) — stretch, revisit only once B1–B6 is done or demand clearly warrants pulling it
-   forward.
+4. **A2.3** (`.deb`) — stretch, pulled forward and implemented ahead of this sequencing (see
+   [`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md)) rather than waiting on
+   B1-B6; A2.1's real desktop verification is still the open item this sequencing note originally
+   depended on, so treat the `.deb` as built and lint-clean but not yet fully field-verified.
 
 ## Tracking
 

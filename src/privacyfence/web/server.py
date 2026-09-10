@@ -1,8 +1,10 @@
 """Embedded HTTP(S) server lifecycle: bind policy, security headers, and
-starting/stopping the ASGI app (uvicorn) on its own thread -- the same
-"runs on its own dedicated thread, daemon still starting for IPC either
-way" posture daemon_main.py's IPCServerThread already established for the
-bridge socket.
+starting/stopping the ASGI app (uvicorn) on its own thread -- see daemon_
+main.py's own module docstring's "Threading model" section (its "Web
+thread") for how this fits alongside the daemon's other threads. Before
+P5 retired it, the bridge socket ran on its own dedicated thread the same
+way (``IPCServerThread``, since deleted along with the rest of ``ipc_
+server.py``).
 
 **Local mode**: D1's decision applies -- loopback HTTP, bound to
 ``localhost`` (not a bare ``127.0.0.1``/``0.0.0.0``) so ``http://localhost``
@@ -11,10 +13,10 @@ without anyone having to move the bind address. Auth is deliberately the
 simplest thing that's still a real control, not sessions/OIDC -- but since
 SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2) it is no
 longer "possession of one never-expiring, URL-carried token is the
-authority" the way it was through v4.0.0a12 (that posture is what
-``~/.privacyfence/ipc_token`` still has for the bridge, see ipc.py's own
-module docstring -- this surface, reachable from a browser rather than
-only a local process, needed more). ``load_or_create_token()``'s random
+authority" the way it was through v4.0.0a12 (the same posture
+``~/.privacyfence/ipc_token`` had for the bridge, before P5 retired both --
+this surface, reachable from a browser rather than only a local process,
+needed more). ``load_or_create_token()``'s random
 secret is generated once, written 0600 under paths.data_dir(), rotated
 whenever the installed version changes, and now used only to authorize
 minting a bootstrap code on demand (``POST /api/bootstrap``, see
@@ -67,6 +69,7 @@ import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Callable
+from urllib.parse import urlsplit
 
 import uvicorn
 from starlette.applications import Starlette
@@ -131,6 +134,34 @@ _CSP = (
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 
+# SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): every
+# browser feature this app never uses, denied outright -- the same "narrow,
+# explicit exceptions for exactly what these pages actually use" posture
+# _CSP already takes. ``publickey-credentials-get``/``-create`` are the one
+# exception left at their browser default (``self``) rather than denied:
+# web/routes_security.py's step-up flow calls ``navigator.credentials.get``/
+# ``.create`` from this same origin, and Permissions-Policy's own default
+# allowlist for both directives is already ``self`` -- naming them
+# explicitly here just documents that on purpose instead of leaving a
+# future reader to wonder whether they were overlooked.
+_PERMISSIONS_POLICY = (
+    "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), "
+    "fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), "
+    "midi=(), payment=(), picture-in-picture=(), publickey-credentials-create=(self), "
+    "publickey-credentials-get=(self), screen-wake-lock=(), usb=(), xr-spatial-tracking=()"
+)
+
+# SEC-18: one year, subdomains included -- the usual conservative starting
+# point (see e.g. OWASP's HSTS cheat sheet) short of the two-year "preload"
+# submission length, which this app has no business requesting: preload is
+# a permanent, browser-vendor-controlled commitment keyed on the exact
+# public hostname, wrong for a value that varies per self-hosted org
+# deployment (``org.issuer_url``'s host) rather than being one fixed domain
+# this project itself controls. Only ever added in org mode -- see
+# _SecurityHeadersMiddleware's own docstring for why local mode never sends
+# this header at all.
+_HSTS = "max-age=31536000; includeSubDomains"
+
 
 def load_or_create_token() -> str:
     """The persistent local-mode secret -- see module docstring. Reused
@@ -185,15 +216,34 @@ class _SecurityHeadersMiddleware:
     """Plain ASGI middleware (not starlette.middleware.base.
     BaseHTTPMiddleware, which buffers the whole response) adding the fixed
     header set every response from this app needs -- see
-    docs/https-connector-refactor-plan.md §10.5. Cache-Control: no-store is
-    also set per-route (web/routes_approvals.py) for the routes that
-    actually carry approval content, since a static blanket no-store here
-    would be redundant with, not a replacement for, being deliberate about
-    it at the route that matters.
+    docs/https-connector-refactor-plan.md §10.5 and, for the three added by
+    SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5), the
+    module-level ``_PERMISSIONS_POLICY``/``_HSTS`` constants' own comments.
+    Cache-Control: no-store is also set per-route (web/routes_approvals.py
+    and friends) for the routes that actually carry sensitive content,
+    since a static blanket no-store here would be redundant with, not a
+    replacement for, being deliberate about it at the route that matters --
+    see test_server.py's ``TestCacheControlOnSensitivePages`` for the sweep
+    that checks every one of those routes actually does.
+
+    ``hsts`` gates ``Strict-Transport-Security`` alone: local mode (``org``
+    is ``None`` in build_app()) binds to plain ``http://localhost`` by
+    design (this module's own docstring), where the header is at best
+    inert and at worst actively wrong -- a browser that honored it would
+    start refusing plain-HTTP connections to ``localhost`` for every *other*
+    app on the machine too, since HSTS is scoped by hostname, not by port
+    or origin. Org mode is the one caller that passes ``hsts=True``: its
+    ``issuer_url`` is a real, single-purpose public hostname reached over
+    HTTPS (TLS terminated here or, just as often, at a reverse proxy in
+    front of this daemon -- either way the browser's own connection is
+    HTTPS, which is what HSTS actually governs), so pinning that hostname
+    to HTTPS-only is exactly the SEC-18 win intended, with none of local
+    mode's collateral risk.
     """
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, *, hsts: bool = False) -> None:
         self._app = app
+        self._hsts = hsts
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -208,7 +258,11 @@ class _SecurityHeadersMiddleware:
                     (b"x-content-type-options", b"nosniff"),
                     (b"referrer-policy", b"no-referrer"),
                     (b"content-security-policy", _CSP.encode("ascii")),
+                    (b"permissions-policy", _PERMISSIONS_POLICY.encode("ascii")),
+                    (b"cross-origin-opener-policy", b"same-origin"),
                 ])
+                if self._hsts:
+                    headers.append((b"strict-transport-security", _HSTS.encode("ascii")))
                 message = {**message, "headers": headers}
             await send(message)
 
@@ -297,6 +351,41 @@ class _PrincipalScopeMiddleware:
             await self._app(scope, receive, send)
 
 
+def _parse_host_header(raw: str) -> str | None:
+    """Standards-aware ``Host`` header -> bare hostname (SEC-17,
+    docs/security-remediation-plan.md Phase 3 item 3.4). The manual
+    ``split(":", 1)[0]`` this replaced assumed the first colon always
+    separates host from port, which is only true for a bare name or IPv4
+    address -- an IPv6 literal has colons *in* the host itself
+    (``[::1]:8443``, or even a port-less ``[::1]``), so that split just
+    returned the literal ``"["`` -- every IPv6 request either got rejected
+    outright, or wrongly let through by whatever else happened to compare
+    equal to ``"["``.
+
+    Delegating to ``urlsplit`` on a synthesized ``//<raw>`` authority
+    gets RFC 3986's bracket-aware host/port grammar for free -- its
+    ``.hostname`` is already lowercased and has the brackets stripped, so
+    ``"[::1]"`` and ``"[::1]:8443"`` both normalize to ``"::1"``, matching
+    the plain ``urlsplit(...).hostname`` used for the org issuer host
+    below.
+
+    Returns ``None`` -- treat exactly like a disallowed host -- for
+    anything that isn't a clean ``host[:port]`` authority: an unparsable
+    port, userinfo (``user@host``, never valid in a Host header), or a
+    stray path/query/fragment component smuggled in behind the host.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(f"//{raw}")
+        parsed.port  # noqa: B018 -- validated lazily; unparsable ports raise here, not on urlsplit()
+    except ValueError:
+        return None
+    if parsed.username is not None or parsed.path or parsed.query or parsed.fragment:
+        return None
+    return parsed.hostname
+
+
 class _HostAllowlistMiddleware:
     """DNS-rebinding defense (docs/https-connector-refactor-plan.md §10.5,
     §9.4): reject any request whose Host header isn't in the configured
@@ -315,8 +404,8 @@ class _HostAllowlistMiddleware:
             await self._app(scope, receive, send)
             return
         request = Request(scope)
-        host = (request.headers.get("host") or "").split(":", 1)[0].lower()
-        if host not in self._allowed_hosts:
+        host = _parse_host_header(request.headers.get("host") or "")
+        if host is None or host not in self._allowed_hosts:
             response = PlainTextResponse("Invalid Host header", status_code=400)
             await response(scope, receive, send)
             return
@@ -625,7 +714,7 @@ def _build_org_app(
     resolver = principal_resolver or _org_principal_resolver(org.sessions)
     scoped: ASGIApp = _PrincipalScopeMiddleware(app, resolver)
     wrapped: ASGIApp = _HostAllowlistMiddleware(scoped, allowed_hosts)
-    return _SecurityHeadersMiddleware(wrapped)
+    return _SecurityHeadersMiddleware(wrapped, hsts=True)
 
 
 class WebServer:
@@ -710,11 +799,13 @@ class WebServer:
         # the direct successor of the old IPCServerThread's own ``_ready``
         # Event) blocks on to learn that loop.
         self._loop_ready = threading.Event()
-        allowed_hosts = frozenset({host, "127.0.0.1", "[::1]"})
+        # "::1" (not the bracketed "[::1]" a Host header would spell it
+        # as) -- _parse_host_header normalizes every incoming Host header
+        # the same way urlsplit's own .hostname does below, brackets
+        # stripped, so the allowlist has to speak that same bare form.
+        allowed_hosts = frozenset({host, "127.0.0.1", "::1"})
         if org is not None:
-            from urllib.parse import urlparse
-
-            issuer_host = urlparse(org.issuer_url).hostname
+            issuer_host = urlsplit(org.issuer_url).hostname
             if issuer_host:
                 allowed_hosts = allowed_hosts | {issuer_host}
         wrapped = build_app(
