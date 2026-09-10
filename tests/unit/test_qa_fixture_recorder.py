@@ -1263,3 +1263,51 @@ class TestRenderReport:
         assert "✅ pass" in report
         assert "❌ fail" in report
         assert "does not carry [QATEST]" in report
+
+
+# ---------------------------------------------------------------------------- #
+# Fixture presence -- the CI guard (TST-08, docs/security-remediation-plan.md
+# Phase 3.12): everything above runs against fakes/mocks and proves the
+# recorder's own logic, but nothing until this class ever looks at the
+# actual tests/fixtures/live/ files on disk that
+# tests/unit/connectors/test_*_connector.py's TestFieldCompleteness-style
+# assertions (docs/coding-and-testing-guidelines.md §2.6 item 5) depend on.
+# Without this, a fixture file could be deleted, truncated, or a new
+# connector added to CONNECTOR_CHECKS with no corresponding manifest entry,
+# and CI would stay green.
+# ---------------------------------------------------------------------------- #
+
+class TestFixturePresence:
+    def test_every_connector_check_has_a_fixture_manifest_entry(self):
+        # Catches drift in either direction: a check_<connector>() added to
+        # CONNECTOR_CHECKS with no EXPECTED_FIXTURES entry (so a missing
+        # fixture for it would never be caught below), or a manifest entry
+        # left behind for a connector no longer checked at all.
+        assert set(recorder.EXPECTED_FIXTURES) == set(recorder.CONNECTOR_CHECKS)
+
+    @pytest.mark.parametrize("connector", sorted(recorder.EXPECTED_FIXTURES))
+    def test_every_expected_fixture_file_exists_and_is_nonempty_valid_json(self, connector):
+        for filename in recorder.EXPECTED_FIXTURES[connector]:
+            path = recorder.FIXTURES_DIR / connector / filename
+            assert path.is_file(), f"missing recorded fixture: {path}"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            assert data, f"recorded fixture is empty: {path}"
+
+    def test_no_undocumented_fixture_files_are_silently_ignored(self):
+        # The inverse direction: a fixture file sitting on disk that no
+        # manifest entry names at all would never be missed by the test
+        # above (it only ever checks the files the manifest expects), so a
+        # stale/renamed file could accumulate unnoticed. Flat one-level-
+        # deep layout (connector/method.json) is assumed, matching how
+        # `run()` writes recorded fixtures.
+        on_disk = {
+            (connector_dir.name, fixture_file.name)
+            for connector_dir in recorder.FIXTURES_DIR.iterdir() if connector_dir.is_dir()
+            for fixture_file in connector_dir.glob("*.json")
+        }
+        expected = {
+            (connector, filename)
+            for connector, filenames in recorder.EXPECTED_FIXTURES.items()
+            for filename in filenames
+        }
+        assert on_disk == expected

@@ -201,38 +201,73 @@ class TestBuildSender:
 
 
 class TestAuditForwarder:
+    @pytest.mark.timeout(5)  # TST-11: bounded by its own internal Event.wait(timeout=2.0), not the 30s suite default
     def test_submit_delivers_payload_to_sender(self):
+        # TST-11 (docs/security-remediation-plan.md Phase 3.12): an Event
+        # the worker thread itself sets, waited on with a generous timeout,
+        # rather than polling calls in a fixed-interval loop for up to 1s --
+        # this resolves the instant the sender actually runs instead of on
+        # whichever of the 50 polls happens to land after it.
         calls = []
-        forwarder = af.AuditForwarder(calls.append)
+        delivered = threading.Event()
+
+        def sender(payload):
+            calls.append(payload)
+            delivered.set()
+
+        forwarder = af.AuditForwarder(sender)
         forwarder.submit({"event_id": "a"})
-        for _ in range(50):
-            if calls:
-                break
-            time.sleep(0.02)
+        assert delivered.wait(timeout=2.0), "sender was never called"
         forwarder.stop()
         assert calls == [{"event_id": "a"}]
 
+    @pytest.mark.timeout(5)  # TST-11: bounded by its own internal Event.wait(timeout=2.0), not the 30s suite default
     def test_full_queue_drops_without_raising(self, caplog):
-        forwarder = af.AuditForwarder(lambda payload: time.sleep(1), queue_size=1)
-        forwarder.submit({"event_id": "a"})  # picked up immediately by the worker thread
-        time.sleep(0.05)
-        forwarder.submit({"event_id": "b"})  # fills the queue
+        # The "picked up immediately by the worker thread" assumption below
+        # used to be a blind time.sleep(0.05) -- on a slow enough CI runner,
+        # nothing guaranteed the worker had actually dequeued "a" (freeing
+        # the size-1 queue's one slot) before "b" was submitted, which would
+        # make "b" (not "c") the one silently dropped. picked_up is set from
+        # inside the sender itself, the same synchronization point the old
+        # sleep was only ever guessing at.
+        picked_up = threading.Event()
+
+        def slow_sender(payload):
+            picked_up.set()
+            time.sleep(1)
+
+        forwarder = af.AuditForwarder(slow_sender, queue_size=1)
+        forwarder.submit({"event_id": "a"})
+        assert picked_up.wait(timeout=2.0), "worker never picked up the first entry"
+        forwarder.submit({"event_id": "b"})  # fills the now-empty queue
         with caplog.at_level("WARNING"):
             forwarder.submit({"event_id": "c"})  # queue full -- dropped
         forwarder.stop(timeout=0.1)
         assert "queue full" in caplog.text
 
-    def test_sender_exception_is_caught_and_logged(self, caplog):
+    @pytest.mark.timeout(5)  # TST-11: bounded by its own internal Event.wait(timeout=2.0), not the 30s suite default
+    def test_sender_exception_is_caught_and_logged(self, monkeypatch, caplog):
+        # Signals off logger.warning itself (via a spy), not off the sender
+        # raising -- the sender's exception and the warning that logs it
+        # happen in the same worker-thread call, but only the log call is
+        # actually what this test asserts on, so that's the one point to
+        # synchronize against.
+        logged = threading.Event()
+        original_warning = af.logger.warning
+
+        def spy_warning(*args, **kwargs):
+            original_warning(*args, **kwargs)
+            logged.set()
+
+        monkeypatch.setattr(af.logger, "warning", spy_warning)
+
         def failing_sender(payload):
             raise RuntimeError("boom")
 
         forwarder = af.AuditForwarder(failing_sender)
         with caplog.at_level("WARNING"):
             forwarder.submit({"event_id": "x"})
-            for _ in range(50):
-                if "boom" in caplog.text:
-                    break
-                time.sleep(0.02)
+            assert logged.wait(timeout=2.0), "warning was never logged"
         forwarder.stop()
         assert "boom" in caplog.text
 

@@ -2566,19 +2566,26 @@ class TestCancellation:
     generic "error" fallback.
     """
 
+    @pytest.mark.timeout(5)  # TST-11: bounded by its own internal Event.wait(timeout=2.0)s, not the 30s suite default
     async def test_cancellation_while_waiting_on_the_popup_records_cancelled(self, monkeypatch, audit_dir):
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((False, "")))
         monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         release = threading.Event()
+        # TST-11 (docs/security-remediation-plan.md Phase 3.12): started is
+        # set by slow_popup itself, the actual event this test needs to
+        # synchronize on -- a fixed sleep here was only ever guessing how
+        # long _run_in_popup_executor takes to actually reach slow_popup.
+        started = threading.Event()
 
         def slow_popup(*a, **k):
+            started.set()
             release.wait(timeout=2.0)
             return ("deny", None)
 
         monkeypatch.setattr(gate, "show_read_popup", slow_popup)
 
         task = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
-        await asyncio.sleep(0.05)  # let it reach _run_in_popup_executor
+        assert await wait_until_async(started.is_set, timeout=2.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -2587,6 +2594,7 @@ class TestCancellation:
         entries = read_audit_entries(audit_dir)
         assert entries[-1]["decision"] == "cancelled"
 
+    @pytest.mark.timeout(5)  # TST-11: bounded by its own internal Event.wait(timeout=2.0)s, not the 30s suite default
     async def test_cancellation_while_coalesced_onto_anothers_interaction_records_cancelled(
         self, monkeypatch, audit_dir,
     ):
@@ -2607,8 +2615,24 @@ class TestCancellation:
 
         driver = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
         assert await wait_until_async(lambda: bool(registry.list_pending()), timeout=2.0)
+
+        # TST-11 (docs/security-remediation-plan.md Phase 3.12): a spy on
+        # the real registry.wait_async -- called only after the coalesced
+        # call has found the existing approval and started waiting on it --
+        # replaces a fixed sleep that was only ever guessing when the event
+        # loop would actually get around to running the freshly created
+        # task that far.
+        entered_wait = threading.Event()
+        original_wait_async = registry.wait_async
+
+        async def spy_wait_async(approval, timeout):
+            entered_wait.set()
+            return await original_wait_async(approval, timeout)
+
+        monkeypatch.setattr(registry, "wait_async", spy_wait_async)
+
         coalesced = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
-        await asyncio.sleep(0.02)  # let it coalesce and start waiting
+        assert await wait_until_async(entered_wait.is_set, timeout=2.0)
         coalesced.cancel()
         with pytest.raises(asyncio.CancelledError):
             await coalesced
@@ -2651,6 +2675,7 @@ class TestRunInPopupExecutor:
 
         assert seen["thread"].startswith("pf-popup")
 
+    @pytest.mark.timeout(5)  # TST-11: bounded by its own internal Event.wait(timeout=2.0)s, not the 30s suite default
     async def test_stays_prompt_while_the_default_to_thread_pool_is_saturated(self):
         # The scenario this executor exists for: a handful of slow
         # connector calls (a Slack rate-limit retry sleeping out
@@ -2659,12 +2684,33 @@ class TestRunInPopupExecutor:
         # not queue behind them.
         default_pool_size = min(32, (__import__("os").cpu_count() or 1) + 4)
         release = threading.Event()
+        # TST-11 (docs/security-remediation-plan.md Phase 3.12): all_started
+        # fires only once every occupier has actually begun running (not
+        # merely been submitted to the pool) -- a fixed sleep here was only
+        # ever guessing how long the default pool takes to schedule all of
+        # them, on whatever machine happens to run this test.
+        started_count = 0
+        started_lock = threading.Lock()
+        all_started = threading.Event()
 
         def occupy_a_worker():
+            nonlocal started_count
+            with started_lock:
+                started_count += 1
+                if started_count == default_pool_size:
+                    all_started.set()
             release.wait(timeout=2.0)
 
-        occupiers = [asyncio.to_thread(occupy_a_worker) for _ in range(default_pool_size)]
-        await asyncio.sleep(0.05)  # let every occupier actually start running
+        # asyncio.create_task (not a bare asyncio.to_thread(...) coroutine
+        # object, which doesn't run at all until awaited/gathered) so every
+        # occupier is actually scheduled now, not only once the finally
+        # block below gets around to gathering them -- a real, pre-existing
+        # gap in this test found while replacing its old fixed sleep:
+        # without this, the occupiers never even started before the popup
+        # dispatch below, so the "saturated pool" this test is meant to
+        # prove against wasn't actually saturated yet.
+        occupiers = [asyncio.create_task(asyncio.to_thread(occupy_a_worker)) for _ in range(default_pool_size)]
+        assert await wait_until_async(all_started.is_set, timeout=2.0)
 
         def popup():
             return "still responsive"
