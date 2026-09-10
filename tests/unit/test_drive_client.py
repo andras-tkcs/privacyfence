@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import ssl
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -302,6 +303,29 @@ class TestListFolder:
         client.list_folder("folder-1")
         call_kwargs = service.files.return_value.list.call_args.kwargs
         assert call_kwargs["q"] == "'folder-1' in parents and trashed = false"
+
+    def test_http_error_becomes_drive_client_error(self):
+        service = MagicMock()
+        service.files.return_value.list.return_value.execute.side_effect = http_error(500)
+        client = make_client(service)
+        with pytest.raises(DriveClientError, match="list_folder"):
+            client.list_folder("folder-1")
+
+    def test_transport_failure_below_http_error_becomes_drive_client_error(self):
+        # Regression: a TLS/connection failure below the HTTP layer (observed
+        # in practice as `ssl.SSLError: EOF occurred in violation of
+        # protocol`) is raised by httplib2 as a plain ssl.SSLError, not an
+        # HttpError -- catching only HttpError let it leak past this client,
+        # past connectors/drive.py's own DriveClientError-only `_fetch`, and
+        # out to the MCP caller as an untyped exception instead of a message
+        # naming the call that failed. See DriveClientError's own docstring.
+        service = MagicMock()
+        service.files.return_value.list.return_value.execute.side_effect = ssl.SSLError(
+            "EOF occurred in violation of protocol (_ssl.c:2427)"
+        )
+        client = make_client(service)
+        with pytest.raises(DriveClientError, match="list_folder"):
+            client.list_folder("folder-1")
 
 
 # ---------------------------------------------------------------------------- #

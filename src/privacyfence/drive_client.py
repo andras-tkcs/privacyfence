@@ -30,7 +30,6 @@ from google.auth.transport.requests import AuthorizedSession, Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
 from .secure_files import atomic_write_text
@@ -1098,7 +1097,24 @@ def _cell_format_summary(fmt: dict) -> dict:
 
 
 class DriveClientError(Exception):
-    """Raised for unrecoverable Drive client problems (auth, config, API)."""
+    """Raised for unrecoverable Drive client problems (auth, config, API).
+
+    Every public method below wraps its Google API call(s) in ``except
+    Exception as exc: raise DriveClientError(...) from exc`` -- deliberately
+    broader than ``except HttpError``, which only covers a response the API
+    actually returned. A transport-level failure below that layer (TLS
+    handshake dropped mid-response, connection reset, DNS hiccup -- observed
+    in practice as ``ssl.SSLError: EOF occurred in violation of protocol``)
+    surfaces from httplib2 as a plain ``ssl.SSLError``/``OSError``, not an
+    ``HttpError``, so catching only ``HttpError`` let it leak past this
+    client as a raw, untyped exception -- past connectors/drive.py's own
+    ``_fetch`` (which only catches ``DriveClientError``, per
+    docs/coding-and-testing-guidelines.md §1.4) and out to routes_mcp.py's
+    generic handler, landing the caller with the unhelpful boilerplate
+    ``safe_errors.GENERIC_PUBLIC_MESSAGE`` instead of a message naming the
+    call that actually failed. Each ``try`` block here is scoped tightly to
+    just the request-building/``.execute()`` chain, so the extra breadth
+    costs nothing beyond what ``except HttpError`` already accepted."""
 
 
 @dataclass
@@ -1265,7 +1281,7 @@ class DriveClient:
         """Verify the credentials work. Returns the authorized email address."""
         try:
             about = self._get_service().about().get(fields="user").execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"Drive connection check failed: {exc}") from exc
         email = about.get("user", {}).get("emailAddress", "unknown")
         logger.info("Connected to Drive as %s", email)
@@ -1294,7 +1310,7 @@ class DriveClient:
                 )
                 .execute()
             )
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"list_files failed: {exc}") from exc
 
         files = [self._parse_file(f) for f in response.get("files", [])]
@@ -1312,7 +1328,7 @@ class DriveClient:
                 .get(fileId=file_id, fields=_FILE_FIELDS, supportsAllDrives=True)
                 .execute()
             )
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"get_file_metadata({file_id}) failed: {exc}"
             ) from exc
@@ -1372,7 +1388,7 @@ class DriveClient:
                     fileId=file_id, supportsAllDrives=True
                 )
             data = self._download(request, max_bytes)
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"get_file_content({file_id}) failed: {exc}"
             ) from exc
@@ -1419,7 +1435,7 @@ class DriveClient:
         docs_service = self._get_docs_service()
         try:
             doc = docs_service.documents().get(documentId=file_id).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"get_file_content({file_id}) failed: {exc}"
             ) from exc
@@ -1598,7 +1614,7 @@ class DriveClient:
                 )
                 .execute()
             )
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"list_folder({folder_id}) failed: {exc}") from exc
 
         files = [self._parse_file(f) for f in response.get("files", [])]
@@ -1622,7 +1638,7 @@ class DriveClient:
                 .create(body=body, fields=_FILE_FIELDS, supportsAllDrives=True)
                 .execute()
             )
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"create_blank_file failed: {exc}") from exc
         logger.info("create_blank_file: id=%s name=%s", result.get("id"), name)
         return {"id": result.get("id", ""), "name": name, "mime_type": mime_type}
@@ -1686,7 +1702,7 @@ class DriveClient:
                 .create(body=body, media_body=media, fields=_FILE_FIELDS, supportsAllDrives=True)
                 .execute()
             )
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"upload_file({resolved_name}) failed: {exc}") from exc
 
         parsed = self._parse_file(result)
@@ -1720,7 +1736,7 @@ class DriveClient:
                 )
                 .execute()
             )
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"write_file_content({file_id}) failed: {exc}") from exc
         logger.info("write_file_content: file_id=%s", file_id)
         return {"file_id": result.get("id", file_id), "modified_time": result.get("modifiedTime", "")}
@@ -1747,7 +1763,7 @@ class DriveClient:
         docs_service = self._get_docs_service()
         try:
             doc = docs_service.documents().get(documentId=file_id).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"write_doc_rich_content get({file_id}) failed: {exc}"
             ) from exc
@@ -1789,7 +1805,7 @@ class DriveClient:
                 docs_service.documents().batchUpdate(
                     documentId=file_id, body={"requests": requests}
                 ).execute()
-            except HttpError as exc:
+            except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
                 raise DriveClientError(
                     f"write_doc_rich_content batchUpdate({file_id}) failed: {exc}"
                 ) from exc
@@ -1828,7 +1844,7 @@ class DriveClient:
         """
         try:
             doc = docs_service.documents().get(documentId=file_id).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"{caller} table lookup({file_id}) failed: {exc}"
             ) from exc
@@ -1852,14 +1868,14 @@ class DriveClient:
             docs_service.documents().batchUpdate(
                 documentId=file_id, body={"requests": structure_requests}
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"{caller} table insert({file_id}) failed: {exc}"
             ) from exc
 
         try:
             doc = docs_service.documents().get(documentId=file_id).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"{caller} table lookup({file_id}) failed: {exc}"
             ) from exc
@@ -1902,7 +1918,7 @@ class DriveClient:
                 docs_service.documents().batchUpdate(
                     documentId=file_id, body={"requests": fill_requests}
                 ).execute()
-            except HttpError as exc:
+            except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
                 raise DriveClientError(
                     f"{caller} table fill({file_id}) failed: {exc}"
                 ) from exc
@@ -1946,7 +1962,7 @@ class DriveClient:
         docs_service = self._get_docs_service()
         try:
             doc = docs_service.documents().get(documentId=file_id).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"edit_doc_content get({file_id}) failed: {exc}") from exc
 
         plain_text, runs = _docs_plain_text_with_index_map(doc)
@@ -1988,7 +2004,7 @@ class DriveClient:
             docs_service.documents().batchUpdate(
                 documentId=file_id, body={"requests": requests}
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"edit_doc_content batchUpdate({file_id}) failed: {exc}") from exc
 
         # Same reasoning as write_doc_rich_content: each table is a
@@ -2047,7 +2063,7 @@ class DriveClient:
         docs_service = self._get_docs_service()
         try:
             doc = docs_service.documents().get(documentId=file_id).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"format_doc_content get({file_id}) failed: {exc}") from exc
 
         plain_text, runs = _docs_plain_text_with_index_map(doc)
@@ -2080,7 +2096,7 @@ class DriveClient:
             docs_service.documents().batchUpdate(
                 documentId=file_id, body={"requests": requests}
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"format_doc_content batchUpdate({file_id}) failed: {exc}") from exc
 
         logger.info(
@@ -2098,7 +2114,7 @@ class DriveClient:
             file_meta = service.files().get(
                 fileId=file_id, fields="parents", supportsAllDrives=True
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"move_file get_parents({file_id}) failed: {exc}") from exc
         current_parents = ",".join(file_meta.get("parents", []))
         try:
@@ -2109,7 +2125,7 @@ class DriveClient:
                 fields="id,parents",
                 supportsAllDrives=True,
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"move_file({file_id}) failed: {exc}") from exc
         logger.info("move_file: file_id=%s dest=%s", file_id, destination_folder_id)
         return {"file_id": file_id, "new_parent": destination_folder_id}
@@ -2125,7 +2141,7 @@ class DriveClient:
                 .create(fileId=file_id, body={"content": comment}, fields="id,content")
                 .execute()
             )
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"add_comment({file_id}) failed: {exc}") from exc
         logger.info("add_comment: file_id=%s comment_id=%s", file_id, result.get("id"))
         return {"file_id": file_id, "comment_id": result.get("id", ""), "content": comment}
@@ -2140,7 +2156,7 @@ class DriveClient:
                 .list(pageSize=max_results, fields="drives(id,name,kind)")
                 .execute()
             )
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"list_shared_drives failed: {exc}") from exc
         drives = response.get("drives", [])
         logger.info("list_shared_drives returned %d drives", len(drives))
@@ -2183,7 +2199,7 @@ class DriveClient:
             result = service.spreadsheets().create(
                 body=body, fields="spreadsheetId,properties.title,spreadsheetUrl"
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"create_spreadsheet({name}) failed: {exc}") from exc
 
         spreadsheet_id = result.get("spreadsheetId", "")
@@ -2205,7 +2221,7 @@ class DriveClient:
             result = service.spreadsheets().get(
                 spreadsheetId=spreadsheet_id, fields="sheets.properties"
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"list_sheets({spreadsheet_id}) failed: {exc}") from exc
         sheets = []
         for s in result.get("sheets", []):
@@ -2247,7 +2263,7 @@ class DriveClient:
             result = service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id, range=range_a1, valueRenderOption=render_option
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"get_sheet_values({spreadsheet_id}, {range_a1}) failed: {exc}"
             ) from exc
@@ -2283,7 +2299,7 @@ class DriveClient:
             result = service.spreadsheets().get(
                 spreadsheetId=spreadsheet_id, ranges=[range_a1], fields=fields
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"get_sheet_formatting({spreadsheet_id}, {range_a1}) failed: {exc}"
             ) from exc
@@ -2314,7 +2330,7 @@ class DriveClient:
                 valueInputOption=value_input_option,
                 body={"values": values},
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"write_sheet_values({spreadsheet_id}, {range_a1}) failed: {exc}"
             ) from exc
@@ -2345,7 +2361,7 @@ class DriveClient:
             result = service.spreadsheets().batchUpdate(
                 spreadsheetId=spreadsheet_id, body={"requests": [request]}
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(f"add_sheet({spreadsheet_id}, {title}) failed: {exc}") from exc
         props = result["replies"][0]["addSheet"]["properties"]
         logger.info("add_sheet: spreadsheet=%s sheet_id=%s title=%s", spreadsheet_id, props.get("sheetId"), title)
@@ -2368,7 +2384,7 @@ class DriveClient:
             service.spreadsheets().batchUpdate(
                 spreadsheetId=spreadsheet_id, body={"requests": [request]}
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"rename_sheet({spreadsheet_id}, {sheet_id}) failed: {exc}"
             ) from exc
@@ -2415,7 +2431,7 @@ class DriveClient:
             service.spreadsheets().batchUpdate(
                 spreadsheetId=spreadsheet_id, body={"requests": [request]}
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"insert_dimensions({spreadsheet_id}, {sheet_id}) failed: {exc}"
             ) from exc
@@ -2454,7 +2470,7 @@ class DriveClient:
             service.spreadsheets().batchUpdate(
                 spreadsheetId=spreadsheet_id, body={"requests": [request]}
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"delete_dimensions({spreadsheet_id}, {sheet_id}) failed: {exc}"
             ) from exc
@@ -2594,7 +2610,7 @@ class DriveClient:
             service.spreadsheets().batchUpdate(
                 spreadsheetId=spreadsheet_id, body={"requests": requests}
             ).execute()
-        except HttpError as exc:
+        except Exception as exc:  # noqa: BLE001 -- see DriveClientError's docstring
             raise DriveClientError(
                 f"format_sheet_range({spreadsheet_id}, {range_a1}) failed: {exc}"
             ) from exc
