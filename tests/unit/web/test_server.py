@@ -12,11 +12,13 @@ from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
 from privacyfence.principal import LOCAL_PRINCIPAL_ID, Principal, current_principal
+from privacyfence.web.csp import build_csp
 from privacyfence.web.server import (
     DEFAULT_PORT,
     WebServer,
     _parse_host_header,
     _PrincipalScopeMiddleware,
+    _SecurityHeadersMiddleware,
     build_app,
     load_or_create_token,
 )
@@ -270,6 +272,92 @@ class TestCacheControlOnSensitivePages:
         r = TestClient(app, base_url="http://localhost").get("/approvals")
         assert r.status_code == 401
         assert r.headers.get("cache-control") == "no-store"
+
+
+class TestCspNonce:
+    """SEC-08 (docs/security-remediation-plan.md Phase 3.1)."""
+
+    def _client(self):
+        sessions = LocalSessionStore()
+        app = build_app(WebApprovalUI(), token=TOKEN, sessions=sessions)
+        client = TestClient(app, base_url="http://localhost")
+        _signed_in(client, sessions)
+        return client
+
+    def test_script_src_and_style_src_elem_carry_a_nonce_not_unsafe_inline(self):
+        r = self._client().get("/approvals")
+        csp = r.headers.get("content-security-policy", "")
+        directives = dict(part.strip().split(" ", 1) for part in csp.split(";") if part.strip())
+        assert "'nonce-" in directives["script-src"]
+        assert "unsafe-inline" not in directives["script-src"]
+        assert "'nonce-" in directives["style-src-elem"]
+        assert "unsafe-inline" not in directives["style-src-elem"]
+        # style-src-attr keeps 'unsafe-inline' deliberately -- see
+        # web/csp.py's own module docstring for why.
+        assert directives["style-src-attr"] == "'unsafe-inline'"
+
+    def test_object_src_and_frame_src_allow_data_uris(self):
+        r = self._client().get("/approvals")
+        csp = r.headers.get("content-security-policy", "")
+        directives = dict(part.strip().split(" ", 1) for part in csp.split(";") if part.strip())
+        assert directives["object-src"] == "data:"
+        assert directives["frame-src"] == "data:"
+
+    def test_nonce_differs_across_separate_requests(self):
+        client = self._client()
+        first = client.get("/approvals").headers["content-security-policy"]
+        second = client.get("/approvals").headers["content-security-policy"]
+        assert first != second
+
+    def test_body_style_and_script_tags_carry_the_response_own_nonce(self):
+        r = self._client().get("/approvals")
+        csp = r.headers.get("content-security-policy", "")
+        nonce = next(
+            part.split("'nonce-", 1)[1].rstrip("'") for part in csp.split(";") if part.strip().startswith("script-src")
+        )
+        assert f'<style nonce="{nonce}">' in r.text
+        assert f'<script nonce="{nonce}">' in r.text
+
+
+class TestSecurityHeadersMiddlewareReplacesNotExtends:
+    """SEC-08 (docs/security-remediation-plan.md Phase 3.1): the middleware
+    used to blindly append its fixed header set, which would have emitted
+    *two* headers of the same name if the wrapped app already set one of
+    them -- this proves it overrides instead."""
+
+    async def _app(self, scope, receive, send):
+        response = JSONResponse({"ok": True}, headers={
+            "X-Frame-Options": "ALLOWALL",
+            "Content-Security-Policy": "default-src *",
+        })
+        await response(scope, receive, send)
+
+    def test_conflicting_headers_from_the_app_are_overridden_not_duplicated(self):
+        app = _SecurityHeadersMiddleware(self._app)
+        client = TestClient(app, base_url="http://localhost")
+        r = client.get("/")
+        assert r.headers.get_list("x-frame-options") == ["DENY"]
+        csp_values = r.headers.get_list("content-security-policy")
+        assert len(csp_values) == 1
+        assert csp_values[0] != "default-src *"
+        assert "default-src 'none'" in csp_values[0]
+
+
+class TestBuildCsp:
+    def test_same_nonce_appears_in_every_nonce_source(self):
+        csp = build_csp("the-nonce")
+        assert csp.count("'nonce-the-nonce'") == 2  # script-src, style-src-elem
+
+    def test_no_bare_style_src_directive(self):
+        # A bare 'style-src' would silently win over style-src-elem/attr in
+        # browsers that don't support the split subdirectives, re-opening
+        # exactly the hole this policy means to close -- see web/csp.py's
+        # own module docstring.
+        csp = build_csp("n")
+        directive_names = [part.strip().split(" ", 1)[0] for part in csp.split(";") if part.strip()]
+        assert "style-src" not in directive_names
+        assert "style-src-elem" in directive_names
+        assert "style-src-attr" in directive_names
 
 
 class TestToken:
