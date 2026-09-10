@@ -40,6 +40,7 @@ instance of.
 - [8. First sign-in and connecting a service](#8-first-sign-in-and-connecting-a-service)
 - [9. Connecting Claude](#9-connecting-claude)
 - [10. Day-to-day admin](#10-day-to-day-admin)
+- [11. Centralized audit-log forwarding (optional)](#11-centralized-audit-log-forwarding-optional)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -582,6 +583,62 @@ other).
   doc's "Encryption at rest" section), so this is belt-and-suspenders on top of that guarantee, not
   a substitute for it — but it's a cheap thing to ask your backup tooling for, and it keeps a stale
   backup snapshot from being a second place a "deleted" staged file's ciphertext lingers.
+
+---
+
+## 11. Centralized audit-log forwarding (optional)
+
+By default, org mode's audit log (§10's "Logs" bullet points at the daemon's own application log —
+this is the separate decision trail: `journalctl` doesn't see it) is a local file on this server:
+`~/.privacyfence/users/<id>/logs/audit/*.jsonl`, one directory per principal, each with its own
+append-integrity hash chain (see [`TECHNICAL_REFERENCE.md`'s "Audit log"
+section](TECHNICAL_REFERENCE.md#audit-log)). That's already tamper-*evident* — an edit made after
+the fact breaks the chain — but it's still nothing outside this server until someone exports or
+copies it. `org_config.json`'s `audit_forwarding` section additionally streams every entry,
+best-effort and off the decision path, to a syslog server or a generic HTTPS/JSON webhook as it's
+recorded — a genuine second copy outside this server's own trust boundary, which is what actually
+protects the trail against a compromise of (or a rogue administrator on) this specific machine.
+
+Two transports, picked with `--audit-forwarding-kind`:
+
+- **`syslog`** (the default) — RFC 5424 messages, sent over UDP or TCP (`--audit-forwarding-
+  syslog-protocol`) to `--audit-forwarding-syslog-host`/`--audit-forwarding-syslog-port` (default
+  6514, the IANA syslog-**tls** port). This daemon does **not** speak TLS itself for this
+  connection — same reverse-proxy-terminates-TLS posture as HTTPS in [§6](#6-put-caddy-in-front-of-it),
+  just with the roles reversed: put a local relay in front of your real collector (`stunnel`, or
+  `syslog-ng`/`rsyslog` with a TLS-terminating forward rule) and point `--audit-forwarding-syslog-host`
+  at `127.0.0.1` and that relay's plaintext listener port, rather than sending audit entries over
+  the network unencrypted.
+- **`http`** — one HTTPS POST per entry (JSON body) to `--audit-forwarding-http-url`, with an
+  optional bearer token via `--audit-forwarding-http-bearer-token-env NAME`. This works with any
+  collector that accepts webhook/HTTP-JSON log ingestion — Splunk HEC, Datadog's Logs API, an
+  Elastic ingest pipeline, an OTLP-over-HTTP/JSON log receiver — not just one specific vendor. The
+  URL must be `https://`; a plain `http://` URL is rejected at build time.
+
+Build (or `--merge` into) the bundle exactly as in [§5](#5-build-the-organization-config-bundle):
+
+```bash
+python3 scripts/build_org_bundle.py --merge -o org_config.json \
+    --enable-audit-forwarding --audit-forwarding-kind syslog \
+    --audit-forwarding-syslog-host 127.0.0.1 --audit-forwarding-syslog-port 601 \
+    --audit-forwarding-syslog-protocol tcp \
+    --sign-key /path/to/your/signing-key.pem
+```
+
+then redeploy it (§5's last step) and restart the service. `--audit-forwarding-http-bearer-token-env`
+names an environment variable this daemon's own process reads *at send time* — nothing in
+`org_config.json` itself carries the token. Set it in the systemd unit ([§7](#7-run-privacyfence-as-a-service)),
+not on the command line or in a file this daemon reads back some other way:
+
+```ini
+[Service]
+Environment=SIEM_BEARER_TOKEN=your-collector-token-here
+```
+
+Forwarding never blocks or loses a decision: a collector that's down or unreachable just means
+that entry never arrives centrally — it's still on this server's disk, with its own hash-chain
+entry, regardless. `--disable-audit-forwarding` (with `--merge`) turns it back off without
+disturbing anything else in the bundle.
 
 ---
 

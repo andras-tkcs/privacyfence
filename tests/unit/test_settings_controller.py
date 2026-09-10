@@ -289,6 +289,39 @@ class TestConfigHelpers:
 
         controller._save_config({"a": 1})  # must not raise
 
+    def test_save_config_updates_audit_logger_security_config_hash(self, controller):
+        # SEC-23: every settings.yaml write is a privacy-policy change, so
+        # the audit log's per-decision fingerprint (AuditEntry.
+        # security_config_hash) must move with it.
+        from privacyfence.audit_log import compute_security_config_hash, get_audit_logger
+
+        cfg = {"privacy": {"gmail": "block"}}
+        controller._save_config(cfg)
+
+        assert get_audit_logger()._security_config_hash == compute_security_config_hash(cfg)
+
+    def test_save_config_does_not_update_hash_when_write_fails(self, controller, monkeypatch):
+        from privacyfence.audit_log import get_audit_logger
+
+        get_audit_logger().set_security_config_hash("unchanged")
+        monkeypatch.setattr(
+            sc, "atomic_write_text", lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        controller._save_config({"a": 1})
+
+        assert get_audit_logger()._security_config_hash == "unchanged"
+
+    def test_save_config_hash_update_failure_is_logged_not_raised(self, controller, monkeypatch):
+        from privacyfence.audit_log import AuditLogger
+
+        monkeypatch.setattr(
+            AuditLogger, "set_security_config_hash",
+            lambda self, value: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        controller._save_config({"a": 1})  # must not raise
+
     def test_save_and_reload_persists_and_triggers_rule_reload(self, controller, monkeypatch):
         reload_calls = []
         monkeypatch.setattr(sc, "reload_rules", lambda rules: reload_calls.append(rules))
