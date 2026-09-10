@@ -2151,13 +2151,17 @@ class TestRunApp:
         # pre-migration one Claude/the caller originally passed in.
         assert len(reloaded) == 1
 
-    def test_rule_suggestion_priority_is_ignored_and_logged(self, monkeypatch, tmp_path, caplog):
-        # Issue #151: every matching auto-accept rule now gets its own
-        # "Always allow" button, so there's nothing left to prioritize or
-        # exclude -- a pre-existing rule_suggestion_priority block in a
-        # user's settings.yaml must still load without error (ignored,
-        # logged), same forward-compatible "unknown key is inert" posture
-        # used elsewhere.
+    def test_stale_rule_suggestion_priority_key_is_silently_ignored(self, monkeypatch, tmp_path, caplog):
+        # Issue #151 retired the settings.yaml-configurable
+        # rule_suggestion_priority (every matching auto-accept rule now gets
+        # its own "Always allow" button, so there's nothing left to
+        # prioritize or exclude). The dedicated "ignoring this key" log
+        # notice that once called this out by name was itself removed at
+        # docs/security-remediation-plan.md Phase 3 PR3.9 (ORP-04) -- a
+        # pre-existing rule_suggestion_priority block in a user's
+        # settings.yaml must still load without error, now via the same
+        # silent "unknown key is inert" handling as any other retired key,
+        # not a dedicated call-out.
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
         monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
         self._patch_common(monkeypatch)
@@ -2165,17 +2169,6 @@ class TestRunApp:
         config = {"rule_suggestion_priority": {"drive_read": ["approved_folder", "i_am_owner"]}}
         with caplog.at_level(logging.INFO):
             result = daemon_main.run_app(config, str(tmp_path / "settings.yaml"))
-
-        assert result == 0
-        assert "rule_suggestion_priority is no longer used" in caplog.text
-
-    def test_no_rule_suggestion_priority_logs_nothing_about_it(self, monkeypatch, tmp_path, caplog):
-        monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
-        monkeypatch.setattr(daemon_main, "_release_instance_lock", lambda: None)
-        self._patch_common(monkeypatch)
-
-        with caplog.at_level(logging.INFO):
-            result = daemon_main.run_app({}, str(tmp_path / "settings.yaml"))
 
         assert result == 0
         assert "rule_suggestion_priority" not in caplog.text

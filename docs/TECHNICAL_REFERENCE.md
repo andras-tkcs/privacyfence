@@ -1009,7 +1009,7 @@ on screen, walked in the fixed declaration order above — not a single top-prio
 configurable (there used to be a `rule_suggestion_priority` `settings.yaml` key controlling this;
 it's gone, since once every match gets its own button there's nothing left to prioritize or
 exclude — a pre-existing `rule_suggestion_priority` block in an older `settings.yaml` still loads
-without error, it's just logged and ignored). An item matching only one candidate still shows
+without error, it's just silently ignored like any other retired settings key). An item matching only one candidate still shows
 exactly one button, identical to every other single-candidate operation. An item matching 2+
 candidates shows one button per match, in their own
 row above Deny/Allow once — clicking any one of them goes straight to that rule's own
