@@ -74,6 +74,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from .. import org_identity
 from ..org_identity import IdpConfig
+from ..org_mode import AuthzPolicyConfig
 from ..principal import Principal
 from ..secure_files import atomic_write_json
 
@@ -212,9 +213,13 @@ class OrgOAuthProvider:
     bearer-auth middleware via ``verify_token``.
     """
 
-    def __init__(self, idp: IdpConfig, *, idp_callback_url: str) -> None:
+    def __init__(self, idp: IdpConfig, *, idp_callback_url: str, policy: AuthzPolicyConfig | None = None) -> None:
         self._idp = idp
         self._idp_callback_url = idp_callback_url
+        # SEC-22: layered on top of the IdP dance below, same as web/
+        # routes_org_identity.py's browser login -- see org_identity.
+        # check_authz_policy's own docstring. Absent/disabled by default.
+        self._policy = policy or AuthzPolicyConfig()
         self._clients_path = Path(_clients_file_path())
         self._lock = threading.Lock()
         self._clients: dict[str, _StoredClient] = self._load_clients()
@@ -383,6 +388,12 @@ class OrgOAuthProvider:
             raise ValueError("IdP token response carried no id_token")
         claims = await asyncio.to_thread(org_identity.verify_id_token, self._idp, id_token, nonce=pending.idp_nonce)
         principal = org_identity.principal_from_claims(claims, self._idp)
+        # SEC-22: raises AuthorizationDenied (a plain exception, like every
+        # other failure in this IdP leg) when the org's own allowlist
+        # rejects an otherwise-legitimate IdP-authenticated principal --
+        # web/routes_mcp.py's idp_callback route already wraps this whole
+        # call in a catch-all that logs and returns a generic failure.
+        org_identity.check_authz_policy(principal, claims, self._policy)
 
         own_code = secrets.token_urlsafe(32)
         with self._lock:

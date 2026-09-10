@@ -32,6 +32,7 @@ from starlette.routing import Route
 
 from .. import org_identity
 from ..org_identity import IdpConfig
+from ..org_mode import AuthzPolicyConfig
 from . import org_session
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ def _safe_next_path(raw: str | None, *, default: str = DEFAULT_NEXT_PATH) -> str
 
 def build_routes(
     *, idp: IdpConfig, sessions: org_session.OrgSessionStore, base_url: str,
-    default_next_path: str = DEFAULT_NEXT_PATH,
+    default_next_path: str = DEFAULT_NEXT_PATH, policy: AuthzPolicyConfig | None = None,
 ) -> list[Route]:
     """``base_url`` is this daemon's own externally-reachable origin (org
     mode's configured issuer/server URL) -- the redirect_uri PrivacyFence
@@ -134,7 +135,14 @@ def build_routes(
     ``_build_org_app`` passes ``"/connect"`` (P8's own new per-principal
     connections page) here; every other/older caller keeps the original
     default unchanged.
+
+    ``policy`` (SEC-22) is checked against every claims/principal a login
+    attempt resolves, on top of the IdP's own authentication -- absent
+    (the default, an unconfigured/disabled ``AuthzPolicyConfig``), every
+    IdP-authenticated principal is admitted, exactly as before this
+    landed.
     """
+    policy = policy or AuthzPolicyConfig()
     attempts = _LoginAttemptStore()
     redirect_uri = f"{base_url.rstrip('/')}{LOGIN_CALLBACK_PATH}"
 
@@ -166,7 +174,8 @@ def build_routes(
                 raise ValueError("IdP token response carried no id_token")
             claims = await asyncio.to_thread(org_identity.verify_id_token, idp, id_token, nonce=attempt.nonce)
             principal = org_identity.principal_from_claims(claims, idp)
-        except Exception as exc:  # noqa: BLE001 -- any IdP-side failure ends the same way: sign-in didn't complete
+            org_identity.check_authz_policy(principal, claims, policy)
+        except Exception as exc:  # noqa: BLE001 -- an IdP failure or SEC-22 policy denial: sign-in didn't complete
             logger.warning("Org sign-in failed: %s", exc)
             return PlainTextResponse("Sign-in failed. Please try again.", status_code=400)
         session_id = sessions.create(principal)
