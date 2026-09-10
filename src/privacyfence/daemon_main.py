@@ -1269,17 +1269,15 @@ def run_app(config: dict[str, Any], config_path: str) -> int:
             logger.warning("Could not persist auto-accept config migration: %s", exc)
 
     reload_rules(build_effective_rules(config))
-    if "rule_suggestion_priority" in config:
-        # Issue #151: every matching auto-accept rule now gets its own
-        # "Always allow" button, so there's nothing left to prioritize or
-        # exclude -- same forward-compatible "unknown key is inert" posture
-        # used elsewhere, not a dedicated migration (nothing to migrate
-        # *to*). A pre-existing settings.yaml with this key still loads
-        # without error; it's just never consulted again.
-        logger.info(
-            "rule_suggestion_priority is no longer used -- every matching rule now gets its own "
-            "\"Always allow\" button. Ignoring this settings.yaml key."
-        )
+    # Issue #151 retired the settings.yaml-configurable rule_suggestion_priority
+    # (every matching auto-accept rule now gets its own "Always allow" button, so
+    # there's nothing left to prioritize or exclude) and this function logged an
+    # explicit "ignoring this key" notice for anyone with a pre-existing config
+    # block for it. That notice has served its purpose (docs/security-
+    # remediation-plan.md Phase 3 PR3.9, ORP-04) and is gone -- a leftover
+    # rule_suggestion_priority block in an old settings.yaml now falls through to
+    # the same silent "unknown key is inert" handling as any other retired
+    # settings.yaml key, per auto_accept.py's SUGGESTION_FAMILIES comment.
     pii_config = config.get("pii_detection", {}) or {}
     init_pii_detection(
         pii_config.get("enabled", True),
