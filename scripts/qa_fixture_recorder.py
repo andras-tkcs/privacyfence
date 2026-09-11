@@ -1470,8 +1470,20 @@ LIFECYCLE_TAG = "[QATEST-LIFECYCLE]"
 # delay. Jira doesn't get this treatment -- it has shown no such delay here,
 # and retrying would only mask a real cleanup failure. Confluence never
 # calls _confirm_deleted at all; see lifecycle_confluence's own docstring.
-_EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS = 4
-_EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS = 1.0
+#
+# 4 attempts * 1.0s (a ~3s retry window) was the original budget here, but
+# https://github.com/privacyfence/privacyfence/actions/runs/34632070157
+# still reported "cleanup call succeeded but the object still exists
+# afterward" for both calendar and tasks on that budget -- this is not a
+# permission problem (the delete call itself never raised; both connectors'
+# OAuth scopes, calendar_client.SCOPES/tasks_client.SCOPES, are the
+# full-access, non-readonly scope, which includes delete) but propagation
+# that, on this runner, sometimes outlasts 3 seconds. Widened to a ~27s
+# window (10 attempts * 3.0s) -- generous relative to how rarely this
+# actually needs more than a couple of retries, but this job's 20-minute
+# timeout (connector-live-check.yml) has ample room for the rare slow case.
+_EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS = 10
+_EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS = 3.0
 
 
 class LifecycleResult:
