@@ -1,110 +1,53 @@
-# Dev vs. Live Setup (Two-Account Guide)
+# Dev vs. live setup
 
-How to run a source/test build of PrivacyFence on one macOS account and a
-real, GitHub-release build on another, without either one interfering with
-the other.
+Use separate state for source development and packaged/release testing so connector credentials, MCP discovery, configuration, and daemon processes do not interfere with each other.
 
-## Why two accounts is enough
+## State locations
 
-Everything PrivacyFence stores is scoped to `~/.privacyfence` on whichever
-macOS account runs it: credentials, the `/mcp` connection info
-(`~/.privacyfence/mcp_url`, `mcp_token`, and `web_token`, always these paths
-regardless of dev/bundled — see `src/privacyfence/web/server.py` and
-`web/mcp_auth.py`), and the LaunchAgent. Two separate accounts never see each
-other's daemon, token, credentials, or Claude MCP config — no extra isolation
-config needed for any of those.
+`src/privacyfence/paths.py` is authoritative.
 
-**One real exception: the embedded HTTP server's port is fixed, not
-ephemeral.** `web.port` in `config/settings.yaml` defaults to `8765` for both
-accounts (`web/server.py`'s `DEFAULT_PORT`) — unlike the original bridge's
-IPC socket, which used to be a genuinely OS-assigned ephemeral port
-(discovered via a now-retired `ipc_port` file, see P5 in
-`docs/https-connector-refactor-plan.md`) precisely so two accounts' daemons
-could never collide. `/mcp` has no such protection: if both accounts run the
-web server (which is always running in local mode since P10 — see
-`web.mcp.enabled`/`web.settings.enabled`) at the same time, the second one to start fails to
-bind. Give one account a different `web.port` in its `config/settings.yaml`
-if you ever need both running concurrently — routine on a single dev/live
-pair where only Account 1 (below) actually talks to Claude day to day, but
-worth knowing about deliberately rather than discovering as a bind error.
+- Source/unbundled development runs use repository-local development configuration, credentials, and logs.
+- Bundled/release runs use the user's PrivacyFence state under `~/.privacyfence` (or the platform-equivalent user home path used by the implementation).
+- MCP discovery/auth files such as `mcp_url` and `mcp_token` live under the user's PrivacyFence home so the Desktop shim can find the daemon independently of the source checkout.
 
-One wrinkle: when running **from source** (unbundled), config/credentials/logs
-live **inside the repo folder itself**, not `~/.privacyfence` (see
-`src/privacyfence/paths.py`). Only a PyInstaller-bundled `.app` uses
-`~/.privacyfence` for that. The `/mcp` token/URL files are the one exception
-that's always under `~/.privacyfence`, bundled or not.
+Separate OS user accounts are a convenient way to isolate a development environment from an end-user/package environment, but they are not required if you deliberately separate ports/state and ensure only the intended daemon is active.
 
----
+## Local web port
 
-## Account 1: developer / test
+Local mode listens on the configured `web.port`, default `8765`. Only one process can bind the same address/port.
 
-Run from source — never install the DMG here.
+If two PrivacyFence daemons must run concurrently on the same machine, configure a different `web.port` for one environment. Otherwise stop the first daemon before starting the second.
 
-`scripts/dev_start.sh` handles the repetitive part: it creates `.venv` and
-`config/settings.yaml` if missing, builds the stdio<->`/mcp` shim from this
-checkout's `mcpb/shim/` and (re-)registers it — via `claude mcp` if that CLI
-is on PATH, otherwise by editing Claude Desktop's own config file directly —
-and starts the daemon in the foreground. Ctrl-C stops the daemon and
-de-registers the dev shim again (prompting you to restart Claude Desktop
-when it went the config-file route). Safe to re-run any time, e.g. after
-switching branches:
+## Development/source run
+
+From the repository root, use:
 
 ```bash
-cd /Users/user1/Coding/privacyfence
 ./scripts/dev_start.sh
 ```
 
-The one-time step it doesn't do for you: installing a (test) org config
-bundle and authenticating connectors headlessly, before your first run:
+The script prepares/uses the project environment, builds the Desktop MCP shim, registers the development MCP entry, and runs the daemon in the foreground.
 
-```bash
-mkdir -p org && cp org_config.json org/
+Use dedicated test/QA accounts for connector work. See [`qa-environment-setup.md`](qa-environment-setup.md) and [`connector-qa-testing.md`](connector-qa-testing.md).
 
-privacyfence-app --gmail-oauth
-privacyfence-app --drive-oauth
-# ...etc for whichever connectors you're testing
-```
+## Packaged/release run
 
-For structured testing, follow [qa-environment-setup.md](qa-environment-setup.md)
-once to create the `PFQA`-prefixed sandbox fixtures (Jira project, Drive
-folder, Slack channels, etc.), then re-run
-[connector-qa-testing.md](connector-qa-testing.md)'s Claude prompt any time
-you want to smoke-test a change end to end.
+Use the artifact produced by the platform build path documented in [`platform-support.md`](platform-support.md). Treat that environment as an end-user install: do not rely on the source checkout/venv to make the packaged application work.
 
----
+Install/configure the bundled MCP integration and connectors through the packaged application's normal settings/authentication surfaces.
 
-## Account 2: real work (live)
+## Switching environments
 
-Only ever install from a [GitHub Release](../../../releases). No Python, no
-git clone, no venv here — treat it as an end user would.
+When switching between source and packaged testing:
 
-```bash
-# after downloading PrivacyFence-<version>.dmg and dragging
-# PrivacyFenceApp.app to /Applications:
-cp com.privacyfence.app.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.privacyfence.app.plist
-```
+1. stop the daemon that should no longer be active (unless the two environments intentionally use different ports);
+2. start the intended environment's daemon/application;
+3. verify the user's PrivacyFence discovery files point to that running instance;
+4. ensure the MCP client is configured with the shim/package for the environment being tested;
+5. restart the MCP client when its configuration has changed and it does not reload dynamically.
 
-Releases are code-signed and notarized by Apple, so Gatekeeper opens it
-normally — no manual `xattr` step (see
-[Technical Reference](TECHNICAL_REFERENCE.md#installation)). That step is
-only needed for a locally-built, not-yet-signed-the-same-way DMG (see
-[manual-pre-release-test-plan.md](manual-pre-release-test-plan.md)).
+A port-bind failure usually means another daemon already owns the configured port. MCP authentication/connectivity failures can also result from stale discovery files or a client still using the other environment's shim/configuration.
 
-Then from PrivacyFence Settings (`web.settings.enabled: true` by default —
-see `config/settings.yaml.example`): install the real org config bundle,
-**Authenticate…** each real connector, and double-click `PrivacyFence.mcpb`
-from the mounted DMG to install the extension into Claude Desktop.
+## Release-candidate testing
 
----
-
-## Notes
-
-- Switch accounts with Fast User Switching to test both side by side without
-  logging out.
-- If you ever build and try a DMG on the dev account for a sanity check, know
-  it also writes to `~/.privacyfence` — fine as a one-off, but don't leave
-  that daemon running alongside the source-mode daemon (the socket path
-  collides).
-- Rebuild the DMG (`bash scripts/build_dmg.sh`) to hand-test a release
-  candidate on the live account before it's actually published to GitHub.
+Use [`release-testing.md`](release-testing.md) for human-only release checks and [`testing-policy.md`](testing-policy.md) for automated coverage. Test packaged behavior against the actual artifact, not against a source process as a substitute.

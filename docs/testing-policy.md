@@ -1,402 +1,72 @@
-# Testing Policy
+# Testing policy
 
-What runs where, and when. This repo has three tiers of testing, plus one narrow scheduled
-exception (§0) that only ever runs on infrastructure this project owns. See
-[`coding-and-testing-guidelines.md`](coding-and-testing-guidelines.md) for how to *write* tests;
-this document is about which ones run automatically versus which ones a human has to run. The
-tiers below (§0–§3) are organized by *trust boundary* (what infrastructure/credentials a check
-needs); the taxonomy immediately below organizes the same checks by *what they prove* — the two
-are complementary, not competing, framings of the same suite.
+PrivacyFence separates tests by what they prove and by the trust boundary they require. Automated checks should carry objective correctness; manual checks are reserved for human judgment and first-time third-party consent behavior.
 
-## Test taxonomy: the seven layers
+## Test layers
 
-[`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) (Phase 0) introduced this
-finer-grained taxonomy because "CI vs. manual" alone doesn't say what a check actually catches: a
-`tests/unit/` module and `tests/integration/test_mcp_daemon_contract.py` are both "automated, every
-PR" per §1 below, but they prove different things and fail for different reasons. Every check in
-this repo, present or planned, is exactly one of:
-
-| # | Layer | What it proves | Where it runs today | Pytest marker |
-|---|---|---|---|---|
-| 1 | Unit | Python logic in isolation, fully offline | §1 below — `tests/unit/`, every PR | `unit` |
-| 2 | Integration | Real internal stack (real sockets, servers, the real daemon process), no external network | §1 below — `tests/integration/`, every PR | `integration` |
-| 3 | Cross-platform system | OS path/process/locking/daemon behavior, identical on Linux/Windows/macOS | Not yet a distinct tier. `test_mcp_daemon_contract.py` (§1 below) already proves the daemon→MCP→approval→audit contract, but only on `ubuntu-latest`; `test-windows` exists but is `workflow_dispatch`-gated (no permanent per-PR Windows leg), and there is no macOS leg at all. `automated-test-strategy-plan.md` Phases 2–3 close this gap. | `system` (registered; not yet applied to any test) |
-| 4 | Browser system | JS/CSP/rendering in a real browser | Partially built. `tests/integration/test_browser_smoke.py` (§1 below) already drives real Chromium via Playwright on every PR (login, approval decisions, PDF preview, CSP, org-mode WebAuthn UI); §2.2's `qa_web_smoke.py` covers what that file doesn't yet (script-order/DOM-timing bugs, light/dark and phone-width layout), but only runs by hand. `automated-test-strategy-plan.md` Phase 4 closes the remaining coverage gaps (not the layer itself, which already exists). | `browser` (registered; not yet applied — `test_browser_smoke.py` predates this marker work, see the note below) |
-| 5 | Live connector | Provider API drift | §0 below — `connector-live-check.yml`, self-hosted runner, scheduled. Done. | `live` (registered; nothing in the pytest suite carries it today, since this tier is a standalone script invocation, `qa_fixture_recorder.py --check`/`--record`, not a pytest-collected test — see §0/§2.1) |
-| 6 | Packaged-artifact | Installer/package correctness | Partially built. `test_macos_packaged_smoke.py` runs in `build.yml`'s tag-triggered release path; the Linux `.deb` install/remove/purge lifecycle is manually-verified-once (`linux-local-deb-packaging-plan.md` P7.1/P7.3), not a repeatable CI job; no Windows installer smoke exists yet. `automated-test-strategy-plan.md` Phase 6 closes these gaps. | `packaged` (registered; not yet applied) |
-| 7 | Manual exploratory/UX | Subjective judgment, first-time auth/consent flows | §3 below, [`connector-qa-testing.md`](connector-qa-testing.md), [`manual-pre-release-test-plan.md`](manual-pre-release-test-plan.md) | — (never automated, by definition — see the governing rule below) |
-
-**Governing rule for what stays manual:** a test stays manual only when automated observation
-cannot reliably determine pass/fail. In this project that bar is met by exactly two recurring
-cases — visual/subjective judgment (contrast, spacing, "does this look right" in light vs. dark
-mode) and a first-time third-party consent/OAuth screen (rendered by the provider, outside this
-codebase's control, and different account-to-account) — and nothing else should be left manual on
-that basis. Anything else currently manual (§2 below) is there because it needs a real credential
-or a real browser binary CI doesn't provision, not because it can't be judged automatically; that's
-a cost-of-infrastructure reason; the phases in `automated-test-strategy-plan.md` exist to remove
-those, one at a time.
-
-**Pytest markers**: the six markers above are registered in `pyproject.toml`'s
-`[tool.pytest.ini_options]`. Consistent with `automated-test-strategy-plan.md` Phase 0's own scope
-note, they are *not* retroactively applied across every existing test — that would be churn with no
-payoff until something actually needs to select on the marker (e.g. `pytest -m "not live"`). The
-five modules that landed as part of closing out `security-remediation-plan.md`'s Phase 3.12
-(`test_qa_fixture_recorder.py`'s `TestFixturePresence`, `test_deferred_approval_round_trip.py`,
-`test_routes_security.py`'s `TestCrossPrincipalIsolation`, `test_parser_properties.py`,
-`test_systemic_gate_invariants.py`) landed before this marker work existed and are the first
-backfill, since they were otherwise the one unmarked cohort; everything else keeps whatever marker
-(none, today) it already had. New test modules should carry the marker that matches their layer
-from the day they're added.
-
-## Test ownership: failure type → layer
-
-| Failure type | Owning layer |
-|---|---|
-| Wrong business logic, parsing bug, or malformed output from a pure function | 1. Unit |
-| Regression in real internal wiring — daemon ↔ web routes ↔ gate ↔ audit — with no external network involved | 2. Integration |
-| OS-specific bug: works on Linux, breaks on Windows/macOS (path separators, locking, process spawning, daemon discovery) | 3. Cross-platform system |
-| Bug only a real browser exposes: script-order/DOM-timing, a CSP directive that silently blocks something, real rendering at a given viewport or color scheme | 4. Browser system |
-| Provider API drift: a field renamed, an endpoint removed, a response shape changed | 5. Live connector |
-| Installer/package bug: files not registered at the expected path, autostart missing, uninstall/purge leaves stray files, upgrade loses user state | 6. Packaged-artifact |
-| Subjective visual defect (contrast, spacing, layout "looking right") | 7. Manual exploratory/UX |
-| First-time third-party consent/OAuth screen behaving unexpectedly | 7. Manual exploratory/UX |
-
-Every layer but the last is, by the governing rule above, a candidate to *stay* automated — a
-failure type that currently lands in layer 7 only belongs there if it's one of the two named
-exceptions; otherwise it's a sign the corresponding phase in `automated-test-strategy-plan.md`
-hasn't landed yet, not that the failure type is inherently manual.
-
-### Checked against `manual-pre-release-test-plan.md`
-
-Cross-checking that document's five sections against the table above (per
-`automated-test-strategy-plan.md` Phase 0 item 4) — every item there maps to exactly one layer;
-where it doesn't yet have automated coverage at that layer, that's the corresponding phase's open
-work, not a reason to remove the manual step yet:
-
-| `manual-pre-release-test-plan.md` section | Layer(s) | Automated today? |
+| Layer | Purpose | Current execution |
 |---|---|---|
-| §0 Before you start (`pre_release_check.py`, environment/fixture sanity) | 1–2 (it reruns the CI suite) | Yes, for the parts it reruns; the human confirmation steps (account, fixture file present) aren't a "test" in the layer sense |
-| §1 Fixture recording/refresh check | 5. Live connector | Yes — the `--check`/`--record` pass itself (§0 above, weekly), plus freshness/age reporting (`< 60`/`60–90`/`> 90` days) in that same report, and the `--lifecycle` create/read/update/delete pass (`automated-test-strategy-plan.md` Phase 1's residual items 1.8/1.9, both done) |
-| §2 QA web smoke test | 4. Browser system, with a layer-7 sliver | The 5-scenario `qa_web_smoke.py` run: mostly the same ground `test_browser_smoke.py` already covers in CI, but as a standalone local script, not yet folded into the CI browser tier — Phase 4. The light/dark contrast and phone-width visual checks are genuinely layer 7 (visual judgment) and stay manual |
-| §3 "QA prompt" manual test (live popups via Cowork/Desktop) | 2. Integration + 5. Live connector, with a layer-7 sliver | The deterministic gate-state assertions this exercises by hand (gate selected, popup vs. silent, audit entry) are exactly `test_gate.py`'s job — Phase 5 is auditing that coverage so this stops being the way gate correctness gets proven. The live-account, live-popup, human-clicking-the-button part is layer 5 already for connector-CI purposes but stays layer 7 for "did the popup actually render for a human" until Phase 4 grows PII/approval-flow browser coverage further |
-| §4 Dev vs. live mode switching (build, install, exercise, uninstall) | 6. Packaged-artifact, with a layer-7 sliver | macOS: partially — `test_macos_packaged_smoke.py` already covers most of this in `build.yml`, just not yet cited from this checklist. Linux: manually-verified-once, not CI (Phase 6.3). Windows: no automation yet (Phase 6.2). Gatekeeper/SmartScreen/UAC presentation itself stays layer 7 per "What deliberately remains manual" in `automated-test-strategy-plan.md` |
-| §5 Tag and release | none — this is release mechanics (see `CLAUDE.md`'s "Releasing" section), not a test | N/A |
+| Unit | Python logic in isolation | `tests/unit/`, ordinary CI |
+| Integration | Real internal stack without external provider credentials | `tests/integration/`, ordinary CI |
+| Cross-platform system | OS-specific path/process/locking/daemon behavior | Windows job available through `workflow_dispatch`; broader automation tracked in the active test plan |
+| Browser system | Real browser/CSP/DOM behavior | Playwright/Chromium integration coverage in ordinary CI |
+| Live connector | Provider API/response drift | scheduled self-hosted runner plus manual dispatch |
+| Packaged artifact | Installer/package correctness | release build/smoke paths; expansion tracked in the active test plan |
+| Manual exploratory/UX | Subjective presentation and first-time consent screens | human-only when relevant |
 
-This is left as a cross-check, not a rewrite: `automated-test-strategy-plan.md` Phase 9 is where
-`manual-pre-release-test-plan.md` itself gets rewritten, once the phases above actually land
-automation for the gaps this table found — removing a manual step ahead of that would leave a real
-release-time check with no coverage at all.
+Pytest markers are registered in `pyproject.toml` for `unit`, `integration`, `system`, `browser`, `packaged`, and `live`.
 
-## 0. Runner-local live tier (scheduled, not per-PR)
+## Ordinary pull-request CI
 
-*Layer 5 (live connector) in the taxonomy above.*
+`.github/workflows/tests.yml` runs the main test suite on Ubuntu for pull requests and pushes to `main`.
 
-`.github/workflows/connector-live-check.yml` runs `qa_fixture_recorder.py --check` (and, on
-drift, `--record`), then `qa_fixture_recorder.py --lifecycle` (§2.1's bounded lifecycle mode --
-create/read/update/delete a fresh QA object per write-capable connector), against the four
-dedicated test accounts (Google, Slack, Atlassian, Salesforce) on a weekly schedule (plus
-`workflow_dispatch`) — never on `pull_request`, and never on a GitHub-hosted runner. Unlike
-`--check`'s drift (data, not a failure), a `--lifecycle` failure fails the job outright: a failed
-write/read/update is a real provider-contract regression, and a cleanup call that ran but didn't
-actually remove what it created would otherwise silently accumulate objects in the QA accounts
-forever. It targets a self-hosted runner this project provisions and controls
-(label `privacyfence-test`), provisioned per
-[`connector-live-check-setup.md`](connector-live-check-setup.md) Phase B. The four OAuth
-token files and `org/org_config.json` live only as local files on that runner — they are never
-added as GitHub Actions secrets, and are never transmitted to GitHub at all. See
-[`connector-live-check-setup.md`](connector-live-check-setup.md) for the full account/runner setup
-and the reasoning behind isolating this tier from every GitHub-hosted job.
-
-On drift, the job re-records the affected fixtures and opens an ordinary PR
-(`chore/connector-live-fixture-drift`) with the redacted diff; a maintainer reviews it exactly as
-they would review a manually-run `--record` per §2.1 below. That PR then runs through §1's normal
-GitHub-hosted `tests.yml` merge gate like any other PR — the live-credential job and the
-credential-free merge gate never share a runner or a trigger.
-
-## 1. Automated suite — every PR, in CI
-
-*Layers 1 (unit) and 2 (integration) in the taxonomy above, plus most of what layer 4 (browser
-system) already has — see `test_browser_smoke.py` below.*
-
-`.github/workflows/tests.yml` runs on every push to `main` and every pull request:
+The primary job installs the test dependencies, installs Chromium for Playwright, builds/tests/type-checks the Node MCP shim, then runs pytest with branch coverage and the coverage-floor ratchet:
 
 ```bash
-npm test              # mcpb/shim/, Node's built-in test runner
-npm run typecheck     # mcpb/shim/, tsc --noEmit
+npm test
+npm run typecheck
 pytest -v --cov=src/privacyfence --cov-branch --cov-report=term-missing --cov-report=json:coverage.json
 python scripts/check_coverage_floor.py coverage.json
 ```
 
-on an `ubuntu-latest` runner. A 100% pass rate is required to merge, for both suites. Coverage
-itself is a ratchet, not a specific percentage a PR must hit (TST-03, Phase 2.1 of the now-removed
-`docs/security-remediation-plan.md`): `scripts/check_coverage_floor.py` fails the build
-if overall branch+line coverage, or the coverage of any module on its security-critical list (the
-URL-scheme allowlist, identity-matching, audit-export, org-config/bundle-trust, session/token-
-lifetime, privacy-filter, secure-write, OIDC-discovery-trust, and MCP-error-taxonomy code paths —
-see that script's `MODULE_FLOORS` for the exact list), drops below where it was recorded. A PR that
-raises coverage on one of those modules should bump its floor in the same PR; a PR that needs to
-*lower* one is a real regression, not a config edit. `pytest`'s own `--cov-report=json`/`html`
-output is uploaded as a `coverage-report` CI artifact on every run (pass or fail) so a regression
-can be inspected without re-running locally. This `test` job is the one a PR needs to pass to
-merge.
+The same workflow also runs reduced Python compatibility coverage for Python 3.11 and 3.12, and a separate static-analysis job. Ruff is blocking. Mypy and Bandit are currently informational in that workflow.
 
-Through P9 this ran on `macos-latest` instead, and a second, non-blocking `test-linux` job carried
-the platform-independent subset (everything under `web/`, `web_approval_ui.py`, `card_builder.py`,
-and `approval_icons.py`) on `ubuntu-latest`, `--ignore`-ing the handful of test modules that imported
-an AppKit-tainted module (`approval_popup.py`/`approval_window.py`/`dialog_window.py`/`menu_bar.py`)
-directly at module scope. P10 (see `https-connector-refactor-plan.md` §12, decision D6, the design
-document that shipped this and was removed from `docs/` once fully implemented) deleted all
-of that — the native menu bar/approval dialogs/settings window — so nothing in this repo depends on
-real AppKit/PyObjC behavior any more, the whole suite is platform-independent, and the two-job split
-collapsed back into one.
+The main CI jobs do not require live connector credentials and must remain safe to run for ordinary pull requests.
 
-This tier is fully self-contained: no network calls to Gmail/Slack/Jira/etc., no credentials, no
-manual steps. It includes:
+## Browser coverage
 
-- Every module under `tests/unit/`, one test module per `src/privacyfence/` module — with one
-  deliberate exception: `connector_host.py`'s `ConnectorHost` (the live `{name: Connector}` map) has
-  no `test_connector_host.py` of its own; its behavior is exercised through its three consumers'
-  own test modules instead (`test_settings_controller.py`, `test_daemon_main.py`,
-  `tests/unit/web/test_routes_settings.py`, `tests/unit/web/test_server.py`), since it's a thin
-  enough holder that testing it in isolation would just re-mock what those already cover for real.
-- Each connector's `TestLiveFixtureParsing` class (in `tests/unit/test_<connector>_client.py`),
-  which replays a **previously recorded** fixture from `tests/fixtures/live/<connector>/` through
-  the real `_parse_*` method — still fully offline, since it's reading a committed JSON file, not
-  making a live API call. See [§2.1](#21-qa_fixture_recorderpy---check----record) below for how those
-  fixtures get recorded in the first place. A connector with no recorded fixture yet has its
-  `TestLiveFixtureParsing` tests skip (not fail) with a message pointing at the recorder.
-- `tests/unit/test_qa_fixture_recorder.py` — unit tests for the recorder script itself
-  (`scripts/qa_fixture_recorder.py`), exercised against mocked/offline API responses. This is
-  different from actually running the recorder: these tests prove the recorder's own logic
-  (redaction, capture mechanisms, the tag guardrail) is correct without touching any real account.
-- `tests/unit/test_approval_window_html.py`, `tests/unit/test_dialog_window_html.py` — construction-
-  only coverage for the pure HTML builders behind every card/confirmation dialog (content, buttons,
-  PII tint/banner, summary rows, details text). Through P9 these were rendered inside a real native
-  AppKit view tree too (`test_approval_window.py`/`test_dialog_window.py`, covering the modal-loop
-  host around the same HTML); P10 deleted that host, so this construction-only tier is now the whole
-  of it.
-- `tests/unit/test_web_approval_ui.py`, `tests/unit/test_card_builder.py`,
-  `tests/unit/test_approval_icons.py`, `tests/unit/web/` — the web approval surface's own coverage,
-  added at P1: `WebApprovalUI`'s blocking contract (the sole `ApprovalUI` implementation since P10 —
-  see `approval_ui.py`'s ABC), the pure gate-args-to-card-HTML translation, shared icon-asset loading,
-  and the approval routes themselves against an in-process ASGI test client (auth, CSRF, Host
-  allowlist, security headers, idempotent decisions — no real socket, see
-  `https-connector-refactor-plan.md` §13).
-- `tests/unit/web/test_mcp_dispatch.py`, `tests/unit/web/test_routes_mcp.py` — the `/mcp` endpoint's
-  own coverage, added at P2: `McpDispatcher`'s dedupe/staleness/gating dispatch and meta-tools
-  (`test_mcp_dispatch.py`) and the wire-protocol/auth layer on top of it (`test_routes_mcp.py`),
-  driven with the real official `mcp` Python client over an in-process ASGI transport — no real
-  socket, same posture as the approval routes above. `TestAudienceSeparation` in
-  `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
-  approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
-- `tests/unit/web/test_mcp_tools.py` — added at the now-removed security-remediation-plan.md's
-  phase 1.9 (TST-02):
-  `mcp_tools.py`'s own `ToolSpec`-to-`Tool`/`CallToolResult` schema translation (untested by either
-  file above, which exercise dispatch and wire framing, not this mapping layer), plus end-to-end
-  coverage over the real `/mcp` transport for three narrow behaviors: an unattended session denying
-  `privacyfence_propose_auto_accept_rule_change` before any confirmation popup can be shown (a real
-  gap this phase found and fixed — see `McpDispatcher.propose_rule_change`'s own comment in
-  `mcp_dispatch.py`), `privacyfence_begin_unattended_session` refusing when disabled by
-  configuration, and `privacyfence_list_auto_accept_rules` always leaving an audit entry for its own
-  disclosure.
-- `mcpb/shim/test/*.test.ts` (`npm test`, run from `mcpb/shim/`) — the .mcpb shim's own suite (D11 in
-  `docs/https-connector-refactor-plan.md` §12): daemon discovery/launch (`daemon.test.ts`, against
-  `mcp_url` file discovery) and the stdio<->Streamable HTTP message proxy (`proxy.test.ts`,
-  `index.test.ts` — the latter against a real fake `/mcp` server built on the official SDK's own
-  server classes, not a hand-mocked transport). The only Node suite left in this repo since P5
-  retired the original bridge and its own `bridge/test/*.test.ts`.
-- `npm run typecheck` (`tsc --noEmit`, run from `mcpb/shim/`) — catches type errors across
-  `mcpb/shim/src/*.ts` that `npm test`'s runtime coverage wouldn't necessarily hit (an unreachable
-  branch, a type mismatch in an untested code path).
-- `tests/integration/test_mcp_daemon_contract.py` — spawns a real `privacyfence.web.server.WebServer`
-  bound to a real loopback socket and drives it with the official `mcp` Python client over a real
-  TCP connection (not the in-process ASGI transport `test_routes_mcp.py` above uses), so a
-  real-network-stack bug (uvicorn startup, real TCP binding, real HTTP framing) can't slip through
-  either. Needs no Node — since P5 there is no longer a second, independently-maintained protocol
-  implementation to cross-check against (both client and server here are the official `mcp` SDK).
-  Uses the official `mcp` Python client, a runtime dependency since P2 (`pyproject.toml`'s
-  `[project.dependencies]` — see `docs/https-connector-refactor-plan.md` §8.2/D2) rather than a
-  test-only one.
-- `tests/integration/test_shim_mcp_contract.py` — spawns the real built `mcpb/shim/dist/shim.js`
-  against that same real, socket-bound `WebServer` and drives *it* with the official `mcp` Python
-  client over real MCP-over-stdio. A passthrough test, not a schema test — the shim carries no
-  tool-schema knowledge, so "one `initialize` and one `tools/call` round-trip, with the bearer
-  header attached and `mcp_url` honoured" is the whole of what there is to assert. Skips
-  automatically if Node isn't on `PATH`; CI installs it, so this runs there.
-- `tests/integration/test_browser_smoke.py` (TST-06) — drives the real web approval surface in a
-  real headless Chromium via Playwright: bootstrap login, an Allow/Deny decision round trip, PDF
-  preview actually rendering, a real no-inline-script CSP check, and the org-mode WebAuthn UI. The
-  one place in this tier that exercises what only a real browser does — the CSP header actually
-  enforced, cookie `SameSite` semantics on a real `fetch()`, the page's own JS event loop
-  (`EventSource`, `navigator.credentials`) — rather than a scripted transport (`test_routes_
-  approvals.py`) or a real socket driven by a non-browser client (`test_mcp_daemon_contract.py`
-  above). This is layer 4 (browser system) in the taxonomy at the top of this document; it already
-  runs here in tier 1 because Playwright/Chromium install cleanly on `ubuntu-latest` with no
-  external credential, unlike the connector accounts §0/§2.1 need. `automated-test-strategy-plan.md`
-  Phase 4 extends this file's coverage (empty-list/multi-card/idempotency behavior, PII-specific
-  banner assertions, responsive layout, light/dark structural assertions) — it does not need to
-  create the layer, which is already here.
+`tests/integration/test_browser_smoke.py` uses Playwright with Chromium to exercise browser behavior that unit-level HTML tests cannot prove, including authentication/session behavior, approval interactions, security headers/CSP, previews, and org-mode WebAuthn UI paths.
 
-## 2. Local-only checks — run manually before opening/updating a relevant PR, never in CI
+Subjective visual quality is not treated as an automated pass/fail signal. Use [`release-testing.md`](release-testing.md) when a change needs human visual review.
 
-*§2.1 is a local-only slice of layer 5 (live connector), run by hand between §0's scheduled runs.
-§2.2 is a local-only slice of layer 4 (browser system), covering what `test_browser_smoke.py` in §1
-doesn't yet — neither is layer 7 (manual exploratory/UX): both are fully deterministic, just not
-yet safe or fast enough to run on a GitHub-hosted PR runner.*
+## Live-provider checks
 
-Two scripts exist specifically because some failure classes can't be caught by a fully-mocked,
-fully-offline suite. Both are excluded from CI on purpose — one needs real, authenticated
-third-party accounts; the other needs a real browser — and both print the same kind of small,
-deterministic Markdown report meant to be pasted into the PR description so a reviewer doesn't have
-to re-run anything or have access to the same accounts/hardware themselves.
+`.github/workflows/connector-live-check.yml` runs only on its schedule or by explicit manual trigger. It targets the project-controlled self-hosted runner labeled `privacyfence-test`.
 
-Through P9 a third script, `qa_popup_smoke.py`, covered the one thing `test_approval_window.py`/
-`test_dialog_window.py`'s construction-only tests couldn't reach: whether the real native modal loop
-actually blocked and a real click actually reached it. P10 (`https-connector-refactor-plan.md` §12,
-D6) deleted the native popup itself along with that script — there is no modal loop left to smoke-
-test. `qa_web_smoke.py` below is this tier's own (Chromium-driven, not AppKit-driven) equivalent for
-the web approval surface that replaced it, and already existed before this phase; nothing new was
-needed to fill the gap.
+Real connector credentials live on that runner, outside the GitHub-hosted workspace. The job builds a fresh virtual environment, copies the runner-local QA state into the ephemeral checkout, runs the fixture recorder/checker, exercises the configured lifecycle checks, and opens a fixture-drift pull request when re-recording changes committed fixtures.
 
-### 2.1 `qa_fixture_recorder.py --check` / `--record`
+Provisioning and recovery procedures are in [`connector-live-check-setup.md`](connector-live-check-setup.md).
 
-Every `tests/unit/test_<connector>_client.py` module mocks the connector's `*_client.py` (or the
-third-party SDK object one layer inside it), which is correct for testing this codebase's own
-parsing logic in isolation — but it has a structural blind spot: a hand-authored mock fixture can
-drift out of sync with what the real provider API actually returns (a field renamed, an endpoint
-removed, a response shape changed) while the mocked test suite stays green. `scripts/
-qa_fixture_recorder.py` closes that gap by calling the real, targeted read methods against a real,
-already-authenticated account.
+## Windows test job
 
-**Never run on a GitHub-hosted runner, or on any `pull_request`-triggered workflow.** It reuses the
-exact OAuth token files `privacyfence-app --<connector>-oauth` writes to the git-ignored
-`credentials/` directory, and only ever targets one specific, `[QATEST]`-tagged seed artifact per
-connector — set up once per environment via [`qa-environment-setup.md`](qa-environment-setup.md),
-resolved through the non-secret, git-ignored manifest `tests/fixtures/qa_environment.yaml` (see
-[`qa_environment.yaml.example`](../tests/fixtures/qa_environment.yaml.example) for the template). No
-credential is ever provisioned to a GitHub-hosted runner or any other shared cloud service to make
-this possible.
+`tests.yml` contains a `windows-latest` pytest job. It is currently gated to `workflow_dispatch`, so it is not a permanent per-PR merge gate. Windows packaging is separately built in `.github/workflows/build.yml`.
 
-The instructions below are for running this by hand, from your own machine, between scheduled
-runs — still valid and still the right thing to do for a PR that touches a `*_client.py` or
-`connectors/**` file. §0 above describes the one place this also now runs automatically: a
-project-owned self-hosted runner, on a schedule, per
-[`connector-live-check-setup.md`](connector-live-check-setup.md).
+## Release/package tests
 
-Three modes:
+Release workflows build the native artifacts described in [`platform-support.md`](platform-support.md). Artifact-specific smoke coverage lives with the release/build path where practical. Remaining cross-platform, installer, and package-lifecycle automation is tracked only in [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md).
 
-- `--check [connector ...]` — calls each connector's read methods against its seed artifact,
-  asserts non-empty/expected results, prints a report. Never writes a file. Safe to run any time.
-  The printed report also includes a **fixture freshness** line per connector checked: `< 60 days`
-  healthy, `60–90 days` warning, `> 90 days` refresh required (1.9,
-  `docs/automated-test-strategy-plan.md` Phase 1 residual work) — a quick signal for whether a
-  connector's recorded fixture is due for a fresh `--record`, without doing the day-count
-  arithmetic by hand.
-- `--record [connector ...]` — the same calls, plus identity-field redaction (author email, account
-  id, display name, ...) and structural de-identification (opaque resource ids, decorative URLs —
-  neither of which any test actually depends on the specific value of), then writes the result to
-  `tests/fixtures/live/<connector>/<method>.json`.
-- `--lifecycle [connector ...]` — 1.8 (`docs/automated-test-strategy-plan.md` Phase 1 residual
-  work). For each write-capable connector that supports it (`calendar`, `confluence`, `jira`,
-  `tasks` — see the comment above `LIFECYCLE_CHECKS` in `qa_fixture_recorder.py` for why
-  `contacts`/`gmail`/`drive`/`slack`/`salesforce`/`telegram` aren't included), creates a fresh,
-  uniquely-tagged QA object, reads it back, updates it, reads it back again, then deletes it and
-  confirms the deletion actually took, using the same run's redaction-free internal SDK access
-  `RawCapture`/`RawCaptureExecute` already use — never a tool any MCP client can reach, since
-  nothing in `connectors/**` ever registers a delete tool at all. Never writes a fixture file. Runs
-  on the same weekly self-hosted-runner schedule as `--check`/`--record` (§0 above); safe to run by
-  hand too, same caveats as `--check`/`--record`.
+## Coverage policy
 
-**When to run this**: only when a PR touches `src/privacyfence/*_client.py` or
-`src/privacyfence/connectors/**` — not every PR. Scope it to the connector(s) touched, using the
-project's own venv (a bare system `python3` won't have the third-party clients this imports):
+Coverage is a ratchet rather than a single repository-wide target percentage. `scripts/check_coverage_floor.py` records/enforces floors for overall coverage and selected security-critical modules. A pull request that improves a protected module can raise its floor; lowering a floor should be treated as a real regression requiring explicit justification.
 
-```bash
-.venv/bin/python scripts/qa_fixture_recorder.py --check confluence
-```
+Coverage reports are uploaded as CI artifacts so failures can be diagnosed without reproducing the run locally.
 
-- **Passes, live shape unchanged**: nothing else to do. `--check` never writes a file.
-- **Fails, or the fix was specifically in response to a provider shape change**: run
-  `--record <connector>`, inspect the diff under `tests/fixtures/live/<connector>/*.json` — it
-  should be a small, meaningful shape change, with identity fields already redacted to placeholders
-  (if anything in the diff looks like a real email, name, or account-specific id, the redaction
-  logic needs a fix before committing, not after) — then commit the updated fixtures alongside the
-  code fix, in the same PR.
-- Paste the printed report (or the file from `--report-file <path>`) into the PR description under
-  a `## Local QA check` heading.
+## What stays manual
 
-### 2.2 `qa_web_smoke.py`
+A recurring test should remain manual only when automation cannot reliably determine pass/fail. In this repository that normally means:
 
-`tests/unit/web/`, `test_web_shell.py`, and `test_approval_list_html.py` cover the web surfaces'
-(`/settings`, `/approvals`) HTML/JSON construction and route behavior — CSRF, the settings action
-allowlist, argument validation — on every PR, entirely against Starlette's in-process `TestClient`.
-That deliberately leaves one thing untested: a **real browser** actually parsing and running the JS
-those routes emit. A script tag referencing a DOM element or another script's global defined *later*
-in the document silently no-ops instead of raising in a real browser — this script's own "card
-decide → return-to-list toast" scenario is a regression test for exactly that bug (approval_list_
-html.py's toast/notification-prompt code read `#pf-shell-toast`, defined by web_shell.py *after* it
-in document order, before that element existed — found by running this script during P4's own
-development, not by any unit test). It also confirms the CSP (web/server.py's `_CSP`) actually
-permits what a page needs — e.g. that `worker-src 'self'` really does let `resources/sw.js` register,
-not just that the header string contains the right token.
+- subjective visual judgment such as spacing, contrast, or OS-native presentation;
+- first-time third-party consent/authentication screens controlled by an external provider;
+- focused exploratory investigation of a new or unexplained provider behavior.
 
-**Never run in CI.** It needs `playwright` (`pip install playwright` — not a project dependency,
-install it locally) and a Chromium binary, and drives a real embedded HTTP server + real browser
-end to end, which is slower and flakier than the route-level suite that already runs on every PR.
-
-**When to run this**: whenever `web_shell.py`, `approval_list_html.py`, the JS-emitting functions in
-`web/routes_approvals.py`/`web/routes_settings.py`, `resources/sw.js`, or `web/server.py`'s CSP
-changes. Not for a `settings_controller.py`/`settings_window_html.py` change with no web-shell/CSP
-involvement — those are covered by `test_settings_window_html.py`'s construction-only assertions.
-
-```bash
-.venv/bin/pip install playwright
-.venv/bin/python scripts/qa_web_smoke.py
-```
-
-If Playwright's own bundled Chromium isn't installed, pass `--chromium-path` at a Chromium/Chrome
-binary already on disk instead of downloading one. Paste the printed report into the PR description
-under a `## Web smoke check` heading, same convention as §2.1.
-
-## 3. Full manual QA pass — before a release, not per-PR
-
-*Layer 7 (manual exploratory/UX) in the taxonomy above — this is the one tier the governing rule
-says should stay manual, though not for its entire current scope forever: `automated-test-strategy-
-plan.md` Phase 5 is auditing how much of what this tier proves today is actually deterministic gate
-behavior that belongs in `test_gate.py` instead (layer 2), leaving this tier to shrink to the parts
-that genuinely need a human watching a real popup render against real account data.*
-
-[`connector-qa-testing.md`](connector-qa-testing.md) drives every tool through a live Claude
-Cowork/Desktop session connected to the real `privacyfence` daemon, against real accounts, watching
-what actually prompts. This is the only thing that exercises the gate, the popup UI, and the audit
-log end to end — none of tiers 1 or 2 do. Run it before a release, or after any change to
-`gate.py`/`auto_accept.py`/`resource_grants.py`/the web approval UI broadly, not on every PR.
-
-Before a release specifically, run tiers 1 and 2 across every connector too, not just the ones a
-recent PR touched — see [manual-pre-release-test-plan.md](manual-pre-release-test-plan.md) for the
-full release-time checklist tying all three tiers together.
-
-## Quick reference
-
-| Check | Layer | Runs in CI? | When |
-|---|---|---|---|
-| `pytest` (full suite, incl. the mcp/daemon, shim/mcp contract, and browser-smoke tests) | 1, 2, 4 | Yes, every PR | Always — this is the merge gate |
-| `check_coverage_floor.py` (coverage ratchet, TST-03) | — (a quality gate on layers 1–2, not a layer itself) | Yes, every PR | Always — this is also a merge gate |
-| `npm test` (mcpb/shim/'s own suite) | 1 | Yes, every PR | Always — this is the merge gate |
-| `npm run typecheck` (mcpb/shim/) | — (static check, not a layer) | Yes, every PR | Always — this is the merge gate |
-| `qa_fixture_recorder.py --check` / `--record` (`connector-live-check.yml`) | 5 | Yes, but only on a project-owned self-hosted runner, never GitHub-hosted, never on `pull_request` | Weekly schedule + manual dispatch |
-| `qa_fixture_recorder.py --lifecycle` (`connector-live-check.yml`) | 5 | Yes, same runner/trigger restrictions as `--check`/`--record` above; unlike drift, a failure fails the job | Weekly schedule + manual dispatch |
-| `qa_fixture_recorder.py --check` (manual) | 5 | No | PR touches a `*_client.py`/`connectors/**` file, between scheduled runs |
-| `qa_web_smoke.py` | 4 | No | PR touches `web_shell.py`, `approval_list_html.py`, web routes' JS, `resources/sw.js`, or the CSP |
-| `connector-qa-testing.md`'s live Cowork pass | 7 | No | Before a release, or a broad gate/auto-accept change |
-
-Layers 3 (cross-platform system) and 6 (packaged-artifact) don't have a settled row here yet — the
-existing `test-windows`/`build.yml` jobs cover pieces of them today (see the taxonomy table above),
-but not yet as a stable, named tier this table can point to; that's `automated-test-strategy-plan.md`
-Phases 2, 3, and 6.
-
-None of the "No" rows require a credential or secret to ever be granted to a **GitHub-hosted**
-runner or any `pull_request`-triggered workflow — that part of the policy is unchanged and still
-absolute. The one "Yes" row above is a GitHub Actions workflow too, technically, but one that only
-ever executes on infrastructure this project itself owns and controls (§0) — not a GitHub-hosted
-runner, and not reachable from a fork PR or any untrusted trigger.
+Everything else should be automated or tracked as automation work in [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md).

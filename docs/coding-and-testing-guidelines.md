@@ -1,255 +1,87 @@
-# Coding & Testing Guidelines
+# Coding and testing guidelines
 
-This document describes the conventions this codebase already follows, so new code (human- or
-agent-written) stays consistent with it. It is descriptive before it is prescriptive: every rule
-below was extracted from patterns already established in `src/privacyfence/` and `tests/` — the
-Python daemon — not imported from a generic style guide. Where the codebase itself is
-inconsistent, that's called out explicitly rather than papered over. `mcpb/shim/` (the
-Node/TypeScript stdio-to-`/mcp` transport proxy Claude Desktop's `.mcpb` installs) follows its own,
-separate conventions and is out of scope for this document.
+These are the repository's standing expectations for implementation and test changes.
 
-See [`CONTRIBUTING.md`](../CONTRIBUTING.md) for process (PRs, issues, license) and
-[`docs/security-and-compliance.md`](security-and-compliance.md) for the security model this code
-implements. This document is about how to write and test the code correctly, not why it exists.
+## General code changes
 
----
+Keep policy/security decisions in shared layers rather than connector-specific shortcuts. A new or changed connector tool must use the same gate, privacy-filter, audit, secure-file, and principal-scoping mechanisms as equivalent existing tools.
 
-## 1. Coding guidelines
+Prefer explicit, testable boundaries over hidden global state. Keep filesystem/network/provider behavior behind modules that can be exercised independently.
 
-### 1.1 Language baseline
+Do not log secrets, bearer/session/bootstrap tokens, connector credentials, or protected provider content unless the existing audit/data model explicitly requires a safe representation.
 
-- Python 3.11+. Every module starts with `from __future__ import annotations` (right after the
-  module docstring, before other imports).
-- Prefer the standard library over new dependencies (stated in `CONTRIBUTING.md`).
-- Use modern union syntax, `X | None`, not `Optional[X]`. The codebase has no remaining
-  `Optional[...]` call sites — keep it that way in new code.
-- Type-hint function signatures, including return types (`-> None`, `-> Any`, etc.). Dataclass
-  fields are always typed.
+## Formatting and static analysis
 
-### 1.2 Module & docstring conventions
+Run Ruff on changed Python code:
 
-- Every module has a docstring as the first line of the file — even a one-liner
-  (`"""Gmail connector."""`). For modules with non-obvious lifecycle or invariants (e.g.
-  `daemon_main.py`, `gate.py`, `audit_log.py`), the docstring explains the *why*: threading model,
-  ordering guarantees, what a caller must not assume.
-- Default to no comments. Only add one when it captures a non-obvious *why* — a hidden constraint,
-  a race that was fixed, a workaround for a specific API quirk — never a restatement of *what* the
-  next line does. This is already stated in `CONTRIBUTING.md`; it's repeated here because it's the
-  single most-violated rule in most codebases and worth being explicit about.
-- Long files use `# --- Section --- #` banner comments to separate phases (e.g. gmail.py's
-  "Auto (no gate)" / "Review gate (reads)" / "Popup gate (writes)" / "Helpers"). Use this once a
-  connector or client grows past ~5-6 methods; don't bother for short files.
+```bash
+ruff check .
+```
 
-### 1.3 Data modeling
+`pyproject.toml` is authoritative for Ruff, mypy, Bandit, pytest, and coverage configuration. Ruff is a blocking CI check; mypy and Bandit are visible informational checks in the current test workflow.
 
-- Use `@dataclass` for structured data crossing a boundary (API responses, tool specs, audit
-  entries). Give collection fields `field(default_factory=...)`, never a mutable default.
-- Dataclasses that normalize an external API's response document what they deliberately *don't*
-  carry (e.g. `Attachment`: "Content is intentionally never carried here") when the omission is a
-  privacy decision, not just an oversight.
-- `Connector` subclasses are the unit of extension (`connector.py`). Adding a service means: one
-  file in `connectors/`, registered in `daemon_main.py`, nothing else changes. Don't special-case
-  a connector's wiring elsewhere.
+For Node/TypeScript changes under `mcpb/shim/`, run:
 
-### 1.4 Error handling
+```bash
+cd mcpb/shim
+npm test
+npm run typecheck
+npm run build
+```
 
-- Every external-API client (`*_client.py`) defines its own `<Name>ClientError(Exception)` and
-  raises only that (or lets it propagate) across its public methods. Internal-only clients that
-  never leave the local trust boundary (talking over the embedded `/mcp` HTTP endpoint to the
-  daemon the app itself controls) are the one accepted exception to this — external cloud APIs
-  always get a dedicated error type.
-- Connectors catch the client's specific error type at the boundary, log it, and re-raise as
-  `RuntimeError(str(exc)) from exc` — never swallow it, never let the raw client exception or a
-  bare `except Exception` leak past the connector into the tool-call response.
-- Non-critical side effects (writing an audit entry) are wrapped in their own
-  `try/except Exception: logger.warning(...)` so a logging failure never blocks the primary
-  operation — see `gate.py::_audit` and every connector's `_auto_audit`.
+## Python tests
 
-### 1.5 The gate is load-bearing — treat it as a security boundary, not plumbing
+Run the smallest relevant test set while developing, then the affected unit/integration suite before opening/updating a PR. The full CI command is described in [`testing-policy.md`](testing-policy.md).
 
-This is the one area where "looks like a style rule" is actually a security invariant:
+New tests should use the marker that matches their layer when applicable: `unit`, `integration`, `system`, `browser`, `packaged`, or `live`.
 
-- Every tool call that touches real data must go through `gated_call()` (`gate.py`), **or** be a
-  connector that deliberately auto-approves a whole tool and says so in its own docstring/comments
-  (e.g. `contacts.py`'s unconditionally-auto-accepted tools, or the read-only listing tools every
-  connector has). There is no third option — a tool that silently skips both the gate and an
-  explicit auto-approve rationale is a bug. Writes in particular should not default to
-  auto-approval without a documented reason; see `tasks.py`'s history — it originally
-  auto-approved every tool, including writes, until that was found to be an undocumented deviation
-  from this project's own stated security posture and brought in line with every other connector's
-  write-gating.
-- `gated_call()` must never return `raw_data` when `filtered_data` differs from it. This is stated
-  verbatim in `tests/unit/test_gate.py`'s module docstring — it's the actual privacy boundary the
-  whole gate exists to enforce.
-- `preview` dicts (shown before approval) carry metadata only — sender, subject, size, destination
-  path. Full body/content only ever goes into `details_text`, which the user must actively expand
-  to see. Never put message bodies, file contents, or similar into `preview`.
-- Every tool a connector exposes must leave an audit trail, one way or another — either through
-  `gated_call` (which always audits, on every branch) or via a direct `_auto_audit`-style call for
-  auto-approved tools. `tests/helpers.py::assert_all_tools_leave_an_audit_trail` enforces this
-  mechanically; don't add a tool that this helper can't verify.
-- Writes default to `gate="popup"`, reads of full content default to `gate="review"`; only
-  low-sensitivity metadata listing calls (`list_messages`, `list_task_lists`, ...) default to
-  `read_only=True` with no gate at all. If a new tool doesn't fit one of these three buckets
-  cleanly, that's a design question worth raising explicitly, not silently defaulting to whichever
-  is least effort.
+Keep ordinary unit/integration tests offline and deterministic. Do not add real connector credentials or unmocked provider calls to GitHub-hosted CI.
 
-### 1.6 Untrusted input
+## Test design
 
-- Any filename, path fragment, or identifier that originates from a remote party (an email
-  attachment name, a message header) is untrusted. Before it touches the filesystem, sanitize it —
-  the established pattern is `os.path.basename(filename) or "<fallback>"`
-  (`gmail_client.py::resolve_attachment_destination`), which is what stops a crafted name like
-  `../../.ssh/authorized_keys` from writing outside the intended directory. Compute the destination
-  path once, in one function, and reuse it for both the pre-approval preview and the actual write —
-  never compute it twice, or the preview and the real write can silently disagree.
+Prefer tests that assert observable contracts rather than implementation trivia. For gated connector operations, verify the complete relevant outcome:
 
-### 1.7 Async & concurrency
+- selected gate/policy path;
+- whether the connector was called;
+- returned result/error;
+- approval state/decision;
+- audit entry;
+- rule/grant side effect when applicable.
 
-- Blocking/sync calls (the Google/Slack/Salesforce/Atlassian SDKs, file I/O in a hot path) are
-  wrapped in `asyncio.to_thread(...)`, never called directly from an `async def`.
-- There is exactly one popup lock (`gate._popup_lock`) serializing every native dialog. If you add
-  a new interactive flow, it must go through the existing lock, not a new one — two independent
-  locks around the same native-dialog resource is how the queued-request race class of bug
-  reappears.
-- Once inside a lock, re-check any state you decided on before acquiring it (see the "re-check
-  after acquiring `_popup_lock`" pattern in `gate.py`) if another queued waiter could have changed
-  that state while you waited.
+Use parameterization where multiple connector/tool states share the same invariant.
 
-### 1.8 Logging vs. `print`
+Avoid fixed sleeps for synchronization when an event, condition poll, socket readiness check, or explicit signal can make the test deterministic. Every async/process test must fail in bounded time rather than hang indefinitely.
 
-- Library/application code (clients, connectors, the daemon's request handling) logs via
-  `logging.getLogger(__name__)`. Never log full message bodies, document contents, or credentials —
-  log identifiers, subjects, counts.
-- `print()` is reserved for the handful of argparse CLI subcommands in `daemon_main.py`
-  (`--oauth-setup`-style flows) that are invoked directly by a human at a terminal and need to
-  print a human-facing confirmation. It does not belong inside a `*_client.py` method — those are
-  library code, called from multiple contexts, and should only log; the CLI entry point that calls
-  them is responsible for any terminal-facing `print`.
+## Browser tests
 
----
+Use the existing Playwright integration harness for behavior that only a real browser can prove: CSP enforcement, browser session behavior, JS/DOM ordering, approval interactions, responsive structure, service-worker/notification behavior, and org-mode WebAuthn UI.
 
-## 2. Testing guidelines
+Do not use fragile pixel-perfect screenshots as the primary correctness assertion. Subjective visual quality belongs in [`release-testing.md`](release-testing.md).
 
-### 2.1 Framework & layout
+## Connector/provider tests
 
-- `pytest` + `pytest-asyncio` (`asyncio_mode = "auto"` — no `@pytest.mark.asyncio` needed).
-  `pytest-timeout` caps every test at 30s so a hung fixture fails loudly instead of stalling CI.
-  `freezegun` for time-dependent tests, `openpyxl` for asserting against the audit log's Excel
-  export.
-- `tests/unit/` mirrors `src/privacyfence/`; connector tests live in `tests/unit/connectors/`,
-  named `test_<connector>_connector.py`. One test module per source module.
-- `tests/integration/` holds cross-boundary tests that don't fit the one-module-per-source-module
-  mirror above: `test_mcp_daemon_contract.py`, which drives a real, socket-bound
-  `web.server.WebServer` with the official `mcp` Python client over a real TCP connection (not the
-  in-process ASGI transport `tests/unit/web/test_routes_mcp.py` uses), and
-  `test_shim_mcp_contract.py`, which spawns the real Node .mcpb shim (`mcpb/shim/dist/shim.js`)
-  against that same real server and drives *it* over real MCP-over-stdio — see that file's own
-  docstring for why the shim needs its own contract test even though it carries no protocol
-  knowledge of its own. The shim test skips automatically if Node isn't on PATH, so
-  `pytest tests/unit` stays Node-free.
-- CI (`.github/workflows/`) requires a 100% pass rate — coverage is reported but not gated. Write
-  tests as if any failure blocks the merge, because it does. Through P9 this ran on macOS
-  specifically (real AppKit/PyObjC/osascript behavior); P10 deleted the native UI layer that
-  required, so the suite is platform-independent now (see `testing-policy.md` §1).
+Parser/client unit tests may replay committed redacted live fixtures from `tests/fixtures/live/`; they must not require a network connection.
 
-### 2.2 Module & class organization
+Real provider drift checks run through the dedicated self-hosted workflow and `scripts/qa_fixture_recorder.py`. See [`connector-live-check-setup.md`](connector-live-check-setup.md) and [`qa-environment-setup.md`](qa-environment-setup.md).
 
-- Every test module opens with a docstring naming the module under test and, where relevant, the
-  one invariant that matters most (see `test_gate.py`, `test_gmail_connector.py`). If a whole test
-  file exists to prevent one specific class of bug, say so up top.
-- Group tests into `class TestScenario:` blocks by behavior (`TestAutoAcceptPath`,
-  `TestReviewGateDecisions`, `TestAcceptAll`, ...), not by method-under-test or in one flat list.
-  Bare module-level `def test_...` functions are the exception, reserved for
-  structural/cross-cutting checks that aren't about one component's behavior (e.g.
-  `test_readme_manifest_alignment.py`, which checks docs stay in sync with the tool manifest).
-- Regression tests carry a docstring explaining the original bug, not just what they assert — see
-  `TestQueuedRequestReCheck` in `test_gate.py` or `TestGetMessagePreviewMinimization`'s "a prior
-  real bug: reply-all only checked the original sender" note in `test_gmail_connector.py`. The
-  point is that a future reader can tell *why* the test exists before deciding it's safe to delete
-  or weaken.
+Never commit real account identifiers, access tokens, tenant URLs, private content, or unredacted provider payloads in fixtures.
 
-### 2.3 Fixtures & isolation
+## Security-sensitive changes
 
-- Module-level singletons (`auto_accept._INSTANCE`, `audit_log._INSTANCE`, and their supporting
-  module globals) are reset in an `autouse=True` fixture in `tests/conftest.py`, before *and*
-  after each test. Any new module-level singleton needs a matching reset added there, or state
-  leaks between tests silently.
-- Use the `tmp_path` fixture with `init_audit_logger(str(tmp_path))` to get an isolated audit log
-  directory per test — never point tests at the real `logs/audit/` directory.
-- A lock or other primitive that binds itself to whichever asyncio event loop first contends on it
-  (e.g. `asyncio.Lock`) needs its own `autouse` per-test reset if tests exercise real contention on
-  it — see `_fresh_popup_lock` in `test_gate.py` and the comment explaining why.
+Changes to auth/session/CSRF/CSP, org identity/principal scoping, connector token storage, approval/gate behavior, PII filtering, audit integrity/forwarding, configuration trust, staged downloads, or MCP authentication require targeted negative tests in addition to the happy path.
 
-### 2.4 Faking the gate and the approval UI
+Fail closed on malformed/unknown security configuration. A test should prove rejection rather than only proving that valid configuration works.
 
-- Never let a test spawn a real interactive dialog. Stub `show_popup` / `show_read_popup` /
-  `show_rule_confirmation_popup` via `monkeypatch.setattr` on the module under test, not by mocking
-  at `WebApprovalUI`'s own import site of every caller. (Through P9 this also meant never spawning a
-  real native AppKit window or `osascript` subprocess; P10 deleted that surface, see
-  `approval_ui.py`'s module docstring.)
-- Connector tests stub `gated_call` itself (`gated_call_spy` pattern in
-  `test_gmail_connector.py`) to capture exactly what a tool sends into the gate — `preview`,
-  `details_text`, `raw_data`, `filtered_data`, `args`, `gate` — and assert on those kwargs, rather
-  than trying to drive the real gate end-to-end from a connector test. `test_gate.py` owns proving
-  the gate's own state machine; connector tests own proving each tool calls it correctly.
+Use the existing secure filesystem helpers for credential/security-sensitive files instead of open-coding permissions.
 
-### 2.5 Reuse shared helpers before writing new ad hoc ones
+## Packaging changes
 
-- `tests/helpers.py` provides `make_ctx` (a `ReviewContext` with sane defaults),
-  `build_stub_args` (a minimal-but-plausible args dict from a `ToolSpec`), and
-  `assert_all_tools_leave_an_audit_trail`. Check there before writing a new stub-args builder or a
-  new per-connector audit-trail sweep — duplicating these tends to drift out of sync with the real
-  `Connector`/`ToolSpec` shape over time.
+When changing PyInstaller specs, installers, Debian metadata, startup registration, MCPB contents, or release workflows, run the corresponding package/build checks and update [`platform-support.md`](platform-support.md) if user-visible behavior changes.
 
-### 2.6 New-connector checklist
+Do not use a source checkout as proof that a packaged artifact works.
 
-A new connector's test module should include, at minimum:
-1. `TestDispatch` — unknown tool name raises `ValueError`.
-2. One test per auto-approved tool proving it never touches the gate and does write its own audit
-   entry.
-3. One test per gated tool's `preview` dict, asserting it contains *only* metadata (data
-   minimization) — never full body/content.
-4. A call to `assert_all_tools_leave_an_audit_trail` covering every tool the connector declares,
-   with `arg_overrides` for any tool that validates its args before reaching the client/gate.
-5. For at least one gated read tool, an end-to-end test that runs a fully-populated raw API
-   response through the real `_parse_*` method and the real connector method that builds the popup
-   preview (not a hand-built dataclass, unlike the rest of this checklist), checked with
-   `assert_no_placeholder_fields` — see `TestFieldCompleteness` in
-   `tests/unit/connectors/test_confluence_connector.py` for the pattern this catches (a `_parse_*`
-   field mapping silently degrading to a fallback value).
+## Documentation
 
-### 2.7 Definition of done for a PR touching this repo
+Update standing documentation in the same PR as behavior changes. Standing docs describe current behavior, not implementation history. Do not add completed plans, phase narratives, migration diaries, or “previously/after X” explanations.
 
-- [ ] `pytest -v --cov=src/privacyfence --cov-report=term-missing` passes at 100%.
-- [ ] `ruff check .` passes (CI's `static-analysis` job blocks on this; `mypy`/`bandit` run in the
-      same job but are informational only for now — see `[tool.mypy]`/`[tool.bandit]` in
-      `pyproject.toml` and TST-07 of the now-removed `docs/security-remediation-plan.md`).
-- [ ] Every new/changed tool call still resolves through `gated_call` or an explicit
-      always-auto-approve connector, and leaves an audit trail either way.
-- [ ] No preview dict carries full content; no log line carries a credential or a message/document
-      body.
-- [ ] New client code has a matching `<Name>ClientError`; new connector code catches it and
-      re-raises as `RuntimeError`.
-- [ ] New module-level singletons have a reset added to `tests/conftest.py`.
-- [ ] Comments only where the *why* is non-obvious; no restated-*what* comments.
-- [ ] If this PR touches a `src/privacyfence/*_client.py` or `src/privacyfence/connectors/**` file:
-      run `scripts/qa_fixture_recorder.py --check <connector>` locally against a real account per
-      [`qa-environment-setup.md`](qa-environment-setup.md), and paste its report into the PR
-      description — see [`testing-policy.md` §2.1](testing-policy.md#21-qa_fixture_recorderpy---check----record).
-- [ ] If this PR changes `web/mcp_dispatch.py`, `web/routes_mcp.py`, `connector.py`'s
-      `ToolSpec`/`ToolParam` shapes, or `web/server.py`'s socket-binding/lifecycle: run
-      `pytest tests/integration -v` locally and confirm `test_mcp_daemon_contract.py` still passes
-      — it drives a real, socket-bound daemon with the official `mcp` client, catching what the
-      in-process `test_routes_mcp.py` transport can't.
-- [ ] If this PR changes `web/mcp_auth.py`, `web/server.py`'s `mcp_url` discovery-file writing, or
-      anything under `mcpb/shim/src/`: run `pytest tests/integration -v` locally (needs Node on
-      PATH) and confirm `test_shim_mcp_contract.py` still passes — a change on one side of the
-      shim<->`/mcp` contract without the other only fails there, not in either side's own unit
-      tests (D11 in `docs/https-connector-refactor-plan.md` §12).
-- [ ] If this PR changes a dependency in `pyproject.toml` (a version bound, a new package, an
-      extra): run `scripts/update_dependency_locks.sh` (needs `python3.13 -m pip install pip-tools`
-      — Python 3.13 specifically, see the script's own comments for why) and commit the resulting
-      `requirements/*.lock.txt` — `dependency-audit.yml`'s `lockfile-freshness` job
-      (SEC-19, Phase 2.4 of the now-removed `security-remediation-plan.md`) fails the build
-      otherwise.
+The sole active plan is [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md); new testing gaps should go there only when they represent actual planned work rather than current policy.
