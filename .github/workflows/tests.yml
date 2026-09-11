@@ -185,9 +185,11 @@ jobs:
   # been run for real. docs/automated-test-strategy-plan.md Phase 2.1 makes
   # that call: promoted to a permanent per-PR leg (renamed test-windows ->
   # platform-windows to match) now that it's proven green. Still the full
-  # core suite, not narrowed to a targeted tests/platform/ subset -- Phase
-  # 2.3's platform marker/directory doesn't exist yet, and 2.1 says to
-  # narrow later only once that lands, not to block promotion on it.
+  # core suite, not narrowed to Phase 2.3's targeted tests/platform/ subset
+  # -- automated-test-strategy-plan.md's Phase 2 status note records why
+  # promoting the new tests/platform/ suite (they run here automatically,
+  # `pyproject.toml`'s `testpaths` already covers all of `tests/`) was kept
+  # separate from actually narrowing this job down to just that subset.
   platform-windows:
     runs-on: windows-latest
 
@@ -207,6 +209,35 @@ jobs:
       # suite" reasoning test-python-compat gives, since this job exists to
       # catch Windows-specific breakage in the Python core, not to
       # re-prove the (already cross-platform, Node-runtime) shim.
+      - name: Run test suite (100% pass rate required)
+        run: pytest -v --cov=src/privacyfence --cov-report=term-missing
+
+  # docs/automated-test-strategy-plan.md Phase 2.2: the macOS leg of the
+  # same "does the runtime work on every desktop OS" question 2.1's
+  # platform-windows job already answers for Windows -- runs the identical
+  # core suite (same reasoning: catch macOS-specific breakage in the Python
+  # core, not re-prove the Node-runtime shim, which build.yml's real DMG
+  # build already exercises on macos-latest separately). Deliberately not
+  # scoped to `scripts/build_dmg.sh`/signing/notarization -- that stays
+  # build.yml's job, tag-triggered only; this job runs from source, on
+  # every PR, the same way platform-windows does.
+  platform-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      # Core Python suite only -- same reduced-suite reasoning as
+      # platform-windows above.
       - name: Run test suite (100% pass rate required)
         run: pytest -v --cov=src/privacyfence --cov-report=term-missing
 

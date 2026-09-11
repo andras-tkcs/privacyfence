@@ -164,9 +164,11 @@ one platform of the three with strictly weaker autostart behavior.
       decision this item left open — keep it permanent, or drop back to relying on `build.yml`'s
       release-time Windows job alone — is now made: `docs/automated-test-strategy-plan.md` Phase 2.1
       promoted it to a permanent per-PR leg (small ongoing CI cost, catches regressions before
-      release rather than only at tag-build time), renamed `platform-windows` to match. Still the
-      full core suite for now, not narrowed to a targeted subset — that's Phase 2.3's job, once
-      `tests/platform/` exists.
+      release rather than only at tag-build time), renamed `platform-windows` to match. `Phase 2.3`
+      has since added `tests/platform/` (runs here automatically as part of the suite below), but
+      this job still runs the full core suite rather than being narrowed down to just that targeted
+      subset — `docs/automated-test-strategy-plan.md` Phase 2's own status note tracks that
+      narrowing (2.4) as a deliberately separate, still-open follow-up.
 - [x] **6.3** First real run of 6.2's promoted job (on the PR that landed 2.1 itself) failed 55
       tests + 1 error — this is what actually running the full suite on Windows for the first time
       was always going to surface, not a regression from that PR's own (CI-only) diff. Triaged and
