@@ -2,40 +2,38 @@
 
 Phased plan to get PrivacyFence to a state where it can be released with confidence — across
 macOS/Windows/Linux local mode, Linux org mode, the browser-based approval UI, MCP clients, and
-eleven (soon: still eleven, once Apps Script has a fixture — see Phase 1) live third-party
-connectors — without the maintainer manually reproducing that whole matrix by hand on every
-release. This document is deliberately an *implementation* plan, not a restatement of the
-strategy: every phase below is checked against what this repo already has today (a script, a test
-module, a CI job) before describing new work, so the plan says only what's actually left to build.
+ten live third-party connectors (eleven once Apps Script has a fixture — see Phase 1's residual
+gap) — without the maintainer manually reproducing that whole matrix by hand on every release.
+This document is deliberately an *implementation* plan, not a restatement of the strategy: every
+phase below is checked against what this repo already has today (a script, a test module, a CI
+job) before describing new work, so the plan says only what's actually left to build.
+
+**Status note (2026-09-11):** Phase 1 — the largest single body of work in this plan — landed on
+`main` in three PRs ([#283](https://github.com/privacyfence/privacyfence/pull/283),
+[#278](https://github.com/privacyfence/privacyfence/pull/278),
+[#284](https://github.com/privacyfence/privacyfence/pull/284)) between this plan's initial draft
+and this revision. See [Phase 1](#phase-1--complete-live-connector-ci-and-close-security-remediation-plan-312-—-done)
+below for what shipped, what deviated from the original design, and the one residual gap (Apps
+Script fixture coverage). Phases 0 and 2–10 are unaffected by that merge and reflect this plan's
+original grounding pass.
 
 ## Relationship to existing planning docs
 
-This repo already has three documents that overlap with pieces of this plan. This plan **extends
-and sequences** them; it does not replace or duplicate their content:
-
-- [`testing-policy.md`](testing-policy.md) — the current three-tier description of what runs in CI
-  versus by hand. Phase 0 below rewrites its framing into the finer-grained taxonomy this plan
-  needs; every later phase updates its "Quick reference" table as new automated tiers come online.
-- [`security-remediation-plan.md`](security-remediation-plan.md) — Phase 3.12 of that plan
-  (`tests/tst-08-through-13-remaining-test-depth`, TST-08–TST-13) is the *only* remaining open item
-  in the whole remediation plan as of this writing. Closing it is this plan's Phase 1, and doing so
-  also closes out `security-remediation-plan.md` entirely (see [Phase
-  1.10](#110-close-the-security-remediation-plan)).
-- [`connector-ci-integration-plan.md`](connector-ci-integration-plan.md) — already fully designs
-  the self-hosted-runner live-connector-CI infrastructure (its Phases A–E) *and* already designs
-  TST-08 through TST-13 in detail (its Phase E). Phase 1 below does not re-derive that design — it
-  tracks completion status against it and calls out exactly what Phase A–E work remains unbuilt in
-  this repository today.
-
-**Assumption carried over from `connector-ci-integration-plan.md`:** Phase A (dedicated QA
-accounts) and Phase B (the self-hosted, credential-holding runner) are treated as already complete
-— acquiring accounts and provisioning a VM are infrastructure/credential actions with no trace in
-this git history, so this plan can't verify them from the repository alone. **What the repository
-*does* show, and what this plan verifies below:** neither `connector-ci-integration-plan.md`'s
-Phase C workflow file (`.github/workflows/connector-live-check.yml`) nor any of its Phase E test
-modules (TST-09 through TST-13) exist yet. If Phase A/B turn out not to be done, Phase 1.1 below
-(standing up the workflow) blocks until they are — flag that back rather than silently building a
-workflow with nowhere to run.
+- [`testing-policy.md`](testing-policy.md) — the current tiered description of what runs in CI
+  versus by hand, now including the §0 runner-local live tier Phase 1 added. Phase 0 below further
+  rewrites its framing into the finer-grained seven-layer taxonomy this plan needs; every later
+  phase updates its "Quick reference" table as new automated tiers come online.
+- `security-remediation-plan.md` and `connector-ci-integration-plan.md` — **both removed from
+  `docs/` by [PR #284](https://github.com/privacyfence/privacyfence/pull/284)**, once every finding
+  in the former's coverage matrix (SEC-01..23, TST-01..16, DOC-01..04, ORP-01..06) had a landed
+  commit on `main` and the live-connector-CI infrastructure the latter designed was confirmed
+  working end to end on the real self-hosted runner. Both are kept only as git history now, not as
+  files to link to. [`connector-live-check-setup.md`](connector-live-check-setup.md) is the
+  document that replaced `connector-ci-integration-plan.md` — it carries forward only the pieces
+  that still need standing documentation (account acquisition, runner provisioning/troubleshooting)
+  now that the workflow file itself is the authoritative source for what the live-check tier does.
+  This plan's references below to either removed document are historical — describing what the
+  work looked like when planned, before Phase 1 below records what it looked like once shipped.
 
 ## Core testing principle
 
@@ -109,10 +107,12 @@ describe as needing a human.
    ]
    ```
 
-   Apply markers to *new* test modules as later phases add them (Phase 1's TST-08–13 modules,
-   Phase 3's system test, Phase 6's packaged-artifact tests). Do not retroactively mark every
-   existing test in this phase — that's churn with no payoff until something actually needs to
-   select on the marker (e.g. `pytest -m "not live"`).
+   Apply markers to *new* test modules as later phases add them — Phase 1's TST-08–13 modules
+   already exist unmarked (they landed before this marker work did; backfill their markers as part
+   of this phase rather than leaving them the one unmarked cohort), plus Phase 3's system test and
+   Phase 6's packaged-artifact tests as those land. Do not retroactively mark every other existing
+   test in this phase — that's churn with no payoff until something actually needs to select on the
+   marker (e.g. `pytest -m "not live"`).
 
 3. Add the test-ownership table (failure type → layer) to `testing-policy.md`, and state the
    governing rule explicitly: *a test stays manual only when automated observation cannot reliably
@@ -136,160 +136,124 @@ describe as needing a human.
 
 ### Objective
 
-Finish `connector-ci-integration-plan.md`'s Phase C (the scheduled live-connector workflow) and
-Phase E (TST-08 through TST-13), then close out `security-remediation-plan.md` entirely — it has no
-other open item.
+Finish the scheduled live-connector workflow and TST-08 through TST-13, then close out
+`security-remediation-plan.md` entirely — it had no other open item.
 
-### Already in this repo
+### Status: done
 
-- `scripts/qa_fixture_recorder.py`, its own unit tests (`tests/unit/test_qa_fixture_recorder.py`),
-  and the full local-manual workflow around it (`testing-policy.md` §2.1,
-  `manual-pre-release-test-plan.md` §1) — this is the thing Phase 1.1 below schedules instead of
-  requiring a human to remember to run it.
-- `tests/fixtures/live/<connector>/` for ten of eleven connectors: `calendar`, `confluence`,
-  `contacts`, `drive`, `gmail`, `jira`, `salesforce`, `slack`, `tasks`, `telegram`. **`apps_script`
-  has no fixture directory yet**, even though `src/privacyfence/connectors/apps_script.py` exists
-  and ships — this is exactly the TST-08 gap `connector-ci-integration-plan.md` §E.1 already
-  identified.
-- `tests/unit/web/test_routes_security.py` has the `_app(*, step_up=None, sessions=None)` scaffold
-  TST-10 needs, but no test yet proves the cross-principal binding property itself.
-- `pyproject.toml` has no `hypothesis` dependency yet (TST-12 not started).
-- No `tests/integration/test_deferred_approval_round_trip.py`, no
-  `tests/unit/test_fixture_coverage.py`, no `tests/unit/test_parser_roundtrip_properties.py` —
-  TST-09, TST-08's CI guard, and TST-12 are all unbuilt.
-- No `.github/workflows/connector-live-check.yml` — Phase C of the connector CI plan is unbuilt.
-- `time.sleep(...)` calls remain at every site `connector-ci-integration-plan.md` §E.4 lists
-  (`tests/unit/test_approvals.py` ×6, `test_audit_forwarding.py` ×3, `test_webauthn_stepup.py` ×1,
-  plus one reload-polling sleep each in `test_settings_controller.py`, `test_daemon_main.py`,
-  `test_web_prompt.py`, `tests/unit/web/test_routes_settings.py`, and one in
-  `tests/unit/web/test_routes_approvals.py`) — TST-11 not started.
+Landed on `main` in three PRs after this plan's initial draft, in order:
+[#283](https://github.com/privacyfence/privacyfence/pull/283) "Add connector-live-check.yml (Phase
+C) and update testing-policy.md (Phase D)", [#278](https://github.com/privacyfence/privacyfence/pull/278)
+"TST-08/09/10/11/12/13: Systemic test coverage for security invariants" (in two commits, `9d3ef19`
+covering TST-08–TST-11/TST-13 and `e5b5f21` adding TST-12 as a deliberate follow-up once adding
+`hypothesis` as a dependency was flagged rather than bundled silently), and
+[#284](https://github.com/privacyfence/privacyfence/pull/284) "Close out security-remediation-plan.md
+and connector-ci-integration-plan.md", which verified every finding in the remediation plan's
+coverage matrix had a landed commit and removed both source-planning documents. What actually
+shipped, versus what was originally planned here:
 
-### 1.1 Stand up the live connector workflow
+- **1.1 (live connector workflow)** — `.github/workflows/connector-live-check.yml` exists, runs on
+  `schedule` (weekly) + `workflow_dispatch` only, targets a self-hosted runner (label
+  `privacyfence-test`, not `privacyfence-qa-live` as originally named), and is confirmed green
+  end-to-end against real data for all ten covered connectors. The implementation fixed three real
+  bugs the original design (`connector-ci-integration-plan.md` §C) got wrong once someone actually
+  built it: `actions/checkout`'s default `clean: true` would have wiped runner-local state before
+  every run (fixed by making the checkout fully ephemeral instead of trying to persist state inside
+  the Actions workspace); `--ephemeral` runner registration is incompatible with a
+  systemd-managed always-listening runner (the plan's B.2 recommended it); and a hardcoded
+  `python3.13` doesn't match every runner's actual install (switched to plain `python3`, matching
+  `pyproject.toml`'s real `>=3.11` floor). See
+  [`connector-live-check-setup.md`](connector-live-check-setup.md) for the corrected Phase B and a
+  Troubleshooting section covering these.
+- **1.2 (TST-08)** — done differently than planned: instead of a standalone
+  `tests/unit/test_fixture_coverage.py`, the guard is `TestFixturePresence` inside the existing
+  `tests/unit/test_qa_fixture_recorder.py`, checked against a new `EXPECTED_FIXTURES` static
+  manifest in `scripts/qa_fixture_recorder.py` itself (which also self-checks at import time that
+  `EXPECTED_FIXTURES`'s keys equal `CONNECTOR_CHECKS`'s, so a connector added to one without the
+  other fails loudly). **Apps Script was not added** — `EXPECTED_FIXTURES`/`CONNECTOR_CHECKS` cover
+  exactly the same ten connectors as before (`confluence`, `jira`, `salesforce`, `gmail`, `drive`,
+  `calendar`, `contacts`, `tasks`, `slack`, `telegram`); `src/privacyfence/connectors/apps_script.py`
+  still ships with no `tests/fixtures/live/apps_script/` directory and no recorder entry. This is
+  the one residual gap from this phase's original scope — see below.
+- **1.3 (TST-09)** — `tests/integration/test_deferred_approval_round_trip.py` landed as planned,
+  same posture as `test_mcp_daemon_contract.py`, covering both the accept and the deny outcome of
+  the full deferred-approval protocol (hold-window timeout → `approval_pending` → HTTP decide → a
+  second identical call finds the ledger and releases without a second prompt).
+- **1.4 (TST-10)** — landed as `TestCrossPrincipalIsolation` in `tests/unit/web/test_routes_security.py`,
+  proving the WebAuthn step-up credential stores' per-principal binding (a second signed-in
+  principal can't see another's enrolled passkey, can't delete another principal's credential,
+  can't complete a registration ceremony another principal began) — the same binding property this
+  plan asked for, expressed against the actual step-up mechanism rather than a generic scaffold.
+- **1.5 (TST-11)** — landed narrower than originally scoped: six fixed-sleep sites were replaced
+  with `threading.Event` signals plus `@pytest.mark.timeout(5)` — three in `test_gate.py` and three
+  in `test_audit_forwarding.py` (not the `test_approvals.py`/`test_webauthn_stepup.py` sites this
+  plan originally listed; the implementer's own investigation found the real flakiness risk lived
+  in `test_gate.py` instead). One of the three `test_gate.py` fixes also surfaced and fixed a real
+  latent bug in `TestRunInPopupExecutor` — a pool-saturation test whose "occupier" coroutines were
+  never actually scheduled before the popup dispatch it claimed to race against, so it was passing
+  without exercising the scenario it claimed to cover. A handful of `time.sleep(...)` calls remain
+  elsewhere (`test_approvals.py`, `test_webauthn_stepup.py`, and several `interval`-driven
+  reload-polling helpers) — PR #284's own verification treated this as within the "small
+  process-settle sleeps... may remain unless they demonstrate actual flakiness" carve-out the
+  original design already allowed for, not as an open item.
+- **1.6 (TST-12)** — `tests/unit/test_parser_properties.py` (not
+  `test_parser_roundtrip_properties.py` as originally named), covering `html_to_text.py`,
+  `markdown_to_html.py`, `email_markdown.py`, and `text_extraction.py`; `hypothesis>=6.100` added
+  to `pyproject.toml`'s `test` extra.
+- **1.7 (TST-13)** — `tests/unit/test_systemic_gate_invariants.py`, extending the same
+  parameterized source-scanning pattern `test_readme_manifest_alignment.py` already used, for all
+  three invariants this plan asked for: `reason` on every gated tool, `pii_scan_text` on every
+  `review`-gated call (with a documented, individually-justified exemption for Salesforce's three
+  record/report reads, whose `details_text` has no separate metadata envelope to strip), and all
+  eleven token-writer call sites going through the shared `secure_files.py` helpers.
+- **1.8/1.9 (bounded lifecycle tests, fixture freshness reporting)** — not part of this batch of
+  PRs; still open, tracked below.
+- **1.10 (close the remediation plan)** — done, but as a full removal rather than an in-place
+  "mark complete": `docs/security-remediation-plan.md` and `docs/connector-ci-integration-plan.md`
+  are both deleted from `main`, with every dangling cross-reference elsewhere in `docs/` (
+  `security-and-compliance.md`, `org-mode-operational-readiness.md`, `testing-policy.md`,
+  `coding-and-testing-guidelines.md`, `windows-linux-support-plan.md`, `adr/0001`,
+  `requirements/README.md`) converted to plain "(now-removed)" citations rather than real links.
+  `connector-live-check-setup.md` is the new home for the parts of the removed
+  `connector-ci-integration-plan.md` that still need standing documentation.
+- **1.11 (testing documentation)** — done: `testing-policy.md` gained a new §0 ("Runner-local live
+  tier (scheduled, not per-PR)") describing the workflow, updated its §1/§2/§2.1 framing to the
+  "GitHub-hosted vs. any other GitHub Actions runner" distinction, and its Quick-reference table
+  gained the new row. `pyproject.toml`'s `[tool.pytest.ini_options]` did **not** gain a `markers`
+  list as part of this work — that's still Phase 0's job, not touched here.
 
-Implement `connector-ci-integration-plan.md` §C's `.github/workflows/connector-live-check.yml`
-verbatim (that document already has the full YAML, the concurrency/permissions rationale, and the
-drift-PR mechanics worked out) — `schedule` + `workflow_dispatch` only, targeting the
-`privacyfence-qa-live` self-hosted runner label, never `pull_request`/`pull_request_target`, never a
-GitHub-hosted runner. If Phase A/B credentials and runner registration aren't actually in place yet
-(see the assumption note above), this step blocks on that, not on anything in this repository.
+### Residual work
 
-### 1.2 TST-08 — complete live fixture coverage
+1. **Apps Script fixture coverage** — genuinely still open. Add `apps_script` to both
+   `CONNECTOR_CHECKS` and `EXPECTED_FIXTURES` in `scripts/qa_fixture_recorder.py`, record its first
+   fixture once a QA Apps Script project exists, and update `manual-pre-release-test-plan.md` §1's
+   connector count accordingly. Small, standalone follow-up — no dependency on anything else in
+   this plan.
+2. **1.8 — bounded lifecycle tests for write-capable providers** (create/read/update/delete a
+   uniquely-tagged QA object, verify cleanup) — not built. Add to `scripts/qa_fixture_recorder.py`
+   or a sibling script it calls into, runs on the same self-hosted-runner schedule as the existing
+   `--check`/`--record` modes.
+3. **1.9 — fixture freshness/age reporting** (`< 60 days` healthy / `60–90 days` warning /
+   `> 90 days` refresh required) — not built. Small addition to the report `qa_fixture_recorder.py`
+   already prints.
+4. **Pytest markers on the TST-08–13 modules** — folds into Phase 0 below once that phase's marker
+   list is registered; these five modules are the first backfill candidates.
 
-1. Add `apps_script` to `scripts/qa_fixture_recorder.py`'s connector registry if not already wired
-   (check its `CONNECTOR_CHECKS`-equivalent mapping first — `connector-ci-integration-plan.md` §E.1
-   already flags this as the one missing entry).
-2. Record the first Apps Script fixture once a QA Apps Script project exists under the QA Workspace
-   from Phase A.
-3. Add `tests/unit/test_fixture_coverage.py`: enumerate connector modules under
-   `src/privacyfence/connectors/` (mirroring how `connector_host.py` already builds its
-   `{name: Connector}` map, so the enumeration can't silently miss a registered connector), and for
-   each assert `tests/fixtures/live/<connector>/` exists, contains at least one `.json` file, and
-   that file is non-empty. Add this as a step in `tests.yml`'s existing `test` job.
-4. Update `manual-pre-release-test-plan.md` §1's "omit connector names to run all ten" line to
-   eleven once Apps Script is wired in.
+None of these four block anything else in this document — treat them as a small, independent
+follow-up PR rather than reopening Phase 1 as a whole.
 
-### 1.3 TST-09 — deferred approval round-trip
+### Exit criteria (met, except where noted)
 
-New `tests/integration/test_deferred_approval_round_trip.py`, same posture as the existing
-`tests/integration/test_mcp_daemon_contract.py` (real loopback socket, official `mcp` Python
-client, no external network, no Node needed): a synthetic gated tool call creates a pending
-approval, the original MCP call stays unresolved, a later `/approvals` HTTP decision resolves it,
-and the original call completes — Allow returns the expected result, Deny returns the expected MCP
-error, and the audit record carries the final decision. Mark `@pytest.mark.integration`.
-
-### 1.4 TST-10 — cross-principal step-up binding
-
-Extend `tests/unit/web/test_routes_security.py` using its existing `_app(...)` scaffold. Add cases
-proving: principal A's step-up credential satisfies A's own requirement; A's credential cannot
-satisfy a requirement raised for principal B; B satisfies B's requirement with B's own credential;
-a stale or mismatched binding is rejected. This is the specific binding property, not general
-"step-up works" — the existing scaffold already proves the latter.
-
-### 1.5 TST-11 — deterministic synchronization
-
-Replace each `time.sleep(...)` call site listed above with a `threading.Event`/`asyncio.Event` the
-code under test can signal, `.wait(timeout=...)` on the test side, plus a `pytest.mark.timeout(N)`
-where the global `pyproject.toml` timeout isn't already sufficient. Leave the process-startup-settle
-sleeps in `test_browser_smoke.py`, `test_shim_mcp_contract.py`, and `test_mcp_daemon_contract.py`
-alone — those wait on a subprocess binding a socket, not a signal this plan is scoped to redesign.
-
-Once done, revisit `scripts/check_coverage_floor.py`'s recorded floor for any module whose coverage
-fluctuated because of the timing races these sleeps papered over, and tighten it to the now-stable
-value.
-
-### 1.6 TST-12 — parser property tests
-
-Add `hypothesis>=6.100` to `pyproject.toml`'s `test` extra. New
-`tests/unit/test_parser_roundtrip_properties.py`, focused on the `html_to_text` →
-`markdown_to_html` round trip (and the sibling `email_markdown.py`/`markdown_to_html.py` pair),
-using a constrained strategy (a realistic tag/character subset, not unconstrained `st.text()`).
-Properties to cover: no transformation ever introduces a URL scheme outside the shared allowlist
-from SEC-01 (`fix/sec-01-approval-window-url-scheme-allowlist`); sanitization survives a round
-trip; accepted structures retain their textual meaning; malformed-but-supported input never raises
-instead of degrading gracefully.
-
-### 1.7 TST-13 — systemic parameterized invariants
-
-Three parameterized tests, each iterating every relevant tool/site rather than hand-listing them:
-
-1. **`reason` on every gated tool** — introspect each connector's `ToolSpec`/`ToolParam`
-   registrations (the same shape `test_mcp_tools.py` already exercises) and assert every `review`/
-   `popup`-gated operation declares a `reason` parameter.
-2. **`pii_scan_text` on every review-gated tool** — reuse the call-capturing fixture pattern
-   `coding-and-testing-guidelines.md` §2.5 documents for gate-argument assertions; assert every
-   `review`-gated call passes `pii_scan_text`.
-3. **Token writers use the secure-write helpers** — AST-based check (prefer over grep, per the
-   source strategy) over every module writing a credential/token file, asserting each goes through
-   `atomic_write_text`/`atomic_write_json` (the SEC-09 helper) rather than a raw `open(...).write()`.
-
-### 1.8 Extend live connector CI beyond fixture-shape checks
-
-Once 1.2's minimum is met, add bounded lifecycle tests for write-capable providers to
-`scripts/qa_fixture_recorder.py` (or a sibling script it calls into): create a uniquely-tagged QA
-object, read it back, update where the provider supports it, delete/archive it, verify cleanup.
-Runs only on the self-hosted runner (Phase A/B), on the same schedule as 1.1.
-
-### 1.9 Fixture freshness and reporting
-
-Extend the report `qa_fixture_recorder.py` already prints (per `testing-policy.md` §2.1) with an
-age column: `< 60 days` healthy, `60–90 days` warning, `> 90 days` refresh required — this is a
-small addition to a script that already produces "a small, deterministic Markdown report," not new
-infrastructure.
-
-### 1.10 Close the Security Remediation Plan
-
-Once 1.2–1.7 are green:
-
-1. Update `security-remediation-plan.md`'s Phase 3.12 row to mark TST-08 through TST-13 complete
-   individually, each referencing its actual test file (`test_fixture_coverage.py`,
-   `test_deferred_approval_round_trip.py`, the extended `test_routes_security.py`, the diffed
-   `time.sleep` sites, `test_parser_roundtrip_properties.py`, the three TST-13 invariant tests).
-2. Remove any wording stating 3.12 remains outstanding.
-3. Walk the rest of the document (Phase 0 through Phase 3) confirming no other row is still open —
-   as of this writing 3.12 is the only unchecked item, so this should be a read-through, not a
-   rediscovery.
-4. If 3.12 is confirmed the last open item, mark the whole Security & Quality Remediation Plan
-   complete at the top of the document, and state explicitly that it's kept as a historical record
-   from here on, not a live tracker.
-
-### 1.11 Update testing documentation
-
-Fold `connector-ci-integration-plan.md` Phase D's `testing-policy.md` changes in alongside this
-plan's own Phase 0 rewrite (same PR, to avoid two conflicting rewrites of the same section):
-describe the two CI trust tiers explicitly — credential-free PR CI (GitHub-hosted, includes TST-08's
-guard and TST-09–13) versus credential-bearing connector CI (self-hosted runner only, real provider
-checks, fixture recording, drift detection, bounded lifecycle tests) — and state plainly that
-GitHub-hosted runners and every `pull_request`-triggered workflow remain credential-free, full stop.
-
-### Exit criteria
-
-- `connector-live-check.yml` runs successfully on the self-hosted runner; no connector credential is
-  ever a GitHub Actions secret; it cannot execute from an untrusted PR.
-- Every connector, Apps Script included, has at least one recorded live fixture, and deleting a
-  connector's last fixture fails ordinary PR CI (`test_fixture_coverage.py`).
-- TST-09 through TST-13 pass, and the TST-11 coverage-floor cleanup is done.
-- `testing-policy.md` describes both CI trust tiers.
-- `security-remediation-plan.md` marks 3.12, and the whole plan, complete.
+- ✅ `connector-live-check.yml` runs successfully on the self-hosted runner; no connector credential
+  is ever a GitHub Actions secret; it cannot execute from an untrusted PR.
+- ⚠️ Every connector *except Apps Script* has at least one recorded live fixture, and deleting a
+  connector's last fixture fails ordinary PR CI (`TestFixturePresence`). Apps Script itself is the
+  one residual gap above.
+- ✅ TST-09 through TST-13 pass.
+- ✅ `testing-policy.md` describes both CI trust tiers.
+- ✅ `security-remediation-plan.md`'s Phase 3.12, and the whole plan, are complete — the document
+  itself is removed rather than left marked-complete in place, per PR #284's own judgment call that
+  a fully-landed tracking document is better retired than kept as dead weight.
 
 ---
 
@@ -688,7 +652,7 @@ cloud-first without dedicated physical test machines.
    audit logs, pytest output, browser console (where applicable, reuse Phase 4's existing capture),
    screenshots where applicable, an installed-file manifest (packaged tests), OS/runtime versions,
    and a test-run identifier. Bounded retention (`retention-days`, matching the existing pattern in
-   `connector-ci-integration-plan.md`'s workflow YAML).
+   `.github/workflows/connector-live-check.yml` already establishes for that job).
 2. Every failure message states what failed, expected vs. actual state, and where its diagnostic
    artifacts landed — a small convention to apply across the new test modules from Phases 3, 4, 6,
    7, 8, not a framework to build.
@@ -707,8 +671,9 @@ Most CI failures are diagnosable without local reproduction.
 ```
 Phase 0  Taxonomy / doc foundation
    ↓
-Phase 1  Live connector CI + Security Remediation 3.12 closure   (largest remaining gap)
-   ↓
+Phase 1  Live connector CI + Security Remediation 3.12 closure   (DONE — PR #283/#278/#284;
+   ↓                                                               Apps Script fixture + 1.8/1.9
+   ↓                                                               remain as a small follow-up)
 Phase 2  Cross-platform core CI                                  (promote existing Windows job;
    ↓                                                               add new macOS job)
 Phase 3  Canonical cross-platform system test                    (new module, reuses existing
@@ -740,16 +705,19 @@ Kept close to the source strategy's 27-PR breakdown, with entries removed or shr
 plan's grounding pass found the work already done, and a note on which remain genuinely large:
 
 1. Test taxonomy + policy foundation (Phase 0)
-2. Connector live workflow — `connector-live-check.yml` only; Phase A/B are a prerequisite, not a PR
-   in this repo (Phase 1.1)
-3. TST-08 fixture completeness + Apps Script fixture + coverage guard (Phase 1.2)
-4. TST-09 deferred approval test (Phase 1.3)
-5. TST-10 cross-principal step-up tests (Phase 1.4)
-6. TST-11 deterministic synchronization + coverage-floor tightening (Phase 1.5)
-7. TST-12 property tests (Phase 1.6)
-8. TST-13 systemic invariant tests (Phase 1.7)
-9. Connector fixture freshness/reporting + bounded lifecycle tests (Phase 1.8–1.9)
-10. Security remediation closure/documentation (Phase 1.10–1.11)
+2. ~~Connector live workflow~~ — **done**, PR #283 (Phase 1.1)
+3. ~~TST-08 fixture completeness + coverage guard~~ — **done**, PR #278 (Phase 1.2); Apps Script
+   fixture coverage itself is not, and is small enough to fold into PR 3 below rather than stay its
+   own row
+4. ~~TST-09 deferred approval test~~ — **done**, PR #278 (Phase 1.3)
+5. ~~TST-10 cross-principal step-up tests~~ — **done**, PR #278 (Phase 1.4)
+6. ~~TST-11 deterministic synchronization~~ — **done** for the two files that turned out to need it,
+   PR #278 (Phase 1.5)
+7. ~~TST-12 property tests~~ — **done**, PR #278 (Phase 1.6)
+8. ~~TST-13 systemic invariant tests~~ — **done**, PR #278 (Phase 1.7)
+9. ~~Security remediation closure/documentation~~ — **done**, PR #284 (Phase 1.10–1.11)
+10. **New PR 3** (renumbering around the gap above): Apps Script fixture + connector fixture
+    freshness/reporting + bounded lifecycle tests (Phase 1's residual work)
 11. Windows permanent portability CI — rename/promote only, small PR (Phase 2.1)
 12. macOS portability CI — new job (Phase 2.2–2.3)
 13. Cross-platform daemon/MCP/approval/audit test — new module, reuses existing patterns (Phase 3)
@@ -785,11 +753,12 @@ combination.
 - A canonical daemon/MCP/approval/audit scenario passes on all three desktop platforms (Phase 3).
 - Browser behavior is tested automatically against real Chromium, covering PII, responsive, and
   light/dark surfaces, not just the approval round trip already covered (Phase 4).
-- Every connector is periodically exercised against dedicated QA accounts, including Apps Script
-  (Phase 1).
-- Provider API drift is detected automatically and produces a reviewable PR (Phase 1).
-- `security-remediation-plan.md`'s Phase 3.12 is complete and the overall remediation plan is closed
-  (Phase 1).
+- Every connector is periodically exercised against dedicated QA accounts (Phase 1, done for ten of
+  eleven — Apps Script fixture coverage is the one open item).
+- Provider API drift is detected automatically and produces a reviewable PR (Phase 1, done).
+- The Security & Quality Remediation Plan's Phase 3.12 is complete and the overall plan is closed
+  (Phase 1, done — the plan document itself was removed from `docs/` rather than left
+  marked-complete in place).
 - Every published DMG/EXE/DEB is exercised before publication (Phase 6).
 - Package upgrade tests prove user state survives, on all three platforms (Phase 6).
 - Local-mode autostart has automated platform-specific coverage (Phase 7).
