@@ -23,57 +23,70 @@ concurrency:
                                # provider call sequence
 
 env:
-  # The one persistent, hand-provisioned working copy on this runner --
-  # NOT the ephemeral actions/checkout workspace Actions would otherwise
-  # give this job. org_config.json, credentials/, tests/fixtures/
-  # qa_environment.yaml and the runner-local .venv all live here (Phase
-  # B.3) because paths.py's data_dir() resolves org/credential storage
-  # relative to wherever this package's own source files physically sit
-  # on disk, for a non-installed source checkout -- so the script has to
-  # actually run from this exact directory to see any of them. A fresh
-  # actions/checkout workspace is a different directory and would never
-  # see this runner's credentials no matter how it's configured.
-  PF_CHECKOUT: /home/pf-runner/privacyfence
+  # This runner's one persistent, hand-provisioned home for the QA
+  # credentials -- outside any Actions-managed workspace, never a GitHub
+  # Actions secret. Everything else about this job's checkout is
+  # ephemeral and rebuilt every run (see the two steps below): only this
+  # directory needs to survive between runs.
+  QA_SECRETS_DIR: ~/privacyfence
 
 jobs:
   live-check:
     runs-on: [self-hosted, privacyfence-test]
-    timeout-minutes: 20   # generous but bounded -- this should be a few
-                           # minutes of read calls, not an open-ended job
+    timeout-minutes: 20   # generous but bounded -- a few minutes of read
+                           # calls plus one venv build, not an open-ended job
 
     steps:
-      # No actions/checkout here -- see the PF_CHECKOUT comment above.
-      # Instead, fast-forward the runner's own persistent clone to this
-      # workflow's commit in place. This only ever touches tracked files
-      # (a plain `git checkout --force`, no `clean`/`git clean` step), so
-      # credentials/, org/, .venv/ and tests/fixtures/qa_environment.yaml
-      # -- all gitignored -- are left exactly as this runner has them.
-      - name: Update the persistent checkout to this commit
-        working-directory: ${{ env.PF_CHECKOUT }}
-        run: |
-          git fetch origin "${{ github.sha }}"
-          git checkout --force FETCH_HEAD
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # clean: true (the default) is exactly what we want here: this
+          # checkout is fully ephemeral, rebuilt from scratch every run,
+          # and never holds anything worth preserving between runs --
+          # the one thing that does need to persist (QA_SECRETS_DIR) lives
+          # outside this workspace entirely and gets copied in below.
 
-      # No setup-python/setup-node steps here -- the self-hosted runner
-      # keeps its own persistent venv (Phase B), rebuilt manually when
-      # dependencies change, rather than a fresh install every run. A
-      # GitHub-hosted job would need setup-python; this one deliberately
-      # doesn't, since the point is minimal, auditable actions on a
-      # credential-holding machine.
-      - name: Verify the runner-local venv exists
-        working-directory: ${{ env.PF_CHECKOUT }}
+      # Built fresh every run rather than kept as a persistent runner-local
+      # venv: costs an extra ~1-2 minutes on this weekly/on-demand job, but
+      # means a pyproject.toml dependency change is picked up automatically
+      # instead of silently drifting from whatever this runner last had
+      # installed. No actions/setup-python -- python3.13 (matching
+      # tests.yml's full-suite version) is expected to already be on this
+      # runner's PATH; the point of skipping setup-python here is keeping
+      # this credential-holding job's own steps minimal and auditable.
+      - name: Build this run's venv
         run: |
-          if [ ! -x .venv/bin/python ]; then
-            echo "##[error] .venv/bin/python not found in $(pwd)." \
-                 "Create the persistent venv once on this runner:" \
-                 "python3.13 -m venv .venv && .venv/bin/pip install -e '.[test]'" \
-                 "-- see docs/connector-ci-integration-plan.md Phase B.3."
-            exit 1
-          fi
+          python3.13 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[test]"
+
+      # The only step that touches this runner's permanent state.
+      # QA_SECRETS_DIR (org_config.json, credentials/,
+      # tests/fixtures/qa_environment.yaml) is deliberately kept outside
+      # any Actions workspace and copied in fresh each run -- see the
+      # module comment above and docs/connector-ci-integration-plan.md
+      # Phase B.3. paths.py's data_dir() resolves org/credential storage
+      # relative to wherever this checkout physically sits on disk, so
+      # the copy has to land at these exact paths for the script to see it.
+      - name: Copy this runner's QA credentials into the checkout
+        run: |
+          set -euo pipefail
+          secrets_dir="$(eval echo "${QA_SECRETS_DIR}")"
+          for required in credentials org/org_config.json tests/fixtures/qa_environment.yaml; do
+            if [ ! -e "${secrets_dir}/${required}" ]; then
+              echo "##[error] ${secrets_dir}/${required} not found." \
+                   "See docs/connector-ci-integration-plan.md Phase B.3" \
+                   "for how this runner's QA credentials are provisioned."
+              exit 1
+            fi
+          done
+          mkdir -p org tests/fixtures
+          cp -a "${secrets_dir}/credentials/." credentials/
+          cp -a "${secrets_dir}/org/org_config.json" org/org_config.json
+          cp -a "${secrets_dir}/tests/fixtures/qa_environment.yaml" tests/fixtures/qa_environment.yaml
 
       - name: Run qa_fixture_recorder.py --check
         id: check
-        working-directory: ${{ env.PF_CHECKOUT }}
         run: |
           .venv/bin/python scripts/qa_fixture_recorder.py --check \
             --report-file /tmp/qa-check-report.md
@@ -83,7 +96,6 @@ jobs:
 
       - name: Re-record on drift
         if: steps.check.outcome == 'failure'
-        working-directory: ${{ env.PF_CHECKOUT }}
         run: |
           .venv/bin/python scripts/qa_fixture_recorder.py --record \
             --report-file /tmp/qa-record-report.md
@@ -92,16 +104,10 @@ jobs:
       # a maintainer reviews the redacted diff exactly as the manual
       # process in testing-policy.md Sec 2.1 already describes, this just
       # removes the "someone has to remember to run it" step.
-      #
-      # `path:` points this action at PF_CHECKOUT rather than the
-      # workflow's default working directory -- with no actions/checkout
-      # step, ${{ github.workspace }} is an empty directory, not a git
-      # repository at all.
       - name: Open drift PR
         if: steps.check.outcome == 'failure'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          path: ${{ env.PF_CHECKOUT }}
           branch: chore/connector-live-fixture-drift
           title: "chore: connector live fixture drift detected"
           commit-message: "Update recorded fixtures after provider API drift"
