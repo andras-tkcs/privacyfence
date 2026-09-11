@@ -90,6 +90,8 @@ Do not copy QA credentials into GitHub Actions secrets as a workaround.
 
 **Install fails in the ephemeral venv** — reproduce `python3 -m venv` + `pip install -e ".[test]"` as the runner user and repair the host dependency/toolchain issue; do not keep a long-lived project venv as hidden state.
 
+**`--lifecycle`'s Confluence row shows `n/a` under Cleanup** — expected, not a failure: deleting a page needs a `delete:page:confluence` scope this app deliberately never requests (see [`atlassian-setup.md`](atlassian-setup.md)); the QA space accumulates tagged pages that need occasional manual cleanup.
+
 ## Security boundary
 
 The self-hosted runner is trusted infrastructure because it holds real QA connector grants. Restrict repository/job access accordingly, patch the host, monitor runner health, and rotate/revoke QA grants if the host is compromised.

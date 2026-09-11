@@ -274,17 +274,24 @@ shipped, versus what was originally planned here:
    `--lifecycle` mode (`LIFECYCLE_CHECKS`) covers `calendar`, `confluence`, `jira`, and `tasks` — the
    four connectors whose client exposes a full create/get/update triple. `contacts` is deliberately
    excluded (`ContactsClient.create_contact()`'s own docstring: "Contact deletion is not
-   supported" — a lifecycle test that can't clean up after itself would permanently pollute the QA
-   account); `gmail` has no `get_draft()`/`update_draft()` to exercise; `drive`/`slack` have writes
-   but no matching update-in-place pair; `salesforce`/`telegram` are read-only from PrivacyFence's
-   side. Cleanup reaches past each client's public API into its internal request/service choke
-   point (the same pattern `RawCapture`/`RawCaptureExecute` already use), since no `*_client.py`
-   exposes a `delete_*()` method and no `connectors/**` tool ever deletes anything by design.
-   `connector-live-check.yml` runs `--lifecycle` on the same weekly schedule as `--check`/`--record`,
-   and — unlike drift — fails the job outright on any failure, including a cleanup call that ran but
-   didn't actually remove what it created. `tests/unit/test_qa_fixture_recorder.py` covers the
-   sequencing (create → verify → update → verify → delete → confirm gone, cleanup always attempted
-   even when an earlier step fails) against in-memory fakes, fully offline.
+   supported", and unlike Confluence below there's no update step either to make a create-only check
+   worth running on its own); `gmail` has no `get_draft()`/`update_draft()` to exercise; `drive`/
+   `slack` have writes but no matching update-in-place pair; `salesforce`/`telegram` are read-only
+   from PrivacyFence's side. For calendar/jira/tasks, cleanup reaches past each client's public API
+   into its internal request/service choke point (the same pattern `RawCapture`/`RawCaptureExecute`
+   already use), since no `*_client.py` exposes a `delete_*()` method and no `connectors/**` tool
+   ever deletes anything by design. Confluence is the one exception to actually verifying cleanup:
+   deleting a page needs its own `delete:page:confluence` OAuth scope, and granting that to the
+   org-wide app every real user authenticates through — just so this internal QA script can clean up
+   after itself — was considered and rejected; `lifecycle_confluence()` verifies create/get/update
+   only and deliberately leaves the page behind (`[QATEST-LIFECYCLE]`-tagged pages accumulate in the
+   QA Confluence space and need occasional manual cleanup there). `connector-live-check.yml` runs
+   `--lifecycle` on the same weekly schedule as `--check`/`--record`, and — unlike drift — fails the
+   job outright on any failure, including a calendar/jira/tasks cleanup call that ran but didn't
+   actually remove what it created. `tests/unit/test_qa_fixture_recorder.py` covers the sequencing
+   (create → verify → update → verify → delete → confirm gone, cleanup always attempted even when an
+   earlier step fails, for the three connectors that clean up; create → verify → update → verify only
+   for Confluence) against in-memory fakes, fully offline.
 3. **1.9 — fixture freshness/age reporting** (`< 60 days` healthy / `60–90 days` warning /
    `> 90 days` refresh required) — done. `_fixture_freshness_lines()` in `scripts/
    qa_fixture_recorder.py` now tags each connector's freshness line with `[healthy]`/`[warning]`/
