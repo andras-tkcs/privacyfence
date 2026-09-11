@@ -131,9 +131,15 @@ jobs:
       # cleanup that didn't actually remove what it created would silently
       # accumulate objects in the QA accounts forever if this were swallowed
       # the same way drift is.
+      # -v/--verbose is temporary, for one-off root-causing of
+      # https://github.com/privacyfence/privacyfence/actions/runs/34632070157
+      # ("cleanup call succeeded but the object still exists afterward" for
+      # calendar/tasks) -- see qa_fixture_recorder.py's _attempt_delete/
+      # _confirm_deleted docstrings. Remove once that's root-caused and
+      # fixed; not meant to stay on every scheduled run.
       - name: Run qa_fixture_recorder.py --lifecycle
         run: |
-          .venv/bin/python scripts/qa_fixture_recorder.py --lifecycle \
+          .venv/bin/python scripts/qa_fixture_recorder.py --lifecycle --verbose \
             --report-file /tmp/qa-lifecycle-report.md
 
       # Opens a PR only when --record actually changed a fixture file --
