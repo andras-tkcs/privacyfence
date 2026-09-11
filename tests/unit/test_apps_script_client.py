@@ -13,6 +13,8 @@ import stat
 import threading
 from unittest.mock import MagicMock, patch
 
+import sys
+
 import pytest
 from googleapiclient.errors import HttpError
 
@@ -160,6 +162,9 @@ class TestLoadCredentials:
 # ---------------------------------------------------------------------------- #
 
 class TestSaveToken:
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_writes_credentials_json_with_owner_only_permissions(self, tmp_path):
         token_file = tmp_path / "nested" / "token.json"
         client = AppsScriptClient(client_config={}, token_file=str(token_file))

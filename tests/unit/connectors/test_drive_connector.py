@@ -24,6 +24,7 @@ TestAutoTools below for the regression coverage.
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -474,6 +475,14 @@ class TestDownloadFile:
     gmail.py's _download_attachment. These tests pin the corrected ordering.
     """
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="'Saved to'/path previews embed this test's '/tmp' destination_dir "
+        "verbatim via os.path.join(), which keeps the given POSIX-style root but appends "
+        "with a native (backslash) separator on Windows -- a genuine finding from "
+        "promoting this suite to Windows CI (docs/automated-test-strategy-plan.md "
+        "Phase 2.1), tracked in docs/windows-support-plan.md rather than guessed at here",
+    )
     async def test_download_file_preview_and_args(self, gated_call_spy):
         connector, client = make_connector()
         client.download_file.return_value = {"name": "Q3 Report.pdf", "path": "/tmp/Q3 Report.pdf", "size_bytes": 4096}
@@ -528,6 +537,14 @@ class TestDownloadFile:
 
         client.download_file.assert_not_called()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="'Saved to'/path previews embed this test's '/tmp' destination_dir "
+        "verbatim via os.path.join(), which keeps the given POSIX-style root but appends "
+        "with a native (backslash) separator on Windows -- a genuine finding from "
+        "promoting this suite to Windows CI (docs/automated-test-strategy-plan.md "
+        "Phase 2.1), tracked in docs/windows-support-plan.md rather than guessed at here",
+    )
     async def test_google_doc_preview_reflects_export_extension(self, gated_call_spy):
         """The preview's save path must already carry the .txt/.csv extension
         download_file will actually save under -- computed once via

@@ -342,6 +342,21 @@ block promotion on it — so the full-suite version landed first. `windows-suppo
 Phase 6.2 (the item that originally left "permanent leg vs. release-time-only" as an open decision)
 is updated to record that this is the decision made.
 
+Turning this job on for real (rather than the `workflow_dispatch`-only leg it had been, which had
+in fact never actually been dispatched and passed) surfaced 55 test failures + 1 error on the very
+first run — exactly the kind of gap a full-suite promotion exists to find, not a regression from
+this change's own (CI-config-only) diff. Four were genuine, narrow, cross-platform-safe bugs and
+are fixed (a POSIX-only `strftime` directive, a `mimetypes.guess_type()` call whose result for a
+handful of known extensions shouldn't depend on the Windows registry, a bare `"npm"` passed to
+`subprocess.run()` instead of its resolved `npm.cmd` path, and a test that only set `$HOME` instead
+of also `$USERPROFILE`). The rest split into two buckets, both left red-skipped rather than papered
+over: the already-known-and-accepted POSIX file-permission gap (`windows-linux-support-plan.md`
+Track B3), and a new finding — POSIX-style path strings (`"credentials/telegram.session"`,
+a `"/tmp"` destination_dir) colliding with `ntpath`'s `os.path.join()`/`os.path.isabs()`, which in
+one case (`daemon_main._resolve_path`) silently resolves to a different on-disk location entirely
+on Python 3.13/Windows, not just a cosmetic separator mismatch. See `windows-support-plan.md`
+Phase 6.3 for the full breakdown and the design question the path finding raises.
+
 ### 2.2 Add macOS platform CI
 
 New `platform-macos` job in `tests.yml`, `runs-on: macos-latest`, the primary supported CI Python

@@ -16,6 +16,8 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
+import sys
+
 import pytest
 from webauthn.helpers import bytes_to_base64url
 
@@ -85,6 +87,9 @@ class TestCredentialStorage:
         assert [c.credential_id for c in wa.list_credentials(ALICE)] == ["alice-cred"]
         assert [c.credential_id for c in wa.list_credentials(BOB)] == ["bob-cred"]
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_credentials_file_is_0600(self):
         wa.add_credential(ALICE, _credential())
         path = paths.user_dir(ALICE) / wa.CREDENTIALS_FILE_NAME
