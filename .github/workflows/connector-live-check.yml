@@ -32,6 +32,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          clean: false   # `clean: true` (the default) runs a hard clean of
+                          # this checkout directory before checking out --
+                          # which wipes every untracked file in it, including
+                          # the runner-local .venv below, org_config.qa.json,
+                          # the credentials/ directory, and
+                          # tests/fixtures/qa_environment.yaml (Phase B.3 all
+                          # deliberately live inside this same job workspace,
+                          # never as GitHub Actions secrets). `clean: false`
+                          # still force-checks-out tracked files (so a stale
+                          # local edit to a tracked file can't linger) but
+                          # leaves untracked runner-local state alone.
 
       # No setup-python/setup-node steps here -- the self-hosted runner
       # keeps its own persistent venv (Phase B), rebuilt manually when
@@ -39,6 +50,16 @@ jobs:
       # GitHub-hosted job would need setup-python; this one deliberately
       # doesn't, since the point is minimal, auditable actions on a
       # credential-holding machine.
+      - name: Verify the runner-local venv exists
+        run: |
+          if [ ! -x .venv/bin/python ]; then
+            echo "##[error] .venv/bin/python not found in $(pwd)." \
+                 "Create the persistent venv once on this runner:" \
+                 "python3.13 -m venv .venv && .venv/bin/pip install -e '.[test]'" \
+                 "-- see docs/connector-ci-integration-plan.md Phase B.3."
+            exit 1
+          fi
+
       - name: Run qa_fixture_recorder.py --check
         id: check
         run: |
