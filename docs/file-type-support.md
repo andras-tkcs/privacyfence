@@ -1,126 +1,57 @@
-# File type support: attachment previews & PII scanning
+# File type support
 
-PrivacyFence previews and PII-scans file content for the four tools that move file bytes across
-the gate: `drive_download_file`, `gmail_download_attachment`, `confluence_download_attachment`,
-`drive_upload_file`. A content **preview** (rendered in the approval window's details pane) and a
-**PII scan** of file content cover the same set of formats, since both are driven by the same
-extraction step (`src/privacyfence/text_extraction.py`'s `extract_text()`) — summarized here. See
-[`approval-window-content-reference.md`](approval-window-content-reference.md) for how the preview
-renders in the approval window, and
-[`TECHNICAL_REFERENCE.md`'s PII detection gate section](TECHNICAL_REFERENCE.md#pii-detection-gate)
-for the scan's gating behavior.
+PrivacyFence extracts a bounded, human-readable preview from supported files so approval cards and PII checks can reason about file content without treating arbitrary binary data as text.
 
-"Preview" below means an actual rendering in the approval window's details pane (an image, or a
-rich Markdown-rendered block) — every download/upload tool already shows a metadata summary (file
-name, size, owner, destination, etc.) regardless of type; that part is unaffected by any of this.
+`src/privacyfence/text_extraction.py` and the connector-specific download/preview paths are authoritative.
 
-## 1. Preview support (what renders)
+## Supported extraction
 
-| Operation | Tool | Preview source | Supported types | Falls back to metadata-only when |
-|---|---|---|---|---|
-| Download | `drive_download_file` | Drive's own `thumbnailLink` (a small, pre-generated preview image Drive serves for many file types) | Whatever Drive generated a thumbnail for — commonly Docs, Sheets, Slides, images, PDFs; not guaranteed for every file | No `thumbnailLink` present, or the fetch fails, and extraction (below) also finds nothing |
-| Download | `gmail_download_attachment` | The attachment's own bytes, fetched in full | `image/*` (rendered as an image) or anything `extract_text()` recognizes (rendered as Markdown), ≤5MB | Neither an image nor an extractable type, or size over the cap, or the fetch fails |
-| Download | `confluence_download_attachment` | The attachment's own bytes, fetched in full via its Confluence download link | Same as `gmail_download_attachment`, ≤5MB | Same as `gmail_download_attachment` |
-| Upload (`local_path`) | `drive_upload_file` | The local file's own bytes, read from disk | Same as above (via `mimetypes.guess_type` on the file name), ≤5MB | Neither an image nor an extractable type, unreadable file, or size over the cap |
-| Upload (`content_base64`) | `drive_upload_file` | The already-decoded inline bytes | Same as above (via `mimetypes.guess_type` on the `name` argument) | Neither an image nor an extractable type, or no `name` given to guess from |
+| Type | Current behavior |
+|---|---|
+| Plain text / CSV / JSON / similar text | decoded as text with bounded output |
+| HTML | converted to readable text rather than exposing raw markup as the preview |
+| PDF | text extracted with `pypdf` |
+| DOCX | document XML parsed with hardened XML handling and converted to text |
+| PPTX | slide text extracted from the package XML |
+| XLSX | workbook cell values extracted with bounded rows/columns |
+| ZIP | archive member names/sizes can be summarized; arbitrary nested binary content is not recursively executed |
+| Images | file metadata/attachment presence can be shown; PrivacyFence does not perform OCR as part of the normal extraction path |
+| Unknown/binary | metadata-only or safe fallback rather than attempting to decode arbitrary bytes as trusted text |
 
-Note the asymmetry: Drive downloads get the broadest coverage because Drive itself generates the
-thumbnail server-side (so a Doc, Slide, or PDF can get a real preview without PrivacyFence knowing
-how to render that format at all) — Gmail attachments, Confluence attachments, and Drive uploads
-have no such service to lean on, so they fall through to `extract_text()`'s own format list below.
+Extraction is for preview/privacy inspection, not for recreating the original document with full fidelity.
 
-Pre-existing and unrelated to this work: `drive_get_file_content` already renders PDFs via an
-inline `<embed>` when Drive's own category policy allows it (`pdf_bytes`) — a different tool, a
-different mechanism, included here only for completeness.
+## Bounds
 
-### Rich Markdown preview (`extract_text()` + `markdown_to_html.py`)
+Content previews and PII scan inputs are intentionally bounded. Connector tools also apply provider/tool-specific prefetch limits so a very large remote file/attachment does not require downloading/parsing the entire object merely to render an approval preview.
 
-For any of the five tools above, once bytes are in hand and the content isn't an image, the
-non-image fallback is the file's own extracted content — rendered richly, not dumped as flat text.
-In local mode, none of the three download tools ever return file content to Claude in the tool
-result itself (org mode is different — see the note below), so showing the human the real content
-here is strictly more useful than a visual-only thumbnail: a formerly page-shaped preview image
-told the reviewer "this is a two-page document," while the extracted content tells them what it
-actually says.
+The approval card may therefore show file metadata (name/type/size/page or sheet information) plus only the extracted prefix needed for review.
 
-**Org mode note** (`docs/org-mode-download-delivery-plan.md`): each tool's own pre-approval
-preview/scan size cap below (100KB for `drive_download_file`, 5MB for the two attachment tools --
-§2 covers exactly which) is a completely separate knob from org mode's `download_delivery.
-inline_max_bytes` (default 8MB), which decides the *actual delivery* once approved — a small file's
-real bytes returned directly in the tool result, a larger one staged behind a one-time link instead
-(local mode always writes to `destination_dir`, unaffected either way). A file can easily fall on
-different sides of the two caps at once (e.g. a 6MB Gmail attachment: over the 5MB preview-prefetch
-cap, so no rich preview or PII scan runs, but under the default 8MB inline-delivery cap, so its
-bytes still come back to Claude directly once approved) — the two are deliberately independent
-settings answering different questions, not the same cap reused.
+## Spreadsheets
 
-Two cooperating modules make this work:
+XLSX extraction is limited to a bounded number of rows/columns rather than serializing an entire workbook. Cell formulas are treated as document content/values according to the current `openpyxl` extraction code; PrivacyFence does not execute workbook macros.
 
-- **`src/privacyfence/text_extraction.py`**'s `extract_text()` turns a format's own bytes into
-  Markdown syntax (headings, bold/italic, bullet/numbered lists, pipe tables) wherever the format
-  has real structure to preserve, or plain text otherwise. This is the same text that feeds the PII
-  scan (§2 below) — one extraction, two uses.
-- **`src/privacyfence/markdown_to_html.py`**'s `markdown_to_html()` renders that Markdown back into
-  real HTML for the approval window's WebKit-based details pane — real `<h1>`-`<h6>`, `<strong>`,
-  `<em>`, `<ul>`/`<ol>`, `<table>`, not literal `#`/`**`/`|` characters. Wired in via
-  `approval_window_html.py`'s `{"type": "markdown", ...}` preview block (see
-  [`approval-window-content-reference.md`](approval-window-content-reference.md)).
+## Office XML safety
 
-| Format | MIME type(s) | What's preserved |
-|---|---|---|
-| Plain text / CSV | `text/*` (except `text/html`) | Verbatim, UTF-8 decoded |
-| HTML | `text/html` | Headings, bold/italic, lists, links, tables — via `html_to_text.py`'s `html_to_markdown()` |
-| PDF | `application/pdf` | Flat text only (`pypdf`'s per-page `extract_text()` has no structure to extract beyond reading order) |
-| Word | `.docx` (`application/vnd.openxmlformats-officedocument.wordprocessingml.document`) | Headings (`Heading1`-`Heading6`/`Title` styles), bullet/numbered paragraphs, bold/italic runs |
-| PowerPoint | `.pptx` (`application/vnd.openxmlformats-officedocument.presentationml.presentation`) | One `## Slide N` heading per slide, plus that slide's own bullet/paragraph text with bold/italic |
-| Excel | `.xlsx` (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`) | One Markdown table per sheet (via `openpyxl`, already a hard dependency), capped at 200 rows × 20 columns |
-| Zip archives | `application/zip` | A table of member file names and sizes (not their content) — capped at 200 entries |
-| Images | `image/*` | None — no OCR, deliberately out of scope; these render as an actual image instead (see §1 above) |
-| Everything else (video, audio, unrecognized binary) | — | None — degrades to the metadata-only preview |
+DOCX/PPTX are ZIP containers containing XML. The extraction code uses hardened XML parsing for attacker-controlled embedded XML rather than relying on an unrestricted generic XML parser.
 
-Confluence page bodies (`confluence_get_page`/`confluence_get_page_by_title`) go through the same
-`html_to_markdown()` → `markdown_to_html()` pipeline directly on the page's XHTML storage format,
-independent of the four download/upload tools above.
+## PDFs
 
-Formatting genuinely dropped, on purpose: fonts, colors, page layout, images embedded in a
-document's own body. What's kept is exactly what makes a document legible as a document — its
-headings, emphasis, lists, and tabular data.
+PDF extraction is best-effort text extraction. Scanned/image-only PDFs can contain little or no extractable text because OCR is not part of the normal pipeline. The approval UI should still show the available file metadata so the reviewer understands what object is being requested.
 
-## 2. PII scan support (what content gets analyzed)
+## Org-mode delivery
 
-`src/privacyfence/text_extraction.py` extracts text from fetched bytes to feed the regex-based PII
-scan (`pii_detector.py`) — the same extraction §1 uses for the preview. Extraction is best-effort
-and never raises — an unsupported or corrupt format just contributes no text, same as if the
-attachment weren't there.
+Preview/PII limits are independent from final approved file delivery. A tool can inspect a bounded preview and, after approval, deliver the complete file inline or through the org-mode staged-download path.
 
-The supported formats and MIME types are exactly the table in §1 above (`extract_text()` is the one
-function behind both the preview and the scan). Extracted text is capped at
-`text_extraction.MAX_SCAN_CHARS` (20,000 characters) before it reaches the detector.
+See [`org-mode-download-delivery.md`](org-mode-download-delivery.md).
 
-**Which tools actually reach this path:**
+## Security rules
 
-- `drive_download_file` scans regardless of file type — it reuses the existing, already-capped
-  `DriveClient.get_file_content()` fetch (100KB), which itself decides text-vs-binary handling per
-  file; whatever comes back is run through `extract_text()`.
-- `gmail_download_attachment` only prefetches bytes at all — for either the preview or the scan —
-  when `is_prefetch_worthy()` recognizes the attachment's MIME type (image, text, or one of the
-  extractable document/archive types above) and it's ≤5MB (Gmail has no partial-fetch API, so
-  scanning means fully fetching the attachment first). Any other type keeps today's unscanned,
-  no-preview behavior.
-- `confluence_download_attachment` applies the exact same `is_prefetch_worthy()`/≤5MB gate as
-  `gmail_download_attachment`, for the same reason: Confluence's attachment download link has no
-  partial-fetch/range support either.
-- `drive_upload_file` gates the two input paths differently. For `local_path`, the same
-  `is_prefetch_worthy()`/size-cap check as the preview table above gates the disk read itself (an
-  unbounded local file, so it's worth guarding before reading at all) — the extracted mime type is
-  then reused for both the image-preview check and the scan. For `content_base64`, the bytes are
-  already fully decoded in memory regardless (to measure size), so there's no separate gate: any
-  guessed mime type is passed straight to `extract_text()`, which simply returns "" on its own for
-  a type it doesn't recognize.
+- Do not execute embedded scripts/macros/active content to build a preview.
+- Bound decompression/extraction work according to the implementation's limits.
+- Treat extracted text as untrusted provider content when rendering HTML.
+- Do not include credentials, local file paths, or unrelated provider data in the preview.
+- A failed/unsupported extraction must not silently turn a protected read into an unreviewed release.
 
-**Read vs. write gating differs**: on the read side, a match always forces the same confirmation
-every `gate="review"` tool's PII scan does. On the write side, only `drive_upload_file`'s extracted
-content gets that real, forced-confirmation treatment — every other write tool still only gets the
-weaker, informational-only amber banner over its own drafted text, per this codebase's "writes don't
-get the real PII gate" rule (see `TECHNICAL_REFERENCE.md` for why `drive_upload_file` is the one
-deliberate exception).
+## Changing support
+
+When adding/changing a file type, update the extractor, unit tests with benign/adversarial samples, any relevant connector prefetch logic, approval-card behavior, and this table in the same PR.

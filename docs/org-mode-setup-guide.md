@@ -1,729 +1,83 @@
-# Org Mode Setup Guide (Ubuntu Server, Caddy, Google Identity)
+# Org mode setup guide
 
-A from-scratch walkthrough for standing up PrivacyFence in **`org` mode** — one shared daemon on a
-server, reachable over HTTPS, with people signing in as themselves (not the single implicit `local`
-principal a desktop install uses) — on a fresh Ubuntu server, running as its own dedicated system
-user, behind [Caddy](https://caddyserver.com/) for TLS, with **Google** as both the sign-in identity
-provider and (optionally) the Gmail/Drive/Calendar/Contacts/Tasks connector.
+Org mode runs PrivacyFence as a centralized Linux service for multiple authenticated users. The daemon serves the MCP endpoint and browser approval/settings surfaces, while identity comes from the organization's configured OIDC provider.
 
-This documents `org` mode as implemented through P10 ("retire the native UI") of the
-`https-connector-refactor-plan.md` design document that shipped this feature (removed from `docs/`
-once its plan was fully implemented) — see [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md) and
-[`security-and-compliance.md`](security-and-compliance.md) for the design this guide is a concrete
-instance of. Once it's running, see
-[`org-mode-operational-readiness.md`](org-mode-operational-readiness.md) for what comes after
-installation: support/readiness level, backup and restore, upgrade/rollback, persisted-state
-compatibility across versions, restart/session-invalidation behaviour, and the single-daemon
-availability model.
+## Deployment model
 
-> **Step 7 (run PrivacyFence as a service) is newly runnable, not yet battle-tested.** Through P9,
-> `daemon_main.py`'s `run_app()` unconditionally ended with `from .menu_bar import run_menu_bar`,
-> and `menu_bar.py` did a bare `import rumps` (macOS AppKit) at module scope with no platform guard
-> — so `privacyfence-app` crashed right after startup on Linux, in *any* mode, `org` included. P10
-> deleted `menu_bar.py` and the rest of the native AppKit UI layer outright, so that specific crash
-> is fixed and `run_app()` now ends by blocking headlessly on a plain `threading.Event` on any
-> platform. What this guide has **not** yet had is a real end-to-end run against a live Ubuntu
-> server — treat Step 7 as ready to try, and report back (or fix forward) anything that doesn't
-> match. See [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md)'s "Linux" installation section and
-> the repo-root `privacyfence.service` unit's own header comment for the same caveat, and #121 in
-> the issue tracker for the remaining packaging/autostart/CI work.
+A typical deployment contains:
 
----
+1. the PrivacyFence Python environment/service;
+2. a signed/validated organization configuration bundle;
+3. an HTTPS reverse proxy in front of the daemon;
+4. an OIDC identity provider configuration;
+5. per-user connector authorization state managed by PrivacyFence.
 
-## Contents
-
-- [What you're building](#what-youre-building)
-- [Prerequisites](#prerequisites)
-- [1. Point DNS at the server](#1-point-dns-at-the-server)
-- [2. Create the dedicated `privacyfence` user](#2-create-the-dedicated-privacyfence-user)
-- [3. Install PrivacyFence](#3-install-privacyfence)
-- [4. Register PrivacyFence with Google](#4-register-privacyfence-with-google)
-- [5. Build the organization config bundle](#5-build-the-organization-config-bundle)
-- [6. Put Caddy in front of it](#6-put-caddy-in-front-of-it)
-- [7. Run PrivacyFence as a service](#7-run-privacyfence-as-a-service)
-- [8. First sign-in and connecting a service](#8-first-sign-in-and-connecting-a-service)
-- [9. Connecting Claude](#9-connecting-claude)
-- [10. Day-to-day admin](#10-day-to-day-admin)
-- [11. Centralized audit-log forwarding (optional)](#11-centralized-audit-log-forwarding-optional)
-- [Troubleshooting](#troubleshooting)
-
----
-
-## What you're building
-
-```
- Claude / browser                Caddy                    PrivacyFence
- (users, anywhere)               (this host)               (this host)
-
-     https://pf.example.com  ──▶  :443, auto TLS   ──▶   127.0.0.1:8765
-                                   reverse_proxy           (org mode, runs as
-                                   adds X-Forwarded-*      the `privacyfence`
-                                                            system user)
-                                                                 │
-                                                                 │ OIDC sign-in +
-                                                                 │ OAuth (Gmail/Drive/…)
-                                                                 ▼
-                                                        accounts.google.com
-```
-
-- **Caddy** terminates TLS (it gets a Let's Encrypt certificate for you automatically) and reverse
-  proxies plaintext HTTP to PrivacyFence, which binds only to `127.0.0.1` — nothing but Caddy can
-  reach it directly.
-- **PrivacyFence** runs `mode: org` (`org_config.json`). It is its own minimal OAuth 2.1
-  authorization server for MCP clients (§9.4, decision B) and delegates *human* authentication to
-  Google over OIDC — the same sign-in either a browser hitting `/login` or an MCP client's OAuth
-  dance behind the scenes goes through, which is what makes "the browser session and the MCP token
-  are the same identity" true (§9.4).
-- **Google** plays two, separate roles here, each its own OAuth client (§9.3, §9.4) — don't conflate
-  them:
-  1. **Identity provider** — "Sign in with Google" for humans hitting `/login` or an MCP client's
-     `/authorize` redirect. Required.
-  2. **Connector** — Gmail/Drive/Calendar/Contacts/Tasks tool access, same as local-mode installs
-     already have via [`google-cloud-setup.md`](google-cloud-setup.md). Optional, and *not* the
-     same OAuth client as #1 — see [§4.2](#42-the-google-connector-client-optional).
-
----
+Org mode is not the desktop `.deb` autostart path. Use the Python/system-service deployment model for a centralized server.
 
 ## Prerequisites
 
-- An Ubuntu Server install (22.04 or 24.04 LTS) you can `sudo` on, with ports 80 and 443 reachable
-  from wherever your users are (Let's Encrypt's HTTP-01 challenge needs 80 reachable from the
-  internet unless you switch Caddy to a DNS challenge — out of scope here).
-- A domain or subdomain you control (e.g. `pf.example.com`) and access to its DNS.
-- Python 3.11+ on the server (Ubuntu 22.04 ships 3.10 — see [Step 3](#3-install-privacyfence) for
-  the `deadsnakes` PPA if you're on 22.04).
-- A Google Cloud project you can create OAuth clients in. A Google Workspace organization lets you
-  restrict sign-in to your own domain (**Internal** consent-screen user type); a plain Google
-  account works too, but then access control has to happen at the OAuth consent screen (test-user
-  allowlist, or submitting for verification) unless you also configure PrivacyFence's own
-  `--authz-allowed-domain`/`--authz-required-group` allowlist — see
-  [§4.1](#41-the-oidc-sign-in-client-required) and [§5](#5-build-the-organization-config-bundle).
-- Nothing PrivacyFence-specific installed anywhere yet.
+Use a supported Python version (`>=3.11`) and install PrivacyFence in an isolated environment suitable for a long-running service. Configure the reverse proxy and DNS/TLS before exposing the service to users.
 
----
+Keep the service account's PrivacyFence state directory writable only by the service identity. Protect the organization configuration/trust material as security-sensitive deployment configuration.
 
-## 1. Point DNS at the server
+## Organization configuration
 
-Create an `A` (and `AAAA`, if the server has IPv6) record for the hostname you'll run PrivacyFence
-under, e.g.:
+Place the organization configuration where the daemon expects it and configure its trust/signature validation according to the repository's org configuration tooling. Startup rejects missing/invalid required trust/configuration instead of silently using a weaker configuration.
 
-```
-pf.example.com.   A      203.0.113.10
-```
+The organization configuration defines the deployment's identity/provider settings and privacy/security policy. Use explicit policy values; invalid policy values fail startup/config validation.
 
-Everything below assumes `pf.example.com` — substitute your own hostname throughout. Wait for the
-record to resolve (`dig +short pf.example.com`) before continuing to Caddy in Step 6, since Let's
-Encrypt's challenge needs it live.
+## OIDC identity provider
 
----
+Configure the organization's OIDC issuer/client settings and redirect URIs for the public HTTPS origin used by PrivacyFence.
 
-## 2. Create the dedicated `privacyfence` user
+The reverse proxy must preserve the host/origin assumptions used by the application so redirect/origin validation sees the intended public origin.
 
-A system account with no login shell, so nothing can `ssh`/`su` into it directly — administration
-happens via `sudo -u privacyfence`, which doesn't consult the shell field:
+PrivacyFence validates ID tokens against the provider's OIDC/JWKS information and binds the authenticated identity to a `Principal` used throughout request handling.
 
-```bash
-sudo adduser --system --group --home /home/privacyfence --shell /usr/sbin/nologin privacyfence
-```
+## Reverse proxy
 
-Run anything as that user for the rest of this guide with:
+Terminate HTTPS at the supported reverse proxy and forward traffic to the PrivacyFence daemon on the configured internal bind address/port.
 
-```bash
-sudo -u privacyfence -H bash -c '<command>'
-```
+Do not expose an unprotected internal listener directly to the Internet. Configure forwarded host/proto behavior consistently with the deployment's public origin and test sign-in/redirect behavior through the same hostname users will use.
 
-(`-H` sets `$HOME` to `/home/privacyfence`, which is what makes `~/.privacyfence` — this daemon's
-config/credentials/logs root, see `paths.py`'s `data_dir()` — resolve where you expect.)
+## Starting the daemon
 
----
+Run `privacyfence-app` under the chosen service manager with the org-mode configuration/environment required by the deployment. The repository's `privacyfence.service` is the systemd-oriented service template/reference for Linux installs.
 
-## 3. Install PrivacyFence
+Use a single active daemon per state directory. PrivacyFence takes a `portalocker`-backed single-instance lock and should not have two processes concurrently serving the same state.
 
-Ubuntu 22.04 ships Python 3.10; PrivacyFence needs 3.11+. If `python3 --version` already reports
-3.11 or newer (24.04 does), skip straight to installing `pipx`.
+## Per-user connectors
 
-```bash
-# Only on 22.04 / anywhere python3 is older than 3.11:
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-sudo apt update
-sudo apt install -y python3.11 python3.11-venv
+Org mode does not share one provider credential set across all users by default. Connector authorization state is principal-scoped.
 
-sudo apt install -y pipx
-sudo -u privacyfence -H bash -c 'pipx ensurepath'
-```
+`ConnectorRegistry` lazily creates a `ConnectorHost` for the authenticated principal and evicts idle entries. After a user connects/reconnects a service, the affected principal's cached connector host is evicted so the next request rebuilds it with the updated credentials.
 
-Then install PrivacyFence itself as the `privacyfence` user, into its own isolated environment
-(`pipx` puts the console script at `~/.local/bin/privacyfence-app`, which is what the systemd unit
-in [Step 7](#7-run-privacyfence-as-a-service) points at):
+Use the web connector/settings routes to authorize services for the signed-in user.
 
-```bash
-# Once a release tag exists on PyPI (see CLAUDE.md's "Releasing" section --
-# https://pypi.org/project/privacyfence/#history lists what's actually published):
-sudo -u privacyfence -H bash -c 'pipx install privacyfence --python python3.11'
+## Approvals
 
-# Until then -- org mode is on main but no tag has been cut yet, so install
-# straight from main instead of PyPI:
-sudo -u privacyfence -H bash -c \
-  'pipx install "git+https://github.com/privacyfence/privacyfence.git@main" --python python3.11'
-```
+Org-mode approval routes are principal-aware: a signed-in user can act only on approvals authorized for that principal. Sensitive write approvals can require WebAuthn step-up when configured.
 
-Switch to the plain `pipx install privacyfence` form (and re-run it to upgrade) once a version has
-been tagged and published — nothing else in this guide changes.
+The UI behavior itself is the same embedded browser approval surface documented in [`approval-list-ui-ux.md`](approval-list-ui-ux.md).
 
-Verify:
+## Downloads
 
-```bash
-sudo -u privacyfence -H bash -c '~/.local/bin/privacyfence-app --help'
-```
+Centralized deployments cannot write directly to a user's local filesystem. Org-mode file delivery therefore uses inline content or encrypted short-lived staged links as documented in [`org-mode-download-delivery.md`](org-mode-download-delivery.md).
 
-(This still works even before the headless-entrypoint fix — `--help` returns before `run_app()` ever
-reaches the menu-bar import.)
+## Operations
 
----
+Before production use, define backup/restore, upgrades/rollback, monitoring, audit retention/forwarding, and service restart procedures. See [`org-mode-operational-readiness.md`](org-mode-operational-readiness.md).
 
-## 4. Register PrivacyFence with Google
+## Validation
 
-Do this in the [Google Cloud Console](https://console.cloud.google.com/), from your own workstation
-— none of it touches the server. Use a dedicated project (e.g. `privacyfence-org`) or the same one
-your organization already uses for [`google-cloud-setup.md`](google-cloud-setup.md)'s connector
-setup; either is fine, they're independent OAuth clients either way.
+Validate the deployment through the public HTTPS origin:
 
-### 4.1 The OIDC sign-in client (required)
+- unauthenticated requests are rejected/redirected appropriately;
+- OIDC sign-in establishes the intended principal;
+- users cannot see or decide another principal's approvals;
+- connector authorization is stored under the signed-in principal;
+- MCP requests apply the signed-in/authorized principal's policy and connectors;
+- audit entries contain the correct principal;
+- restart preserves intended persistent state.
 
-This is what lets people sign in to PrivacyFence with their Google account — org mode's `idp`
-section (§9.4).
-
-1. **OAuth consent screen** (APIs & Services → OAuth consent screen):
-   - **User type**: **Internal** if this is a Google Workspace organization (restricts sign-in to
-     your own domain at the IdP level — the strongest access control available here). Otherwise
-     **External**, and see the note below; either way, `--authz-allowed-domain`/
-     `--authz-required-group` ([§5](#5-build-the-organization-config-bundle)) let you additionally
-     restrict who PrivacyFence itself admits, on top of whatever the consent screen already does.
-   - App name: `PrivacyFence`. No scopes need adding here — `openid email profile` (what
-     `org_identity.py` requests) are Google's default, non-sensitive scopes and need no
-     verification, unlike the connector scopes in §4.2.
-   - If you chose **External** and are still in **Testing** mode, add every user's Google account
-     email under **Test users** — otherwise their sign-in attempt is rejected before it reaches
-     PrivacyFence at all. Submit for verification instead if you expect this list to grow past a
-     handful of people.
-2. **Credentials** → **Create Credentials** → **OAuth client ID**:
-   - **Application type**: **Web application**.
-   - **Name**: `PrivacyFence sign-in` (anything — cosmetic).
-   - **Authorized redirect URIs** — add exactly these two, substituting your own hostname:
-     ```
-     https://pf.example.com/oauth/idp/callback
-     https://pf.example.com/oauth/idp/login-callback
-     ```
-     (`/oauth/idp/callback` is the authorization server's own callback from the IdP, on behalf of a
-     pending MCP client login; `/oauth/idp/login-callback` is a browser's own `/login` — both go
-     through the same `org_identity.py` code path, see `web/routes_org_identity.py`'s module
-     docstring.)
-   - Click **Create**, then copy the **Client ID** and **Client secret** shown — you'll pass these
-     as `--idp-client-id`/`--idp-client-secret` in [Step 5](#5-build-the-organization-config-bundle).
-
-Google's own OIDC issuer is fixed and well-known: `https://accounts.google.com` (its discovery
-document lives at `https://accounts.google.com/.well-known/openid-configuration`, which is what
-`org_identity.py`'s `discover_idp()` fetches at startup). You'll pass that as `--idp-issuer` — it is
-**not** a URL you create, just Google's standing endpoint.
-
-> **On `admin_group_claim`:** plain Google OIDC ID tokens carry no `groups` claim (that needs Google
-> Workspace's separate Cloud Identity group-claim configuration, out of scope here), and nothing in
-> PrivacyFence gates a feature on `is_admin` yet as of P8 — it's carried through
-> (`Principal.is_admin`) for future use. Leave `--idp-admin-group-claim` unset for a Google IdP;
-> everyone who can sign in is a plain, equally-privileged user.
-
-> **On the app-level allowlist (`--authz-allowed-domain`/`--authz-required-group`, SEC-22):** this
-> is a separate, independent restriction from `admin_group_claim` above — it decides who may sign
-> in at all, not who's an admin — and layers on top of, never replaces, the IdP's own
-> authentication (§4.1's consent-screen restriction is still the first line of defense). A plain
-> Google IdP with no Cloud Identity group-claim configuration can still use `--authz-allowed-domain
-> acme.com`, since it only reads the (always-present) `email` claim —
-> `--authz-required-group`/`--authz-groups-claim` need the same Cloud Identity setup
-> `admin_group_claim` does, since
-> both read group membership off the ID token.
-
-### 4.2 The Google connector client (optional)
-
-Only needed if you also want people to use the Gmail/Drive/Calendar/Contacts/Tasks connectors
-through this deployment — separate from, and unrelated to, whether they can sign in at all.
-
-Follow [`google-cloud-setup.md`](google-cloud-setup.md)'s "For IT admins" section for enabling the
-required APIs and configuring the consent screen for these (sensitive) scopes — that part is
-identical to a local-mode install. The one thing that's **different** for org mode, in that same
-doc's step 4 ("Create OAuth 2.0 credentials"):
-
-- **Application type: Web application, not Desktop app.** Local mode's loopback flow needs a
-  Desktop-app client (any loopback port); org mode's server-redirect flow (§9.3) needs an explicit,
-  registered HTTPS redirect URI, which only a Web application client can carry.
-- **Authorized redirect URIs** — one per Google connector org mode currently wires (Apps Script
-  isn't among them as of P8 — it stays local-mode-only):
-  ```
-  https://pf.example.com/oauth/callback/gmail
-  https://pf.example.com/oauth/callback/drive
-  https://pf.example.com/oauth/callback/calendar
-  https://pf.example.com/oauth/callback/contacts
-  https://pf.example.com/oauth/callback/tasks
-  ```
-- Download the client credentials as JSON (**Download JSON** on the credentials page) rather than
-  copying id/secret by hand — `build_org_bundle.py`'s `--google-client-secret` flag (next step)
-  reads that file directly, same as a local-mode bundle.
-
-Other connectors' org-mode setup follows the same pattern (§9.3: "for [Slack, Salesforce and
-Atlassian] this is a listener swap") — for **Slack** and **Salesforce**, both of which accept more
-than one registered redirect URI per app, add `https://pf.example.com/oauth/callback/<service>`
-(`<service>` is `slack` or `salesforce`) as one more redirect URI on the app registration you'd
-otherwise create per [`slack-setup.md`](slack-setup.md) or [`salesforce-setup.md`](salesforce-setup.md) —
-each has its own dedicated org-mode section covering this. **Atlassian is different**: an OAuth 2.0
-(3LO) app accepts only one Callback URL, period, and Jira/Confluence share a single redirect
-(`https://pf.example.com/oauth/callback/atlassian`, one URL for both — they're one underlying grant,
-see `web/routes_connect.py`'s `_GRANT_KEY`), so it needs an app of its own rather than a URL added to
-the local-mode one; see [`atlassian-setup.md` §6](atlassian-setup.md#6-org-mode-needs-a-second-dedicated-app)
-for the full walkthrough. **Telegram needs none of this** — see
-[`telegram-setup.md`](telegram-setup.md) — since its `api_id`/`api_hash` identify the PrivacyFence
-*application*, not an organization, and are baked into the build the same way for a local install or
-an org-mode server; there's no app registration, redirect URI, or `org_config.json` section for it at
-all. Not covered further here since the assumptions for this guide only called out Google.
-
----
-
-## 5. Build the organization config bundle
-
-Run this from a clone of the repository **on your own workstation** — `build_org_bundle.py` is
-stdlib-only and needs no PrivacyFence install, per its own docstring, and doing it off-server keeps
-the client secrets you're about to paste in off the machine until the finished, encrypted-in-transit
-bundle is copied over. Signing (`--sign-key`, next) is the one exception to stdlib-only — it needs
-the `cryptography` package (`pip install cryptography`).
-
-```bash
-git clone https://github.com/privacyfence/privacyfence
-cd privacyfence   # main already carries org mode's --mode/--server-*/--idp-* flags
-```
-
-**Generate a signing key, once, and keep it.** Org mode requires a signed bundle (SEC-05,
-[`security-and-compliance.md` §3](security-and-compliance.md)) — PrivacyFence refuses to start in
-org mode with an unsigned `org_config.json`. This only needs doing once per organization; reuse the
-same key file for every future rebuild (including `--merge`) so bundles keep verifying against the
-key your servers already trust:
-
-```bash
-python3 scripts/build_org_bundle.py --generate-signing-key ~/org_signing_key.pem
-```
-
-Keep `~/org_signing_key.pem` secret and durable (a password manager or secrets store, not just this
-workstation's disk) — losing it means every server that has already trusted its key (trust-on-first-
-use, on that server's *first* signed bundle install) can't accept an update until an administrator
-deletes that server's pinned `~/.privacyfence/org/org_config_signing_pubkey.txt` by hand.
-
-```bash
-python3 scripts/build_org_bundle.py \
-  --mode org \
-  --server-issuer-url https://pf.example.com \
-  --server-bind-host 127.0.0.1 \
-  --server-port 8765 \
-  --server-trusted-proxy 127.0.0.1 \
-  --idp-issuer https://accounts.google.com \
-  --idp-client-id <YOUR_IDP_CLIENT_ID>.apps.googleusercontent.com \
-  --idp-client-secret <YOUR_IDP_CLIENT_SECRET> \
-  --google-client-secret ~/Downloads/client_secret_<...>.json \
-  --sign-key ~/org_signing_key.pem \
-  -o org_config.json
-```
-
-Notes on the flags used:
-
-- `--server-bind-host 127.0.0.1` — PrivacyFence listens only on loopback; Caddy (Step 6), running on
-  the same host, is the only thing that can reach it. This is why there's no `--server-tls-cert`/
-  `--server-tls-key` here — Caddy terminates TLS, PrivacyFence never sees a private key.
-- `--server-trusted-proxy 127.0.0.1` — the one thing that makes it safe to trust
-  `X-Forwarded-For`/`X-Forwarded-Proto` at all (§10.2: "honored only when an explicit
-  `trusted_proxies` list is configured, never by default") — this must be the reverse proxy's own
-  address, which is `127.0.0.1` here since Caddy and PrivacyFence share a host. Omit `--google-*` if
-  you skipped §4.2.
-- `--sign-key ~/org_signing_key.pem` — required for `--mode org`, see above.
-- If you also built connector bundles for Slack/Salesforce/Atlassian, pass their flags too (see
-  each's own setup doc) — `--merge` lets you add them incrementally without re-typing everything.
-  Pass `--sign-key` again on every such rebuild — a `--merge` run without it strips any existing
-  signature rather than shipping one that's gone stale over the changed content.
-
-Copy the result to the server and lock it down (the script already `chmod 600`s it, but ownership
-still needs fixing after the copy):
-
-```bash
-scp org_config.json youradminuser@pf.example.com:/tmp/org_config.json
-ssh youradminuser@pf.example.com 'sudo -u privacyfence -H bash -c "
-  mkdir -p ~/.privacyfence/org
-  mv /tmp/org_config.json ~/.privacyfence/org/org_config.json
-  chmod 600 ~/.privacyfence/org/org_config.json
-"'
-```
-
-(`~/.privacyfence/org/org_config.json` is exactly where `daemon_main.py`'s `load_org_config()`
-reads from — `org_dir() / "org_config.json"`, and `org_dir()` is `data_dir() / "org"`.)
-
----
-
-## 6. Put Caddy in front of it
-
-Install Caddy from its own official repository (Ubuntu's default repos carry an outdated build):
-
-```bash
-sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-  | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-  | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-sudo apt update
-sudo apt install -y caddy
-```
-
-Replace `/etc/caddy/Caddyfile` with:
-
-```caddyfile
-pf.example.com {
-    reverse_proxy 127.0.0.1:8765
-}
-```
-
-That's the entire config — Caddy's `reverse_proxy` sets `X-Forwarded-For`, `X-Forwarded-Proto` and
-`X-Forwarded-Host` on every proxied request by default (which is what `--server-trusted-proxy
-127.0.0.1` in Step 5 is there to trust), and Caddy obtains and renews a Let's Encrypt certificate for
-`pf.example.com` automatically the first time it starts, using the DNS record from
-[Step 1](#1-point-dns-at-the-server) to pass the HTTP-01 challenge.
-
-```bash
-sudo systemctl reload caddy
-```
-
-Open the firewall for HTTP/HTTPS (and make sure SSH stays open before you enable it):
-
-```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw enable
-```
-
-Port 8765 needs no firewall rule of its own — PrivacyFence only binds `127.0.0.1`, so it was never
-reachable from outside the host in the first place; Caddy is the only path in.
-
-### Rate-limiting the OAuth endpoints (recommended)
-
-`/register` (DCR), `/authorize` and `/token` are, by design, reachable without any prior credential —
-that's what lets an MCP client (Claude Desktop, Claude Code) register and sign in itself the first
-time it connects. `oauth_provider.py`'s `OrgOAuthProvider` enforces its own in-process resource
-controls on top of that (a cap on total registered clients, a size cap per registration, stale-client
-pruning, and a bound on concurrently in-flight sign-in attempts — see that module's own docstring),
-but those exist to bound what one server process holds in memory and on disk, not to replace
-network-level rate-limiting. Caddy sitting in front is still the right place to throttle by source IP
-before a request ever reaches PrivacyFence:
-
-```bash
-# Caddy's core build doesn't ship a rate-limit directive -- xcaddy builds one in.
-sudo apt install -y golang-go  # or any recent Go toolchain
-CADDY_VERSION=$(caddy version | awk '{print $1}')
-GOBIN=/usr/bin go run github.com/caddyserver/xcaddy/cmd/xcaddy@latest build "$CADDY_VERSION" \
-  --with github.com/mholt/caddy-ratelimit \
-  --output /usr/bin/caddy
-sudo systemctl restart caddy
-```
-
-Then add a `rate_limit` block ahead of the `reverse_proxy` in `/etc/caddy/Caddyfile`:
-
-```caddyfile
-pf.example.com {
-    @oauth path /register /authorize /token
-    rate_limit @oauth {
-        zone oauth_per_ip {
-            key {remote_host}
-            events 20
-            window 1m
-        }
-    }
-
-    reverse_proxy 127.0.0.1:8765
-}
-```
-
-Twenty requests/minute per source IP is a starting point, not a tuned figure — loosen it if real
-sign-in traffic (a burst of people connecting Claude the same morning, from behind the same office
-NAT) trips it, tighten it if abuse gets through. `key {remote_host}` uses the address Caddy sees
-directly; if PrivacyFence itself sits behind *another* reverse proxy or load balancer in your
-deployment, key on the appropriate forwarded-for header instead so distinct clients aren't lumped
-under one IP. If you're fronting PrivacyFence with nginx or another proxy instead of Caddy, the
-equivalent is `limit_req` (nginx) or your proxy's own per-IP rate-limiting feature — same principle,
-scoped to the same three paths.
-
----
-
-## 7. Run PrivacyFence as a service
-
-> **Newly runnable, not yet battle-tested** — see the callout at the top of this guide. The unit
-> below no longer hits the old `rumps` import crash; it just hasn't had a real confirmed run on a
-> live server yet as of this writing.
-
-The repo ships `privacyfence.service`, a systemd **`--user`** unit mirroring the macOS LaunchAgent.
-For a dedicated, non-interactive service account like this one, a plain **system** unit running as
-that user is a better fit — it starts at boot with no `loginctl enable-linger` dance, and behaves
-identically otherwise. Create `/etc/systemd/system/privacyfence.service`:
-
-```ini
-[Unit]
-Description=PrivacyFence daemon (org mode)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=privacyfence
-Group=privacyfence
-WorkingDirectory=/home/privacyfence
-Environment=HOME=/home/privacyfence
-ExecStart=/home/privacyfence/.local/bin/privacyfence-app
-
-# Mirrors privacyfence.service's own KeepAlive/SuccessfulExit=false: restart
-# on a crash, not on a clean `systemctl stop`.
-Restart=on-failure
-RestartSec=5
-
-# Mild sandboxing -- drop if it gets in the way while you're debugging.
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=/home/privacyfence
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now privacyfence
-sudo systemctl status privacyfence
-journalctl -u privacyfence -f
-```
-
-You should see a log line ending `Org mode active -- MCP-over-HTTP at https://pf.example.com/mcp
-(OAuth 2.1, DCR at https://pf.example.com/register), IdP https://accounts.google.com` (from
-`daemon_main.py`'s `_start_org_web_server`) once it's actually up.
-
-`config/settings.yaml` needs no edits for this — the packaged default already ships
-`web.mcp.enabled: true`, which is the one thing org mode's boot path (`_maybe_start_web_server`)
-requires before it will start a server at all. It's created automatically from PrivacyFence's own
-packaged template the first time the daemon runs successfully; if you want it in place before that
-first successful run, seed it by hand:
-
-```bash
-sudo -u privacyfence -H bash -c '
-  mkdir -p ~/.privacyfence/config
-  ~/.local/pipx/venvs/privacyfence/bin/python3 - <<PY
-import pathlib, shutil
-import privacyfence
-example = pathlib.Path(privacyfence.__file__).parent / "resources" / "settings.yaml.example"
-shutil.copyfile(example, pathlib.Path.home() / ".privacyfence" / "config" / "settings.yaml")
-PY
-'
-```
-
----
-
-## 8. First sign-in and connecting a service
-
-Once the daemon is actually running (Step 7):
-
-1. Visit `https://pf.example.com/login` in a browser. You're redirected to Google; sign in and
-   consent.
-2. You land on `/connect` — the per-principal connections page (`web/routes_connect.py`). This is
-   the org-mode equivalent of a local install's PrivacyFence Settings **Connectors** page.
-3. Click **Connect** next to Gmail/Drive/whichever connectors you registered in
-   [§4.2](#42-the-google-connector-client-optional). Each one redirects to Google, asks for consent
-   to that connector's specific scopes, and lands you back on `/connect` showing it connected.
-
-Every principal's credentials land under their own `~/.privacyfence/users/<principal-id>/
-credentials/` on the server (§9.2's per-principal storage layout) — nothing is shared between users,
-and nothing another user's browser session can read.
-
----
-
-## 9. Connecting Claude
-
-Point any MCP client with native Streamable HTTP + OAuth 2.1 support at:
-
-```
-https://pf.example.com/mcp
-```
-
-Claude Code:
-
-```bash
-claude mcp add --transport http privacyfence https://pf.example.com/mcp
-```
-
-The first tool call triggers Claude's own OAuth flow: it dynamically registers itself
-(`https://pf.example.com/register`, RFC 7591 DCR), opens a browser to
-`https://pf.example.com/authorize`, which — since you're not already signed in — bounces through
-`/login` → Google → back, and finally back to Claude with a token scoped to *that signed-in
-principal*. No token file to copy, no shared secret — the same posture local mode's `/mcp`
-already has, extended to real per-human identity (§10.3: MCP tokens and browser session cookies are
-strictly separate audiences, checked in separate middleware, so neither can be replayed as the
-other).
-
----
-
-## 10. Day-to-day admin
-
-- **Adding a user**: nothing to do on the PrivacyFence side (beyond, if you've set
-  `--authz-required-group`, adding them to that group at the IdP). Anyone who can complete the
-  Google sign-in (i.e., anyone your consent screen's Internal/test-user/verification posture from
-  [§4.1](#41-the-oidc-sign-in-client-required) allows through) *and* passes any authz allowlist
-  you've configured (`--authz-allowed-domain`/`--authz-required-group`,
-  [§5](#5-build-the-organization-config-bundle)) gets a `Principal` the first time they sign in.
-- **Removing a user**: revoke their access at the IdP (remove them from the Workspace domain, the
-  test-user list, or the relevant Google group) — they simply can't sign in again; removing them
-  from a `--authz-required-group` group, or narrowing `--authz-allowed-domain`, works the same way.
-  Their `~/.privacyfence/users/<id>/` directory on the server is untouched by this; delete it by hand if
-  you want their credentials and settings gone too.
-- **Rotating a connector secret** (e.g. the Google connector client secret): rebuild the bundle with
-  `--merge` so you don't have to re-specify the IdP section, and redeploy it exactly as in
-  [Step 5](#5-build-the-organization-config-bundle) — existing users' own per-connector tokens are
-  unaffected; only the org-wide client credentials change.
-- **Logs**: `journalctl -u privacyfence -f` for the daemon; Caddy's own access/error logs are in
-  `journalctl -u caddy -f` unless you've configured a separate log file in the Caddyfile.
-- **Updating PrivacyFence**: re-run the `pipx install ... --force` form of whichever install command
-  you used in [Step 3](#3-install-privacyfence), then `sudo systemctl restart privacyfence`.
-- **Download/attachment delivery** (`drive_download_file`/`gmail_download_attachment`/
-  `confluence_download_attachment`, `docs/org-mode-download-delivery-plan.md`): there's no local
-  directory Claude and the user share on this server, so these tools deliver a file's bytes one of
-  two ways instead of writing to disk. A file at or under `download_delivery.inline_max_bytes`
-  (default 8MB) in `org_config.json` comes back directly in the tool's result. A larger one is
-  staged for a short time, encrypted at rest, behind a one-time link the user opens in their own
-  signed-in browser tab — `--downloads-link-ttl-seconds` on `build_org_bundle.py` controls how long
-  that link stays claimable (default 300s/5 minutes) before it expires unclaimed. Three flags on
-  `build_org_bundle.py` (rebuild with `--merge` and redeploy exactly as in
-  [Step 5](#5-build-the-organization-config-bundle)) tune this: `--downloads-inline-max-bytes BYTES`
-  (`0` forces every download through a staged link, unconditionally — the setting for "no file
-  content should ever reach Claude's context, full stop"), `--downloads-link-ttl-seconds SECONDS`,
-  and `--downloads-disable-staging` (refuse an oversized download outright rather than ever writing
-  even an encrypted copy of it to this server's disk — the setting for an organization whose
-  confidentiality requirements rule out a shared machine transiently holding a copy of a large file
-  at all, encrypted or not). **Exclude `~/.privacyfence/users/*/downloads/` from any backup/snapshot
-  job you run on this server independently of PrivacyFence.** Its contents are AES-256-GCM
-  ciphertext with the decryption key never written to this server's disk at all (see that plan
-  doc's "Encryption at rest" section), so this is belt-and-suspenders on top of that guarantee, not
-  a substitute for it — but it's a cheap thing to ask your backup tooling for, and it keeps a stale
-  backup snapshot from being a second place a "deleted" staged file's ciphertext lingers.
-
----
-
-## 11. Centralized audit-log forwarding (optional)
-
-By default, org mode's audit log (§10's "Logs" bullet points at the daemon's own application log —
-this is the separate decision trail: `journalctl` doesn't see it) is a local file on this server:
-`~/.privacyfence/users/<id>/logs/audit/*.jsonl`, one directory per principal, each with its own
-append-integrity hash chain (see [`TECHNICAL_REFERENCE.md`'s "Audit log"
-section](TECHNICAL_REFERENCE.md#audit-log)). That's already tamper-*evident* — an edit made after
-the fact breaks the chain — but it's still nothing outside this server until someone exports or
-copies it. `org_config.json`'s `audit_forwarding` section additionally streams every entry,
-best-effort and off the decision path, to a syslog server or a generic HTTPS/JSON webhook as it's
-recorded — a genuine second copy outside this server's own trust boundary, which is what actually
-protects the trail against a compromise of (or a rogue administrator on) this specific machine.
-
-Two transports, picked with `--audit-forwarding-kind`:
-
-- **`syslog`** (the default) — RFC 5424 messages, sent over UDP or TCP (`--audit-forwarding-
-  syslog-protocol`) to `--audit-forwarding-syslog-host`/`--audit-forwarding-syslog-port` (default
-  6514, the IANA syslog-**tls** port). This daemon does **not** speak TLS itself for this
-  connection — same reverse-proxy-terminates-TLS posture as HTTPS in [§6](#6-put-caddy-in-front-of-it),
-  just with the roles reversed: put a local relay in front of your real collector (`stunnel`, or
-  `syslog-ng`/`rsyslog` with a TLS-terminating forward rule) and point `--audit-forwarding-syslog-host`
-  at `127.0.0.1` and that relay's plaintext listener port, rather than sending audit entries over
-  the network unencrypted.
-- **`http`** — one HTTPS POST per entry (JSON body) to `--audit-forwarding-http-url`, with an
-  optional bearer token via `--audit-forwarding-http-bearer-token-env NAME`. This works with any
-  collector that accepts webhook/HTTP-JSON log ingestion — Splunk HEC, Datadog's Logs API, an
-  Elastic ingest pipeline, an OTLP-over-HTTP/JSON log receiver — not just one specific vendor. The
-  URL must be `https://`; a plain `http://` URL is rejected at build time.
-
-Build (or `--merge` into) the bundle exactly as in [§5](#5-build-the-organization-config-bundle):
-
-```bash
-python3 scripts/build_org_bundle.py --merge -o org_config.json \
-    --enable-audit-forwarding --audit-forwarding-kind syslog \
-    --audit-forwarding-syslog-host 127.0.0.1 --audit-forwarding-syslog-port 601 \
-    --audit-forwarding-syslog-protocol tcp \
-    --sign-key /path/to/your/signing-key.pem
-```
-
-then redeploy it (§5's last step) and restart the service. `--audit-forwarding-http-bearer-token-env`
-names an environment variable this daemon's own process reads *at send time* — nothing in
-`org_config.json` itself carries the token. Set it in the systemd unit ([§7](#7-run-privacyfence-as-a-service)),
-not on the command line or in a file this daemon reads back some other way:
-
-```ini
-[Service]
-Environment=SIEM_BEARER_TOKEN=your-collector-token-here
-```
-
-Forwarding never blocks or loses a decision: a collector that's down or unreachable just means
-that entry never arrives centrally — it's still on this server's disk, with its own hash-chain
-entry, regardless. `--disable-audit-forwarding` (with `--merge`) turns it back off without
-disturbing anything else in the bundle.
-
----
-
-## Troubleshooting
-
-**`privacyfence-app` crashed right after "Startup complete, starting menu bar" with
-`ModuleNotFoundError: No module named 'rumps'`**
-That was the Linux blocker through P9 (see the callout at the top of this guide) — P10 deleted
-`menu_bar.py` and its `rumps` import outright, so a current install no longer hits this. If you see
-it anyway, you're running a pre-P10 build; update `privacyfence-app` first.
-
-**`sudo -iu privacyfence` says "This account is currently not available."**
-Expected — the account's shell is `/usr/sbin/nologin` on purpose (Step 2). Use
-`sudo -u privacyfence -H bash -c '<command>'` instead, which runs the given command directly and
-never consults the shell field.
-
-**Caddy shows "502 Bad Gateway"**
-PrivacyFence isn't listening on `127.0.0.1:8765` — check `systemctl status privacyfence` and
-`journalctl -u privacyfence` for why it isn't up, and confirm
-`org_config.json`'s `server.bind_host`/`server.port` match what the Caddyfile proxies to.
-
-**Google shows "Error 400: redirect_uri_mismatch"**
-The URI PrivacyFence built doesn't exactly match one registered on the OAuth client — check for
-`http` vs `https`, a trailing slash, or a typo in the hostname. `/oauth/idp/callback` and
-`/oauth/idp/login-callback` belong on the client from [§4.1](#41-the-oidc-sign-in-client-required);
-`/oauth/callback/gmail` (etc.) belong on the separate client from
-[§4.2](#42-the-google-connector-client-optional) — a redirect URI added to the wrong client also
-shows as this error.
-
-**Startup fails with `ValueError: org mode (org_config.json "mode": "org") requires an "idp"
-section (issuer, client_id, client_secret)`**
-`org_config.json` is missing or malformed — re-check the file landed at
-`~/.privacyfence/org/org_config.json` (not `~/.privacyfence/org_config.json`) and that
-`build_org_bundle.py` was actually given `--mode org` plus all three `--idp-*` flags — omitting any
-one of them makes the script skip the `idp` section entirely (see [Step 5](#5-build-the-organization-config-bundle)).
-
-**Startup fails with `ConfigurationError: ... has "mode": "org" but is not signed`**
-`org_config.json` was built without `--sign-key` — org mode requires a signed bundle (SEC-05, see
-[Step 5](#5-build-the-organization-config-bundle)). Rebuild it with `--sign-key <path to your signing
-key>` (generate one first with `--generate-signing-key` if you haven't).
-
-**Startup fails with `ConfigurationError: ... failed signing-key verification`**
-This server already trusts a different signing key (pinned the first time it ever saw a signed
-bundle) than the one `org_config.json` was just signed with — either you signed with the wrong key
-file, or this really is a key rotation. If the rotation is intentional, an administrator must delete
-`~/.privacyfence/org/org_config_signing_pubkey.txt` on this server first, then reinstall the
-newly-signed bundle to re-pin it.
-
-**"Invalid Host header" (plain-text 400) instead of the sign-in page**
-The Host header Caddy forwards doesn't match `server.issuer_url`'s hostname in `org_config.json` —
-the allowlist that guards against this (`_HostAllowlistMiddleware`, §10.5) is built from
-`issuer_url`, so a mismatch (wrong hostname, or a port suffix that shouldn't be there) rejects every
-request. Re-check `--server-issuer-url` in Step 5 against the `pf.example.com` block in your
-Caddyfile.
-
-**"Access blocked: PrivacyFence has not completed the Google verification process" at sign-in**
-Same cause as the identical message in [`google-cloud-setup.md`](google-cloud-setup.md)'s own
-Troubleshooting section, but for the *sign-in* client this time: it's in Testing mode and the
-account isn't on the test-user list (§4.1) — add it, or submit for verification once you expect more
-than a handful of users.
+Automated org-mode coverage is described in [`testing-policy.md`](testing-policy.md); remaining automation gaps are tracked in [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md).

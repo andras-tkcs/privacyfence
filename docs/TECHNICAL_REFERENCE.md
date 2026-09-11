@@ -1,211 +1,74 @@
-# PrivacyFence Technical Reference
+# PrivacyFence technical reference
 
-This document contains the detailed operational and implementation reference for PrivacyFence.
+PrivacyFence is a local or organization-hosted MCP privacy gateway. It sits between an MCP client and third-party data providers, applies policy and approval gates, and records auditable decisions.
 
-For the product overview, governance model, screenshots, supported systems, and quick start, see the project [README](../README.md).
+## Runtime architecture
 
-## Contents
+A PrivacyFence daemon owns connector clients, policy evaluation, approval state, the audit log, and the embedded HTTP application.
 
-- [Review model](#review-model)
-- [Connectors & privacy matrix](#connectors--privacy-matrix)
-- [Auto-accept grants](#auto-accept-grants)
-- [Auto-accept rules](#auto-accept-rules)
-- [Always-allow suggestion candidates](#always-allow-suggestion-candidates)
-- [Always allow for writes](#always-allow-for-writes)
-- [Reading and proposing auto-accept changes over MCP](#reading-and-proposing-auto-accept-changes-over-mcp)
-- [Scheduled / unattended Cowork tasks](#scheduled--unattended-cowork-tasks)
-- [Audit log](#audit-log)
-- [Security, privacy & compliance](#security-privacy--compliance)
-- [Installation](#installation)
-- [Connecting Claude](#connecting-claude)
-- [Building a DMG](#building-a-dmg)
-- [Building a `.deb`](#building-a-deb)
-- [Configuration reference](#configuration-reference)
-- [Architecture notes](#architecture-notes)
-- [License](#license)
+The embedded web application serves:
 
-## System overview
+- the approval list and approval cards;
+- settings and connector authorization surfaces;
+- state/event streams used by the web UI;
+- the `/mcp` Streamable HTTP endpoint;
+- org-mode identity/authorization routes when org mode is enabled;
+- short-lived staged downloads when org-mode delivery requires them.
 
-PrivacyFence is one persistent daemon and authoritative control point:
+Claude Code and other HTTP-capable MCP clients can connect to `/mcp` directly. Claude Desktop uses the bundled Node/TypeScript shim in `mcpb/shim/`, which reads the daemon discovery/auth files and proxies stdio MCP traffic to the daemon's HTTP endpoint.
 
-- **`privacyfence-app`** owns credentials, policies, connectors, approvals, PII detection, and audit
-  logging, and exposes a local, token-authenticated `/mcp` Streamable HTTP endpoint. Claude Code
-  talks to it directly; Claude Desktop reaches it through a thin, disposable stdio-to-HTTP shim
-  (`PrivacyFence.mcpb`) that carries no connector credentials of its own.
+There is no native AppKit approval/settings runtime. The browser-based embedded UI is the approval/settings surface on every supported platform.
 
-![PrivacyFence architecture](images/architecture.svg)
+## Modes
 
-The sections below preserve the complete tool-level and implementation-level behavior.
+### Local mode
 
----
+Local mode represents one user/principal for the life of the daemon. Connector credentials and policy are resolved for that local user. The web server binds locally and uses a bootstrap/session mechanism for the human approval/settings UI plus bearer-token protection for MCP.
 
-## Review model
+### Org mode
 
-Every tool call passes through one of three gate values. `review` and `popup` are both popups
-PrivacyFence shows itself, on its own embedded web approval page — there is no separate Claude
-Cowork-side approval step for either one. What differs between them is direction and button set
-(see below).
+Org mode is a centralized Linux/server deployment. Human identity is established through the configured OIDC identity provider, MCP authorization is handled by PrivacyFence's org authorization flow, and connectors are scoped per principal.
 
-| Gate | Behaviour |
-|------|-----------|
-| `auto` | Passed through immediately, logged as `auto_accepted` |
-| `review` | Popup approval — read direction (tool → Claude) |
-| `popup` | Popup approval — write direction (Claude → tool) |
+`ConnectorRegistry` lazily builds and caches one connector host per authenticated principal, with bounded capacity and idle eviction. User-scoped state paths are resolved inside the active principal scope.
 
-### Two flows by direction
+Org mode is normally deployed behind the configured HTTPS reverse proxy. See [`org-mode-setup-guide.md`](org-mode-setup-guide.md) and [`org-mode-operational-readiness.md`](org-mode-operational-readiness.md).
 
-> **Note on MCP annotations:** `/mcp` advertises *every*
-> tool — reads and writes alike — to Claude as `readOnlyHint = true` /
-> `destructiveHint = false`. This is intentional. See
-> [Why every tool is advertised as read-only](#why-every-tool-is-advertised-as-read-only) below.
+## Local state and discovery
 
-Both flows below open the same kind of popup — a summary box plus a scrollable pane with
-the full content. The only differences are the button set and, on the read side, the PII scan
-layered on top.
+`src/privacyfence/paths.py` is the source of truth for application paths.
 
-**Tool → Claude (reads) — gate `review`**
+A source/unbundled development run keeps its normal configuration, credentials, and logs in the repository-local development locations. A bundled release keeps user state under the user's PrivacyFence home directory.
 
-PrivacyFence opens a popup with a summary box and a scrollable pane showing the full
-content (e.g. the email body) up front, offering:
+MCP discovery/auth files under the user's PrivacyFence home include the daemon MCP URL and token so the Desktop shim can find the running daemon independently of the checkout/install location.
 
-- **Allow once** — data is returned to Claude
-- **Deny** — request is blocked; Claude receives an error
-- **Always allow** — when a plausible rule can be derived from the item's attributes, proposes
-  (with a second confirmation dialog) a standing [auto-accept rule](#auto-accept-rules) for
-  similar future reads
+The daemon enforces a single-instance lock with `portalocker`.
 
-**Claude → Tool (writes / actions) — gate `popup`**
+## MCP endpoint
 
-Claude already describes the action it is about to take in the chat. PrivacyFence opens a popup
-showing the full action details with **Allow once** or **Deny** — auto-accepting a write
-silently is a materially bigger blast radius than auto-accepting a read, so most write popups have
-no **Always allow** at all. 35 tools across 29 operation keys are a narrow, deliberate exception —
-each proposing a rule scoped to the one folder/label/calendar/project/space/task-list the call just
-touched, never a bare "accept every future write of this type" toggle (`gmail_create_draft`, its two
-reply variants, and their three `_with_attachments` counterparts are the sole exception to that). See
-[Always allow for writes](#always-allow-for-writes) for the full list and how each rule's value is
-derived.
+The daemon exposes the MCP protocol over Streamable HTTP at `/mcp` using the official MCP Python SDK. Local mode protects MCP with the generated bearer token. Org mode uses its own authorization/identity path and principal-aware request handling.
 
-For write operations expected to be called repeatedly against the same file in quick succession —
-`drive_sheets_write_range`, `drive_sheets_format_range`, `drive_sheets_insert_dimensions`,
-`drive_add_comment`, `drive_docs_edit_content`, and `drive_docs_format_content` — clicking
-**Allow once** also auto-accepts further calls of that same operation against that same file for 5
-minutes, entirely in memory. There's no separate button for this: the popup just shows a plain
-disclosure caption above the buttons for these six operations, since a burst of
-API-limitation-driven follow-up calls (e.g. formatting a sheet range by range) is the task the
-user is really approving, not a duration to pick up front. Unlike a standing
-[auto-accept rule](#auto-accept-rules), it's never written to `settings.yaml` and disappears on
-daemon restart — a much smaller commitment than Always allow, appropriate for writes where a
-standing rule isn't offered at all.
+The MCP tool registry is built from the configured connectors. Tool calls are routed through the PrivacyFence gate before connector execution where policy requires review or confirmation.
 
-`drive_sheets_delete_dimensions` is deliberately excluded from that grace window even though it's
-called in the same kind of burst `drive_sheets_insert_dimensions` is: unlike every operation above,
-it removes cell content (not just its appearance or position) with no undo path through
-PrivacyFence, so a 5-minute silent-acceptance window is a bigger commitment than for the others. It
-still gets the standing-rule **Always allow** shortcut described in
-[Always allow for writes](#always-allow-for-writes), same as any other sandbox-folder write — only
-the grace window is withheld.
+## Approval model
 
-### PII detection gate
+A gated request becomes a `PendingApproval` managed by `PendingApprovalRegistry`.
 
-This gate mainly runs on the **`review` (read) direction — tool → Claude.** It exists to catch
-personal data flowing from an external source into Claude's context, before you approve
-handing it over. It does not run on the `popup` (write) direction in general — Claude → tool —
-since a write is normally content Claude itself already generated for an action it described in
-chat (e.g. `drive_write_file_content`, `gmail_create_draft`, `slack_send_message`), not external
-personal data being newly exposed to it.
+The approval list at `/approvals` can contain multiple pending requests. Each row exposes **Deny** and **Review**; there is deliberately no one-click Allow on the list. Review opens the full approval card, where the user can inspect the operation and make the decision.
 
-**One narrow exception:** `drive_upload_file`. Its payload — an arbitrary local file via
-`local_path`, or inline bytes via `content_base64` — can be content Claude never actually read,
-unlike every other write tool's drafted text. When that file's extracted content (see
-[`text_extraction.py`](../src/privacyfence/text_extraction.py) — plain text, HTML, PDF, DOCX,
-PPTX, and XLSX; images are out of scope, no OCR) flags likely personal data, the upload gets the
-same real treatment a flagged read does: the second "Are you sure?" confirmation below, and `pii_detected`
-recorded in the audit log. Every other popup-gate write is unaffected and keeps the weaker,
-informational-only content-flag banner described in
-[`approval-window-content-reference.md`](approval-window-content-reference.md).
+Pending approvals update in the browser through the state/event stream. Decisions are idempotent: an approval that is no longer pending cannot be approved again as a fresh request.
 
-On top of the normal Allow once/Deny popup, PrivacyFence can scan the message/document/spreadsheet
-content shown in every `review` dialog (and, per the exception above, `drive_upload_file`'s content)
-for likely personal data across **Hungarian, English, and German** before you approve it — IBANs,
-credit card numbers, national identifiers, IP addresses, financial figures, and common
-personal-data/salary phrases per language. Email addresses and phone numbers are deliberately
-excluded (matching those formats flagged nearly every read popup, since almost every email
-signature carries the sender's own). See [`pii-detection-keywords.md`](pii-detection-keywords.md)
-for the exact categories, patterns, and the full reasoning behind what is and isn't matched.
+Approval content is built by `approval_window_html.py` and confirmation content by `dialog_window_html.py`; the web routes inject the browser decision bridge and enforce the current session/CSRF/CSP controls. See [`approval-window-content-reference.md`](approval-window-content-reference.md).
 
-When something is flagged on a `review` (read) call:
+## Gate behavior
 
-- The popup is tinted light red and shows a banner naming the categories found.
-- After clicking **Allow once** (or **Always allow**), one more explicit **"Are you sure?"** dialog is
-  required before the decision takes effect — declining it denies the whole request, the same as
-  clicking **Deny** on the original popup.
+Connector tools declare their gate behavior through the shared connector/tool machinery. The important policy outcomes are:
 
-`drive_upload_file`'s exception only extends the **second** part of that — the forced "Are you
-sure?" confirmation, and `pii_detected` in the audit log. Its own first popup is never tinted red:
-`approval_window_html.py`'s red-banner rendering is wired to the review-gate's `pii_categories` only, and
-the popup-gate window never receives a value for it regardless of tool, so a flagged upload's first
-dialog looks like any other (at most the ordinary amber content-flag banner, if `write_content_flags`
-separately matched) — the confirmation dialog is the only visible sign anything was flagged.
+- **auto** — the operation can run without a human decision under the current policy;
+- **review** — PrivacyFence shows the read/retrieval operation before releasing protected data;
+- **popup/write confirmation** — PrivacyFence requires an explicit decision before a write or other sensitive action;
+- **PII confirmation** — detected sensitive content can require an additional confirmation before release/delivery.
 
-This is a local, regex-based heuristic (see `src/privacyfence/pii_detector.py`) — it runs
-entirely on-device with no network calls, and it can both miss real PII and flag things that
-aren't; treat a hit as "look more carefully," not a guarantee either way. By default it never logs
-or stores the matched text itself, only the category labels (e.g. "IBAN (bank account number)") —
-those category labels, and whether any were flagged, are recorded in the [audit log](#audit-log).
-
-**One opt-in exception, off by default:** `pii_detection.audit_match_details` in `settings.yaml`
-(restart required) turns on a PII-refinement trial capture — meant to be enabled for a bounded
-window, then turned back off, not left on indefinitely. With it on, an *approved* request's audit
-entry also records the literal matched text for a label/keyword category (e.g. "salary") or a
-redacted form for a category whose match is itself the sensitive value (IBAN, credit card number,
-national ID/tax numbers, IP address, currency figures — see `pii_detector.py`'s
-`describe_match_for_audit()`); a request that wasn't approved (denied, denied unattended, or an
-unexpected error) never has the matched text recorded, only a fixed "details hidden" placeholder.
-The category-label breakdown itself (`pii_categories` in the audit log, "PII Categories" in the
-Excel export) is always recorded regardless of this setting — only the literal/redacted text is
-opt-in.
-
-The scan runs before any [auto-accept rule](#auto-accept-rules) is checked and overrides a
-matching one: auto-accept rules are scoped to metadata (sender domain, folder, "I am the
-organizer"), not content, so a rule that would otherwise pass a request through silently still
-routes it to the normal popup — tinted, with the second confirmation — whenever the content itself
-contains likely PII. A request that matches a rule *and* has no PII in its content still takes the
-silent auto-accept path exactly as before this gate existed.
-
-**Second exception, read-side only: content unchanged since PrivacyFence's own last write.**
-Every write tool that changes a file's own content (`drive_write_doc_content`,
-`drive_docs_edit_content`, `drive_docs_format_content`, `drive_write_file_content`,
-`drive_upload_file`, and every `drive_sheets_*` write tool) records, in memory, the Drive
-`modifiedTime` that write left the file at
-(`DriveConnector.own_write_revisions` in [`connectors/drive.py`](../src/privacyfence/connectors/drive.py)).
-`drive_get_file_content`, `drive_sheets_get_values`, and `drive_download_file` each check their
-target file's *current* `modifiedTime` against that record. When it still matches exactly, the PII
-gate's forced second confirmation is skipped for that one read — not PII detection itself: the
-category labels still feed the audit log's `pii_detected` field, and the ordinary review popup
-still appears if no other auto-accept rule matches, just without the red tint or the "Are you
-sure?" step. The reasoning: this is Claude reading back content it (or a human, via
-`drive_upload_file`) already put there and a human already saw once in that write's own approval
-popup, so a second confirmation on every re-read is friction, not an extra safety check. The
-moment anything else touches the file — a human collaborator, another app, a different Claude
-session — `modifiedTime` moves and the very next read goes through the ordinary PII gate again, no
-manual revocation needed. Same lifetime and cross-chat sharing as
-[`created_this_session`](#auto-accept-rules) below: it lives in memory only, tied to the daemon
-process, and is forgotten on restart.
-
-**Toggle:** enable or disable the whole gate from PrivacyFence Settings' **General** page (**PII
-Detection Gate**), or set `pii_detection.enabled: true|false` directly in `config/settings.yaml`.
-Enabled by default.
-
-**IP address** and **Financial figures (currency amounts)** can also be toggled off individually,
-independent of the gate as a whole — from the same **PII Detection Gate** card on the **General**
-page, or via `pii_detection.detect_ip_addresses` / `detect_financial_figures` in
-`config/settings.yaml` (both `true` by default); every other category is on whenever the gate
-itself is enabled. See
-[`pii-detection-keywords.md`](pii-detection-keywords.md#individually-optional-categories) for why
-these two specifically get their own toggle.
-
----
+Always-allow rules can bypass a matching future approval only within the rule shape and scope the user approved. See [`always-allow-rules-reference.md`](always-allow-rules-reference.md).
 
 ## Connectors & privacy matrix
 
@@ -546,11 +409,11 @@ auto-accept rule yet — Allow-once-only, like most new write tools at first cut
 ### The `auto` tier, across all connectors
 
 The tables above gate 41 tools `auto` — allowed to proceed with no human in the loop, but still
-recorded in the audit log as `auto_accepted` (§4 of
-[security-and-compliance.md](security-and-compliance.md#4-human-in-the-loop-control): "Even the
-`auto` gate is a logged, IT-and-user-configured exception — never a default absence of control").
-This section gives that tier its own documented view, per the review's §14.3, rather than leaving it
-implicit across eleven separate per-connector tables.
+recorded in the audit log as `auto_accepted` (see
+[Audit integrity and forwarding](security-and-compliance.md#audit-integrity-and-forwarding): the
+`auto` gate is a logged, IT-and-user-configured exception, never a default absence of control).
+This section gives that tier its own documented view rather than leaving it implicit across eleven
+separate per-connector tables.
 
 **What qualifies a tool for `auto`, as a rule rather than a case-by-case judgment call:** every tool
 below is either (a) a listing/metadata operation whose result names *what exists* (message subjects
@@ -863,8 +726,8 @@ separately (the old, still-fully-supported way — configure each rule independe
 
 Clicking **Always allow** on a "Read Sheet Values" prompt proposes the same `i_am_owner`/
 `approved_folder` candidate(s) as `drive.read_file_contents`/`download_file` — see
-[Always-allow suggestion candidates](#always-allow-suggestion-candidates) below for how the popup
-renders one button per candidate when both apply.
+[Multiple matching candidates](always-allow-rules-reference.md#multiple-matching-candidates) for how
+the popup renders one button per candidate when both apply.
 
 `drive.comment_file` (`drive_add_comment` — also used for comments on Docs and Sheets, since those
 ride the Drive connector's OAuth grant) supports `i_am_owner`, `approved_sandbox_folder`, and
@@ -877,23 +740,26 @@ covered above — enabling its `write` capability auto-accepts `drive.comment_fi
 `drive.write_file`/`drive.write_doc` and every `sheets.*` write.
 
 **Every one of Drive's write ops offers Always allow** — see
-[Always allow for writes](#always-allow-for-writes) below for the full table; most propose
+[Write tools](always-allow-rules-reference.md#write-tools) for the full table; most propose
 `approved_sandbox_folder` from the file's current parent folder(s), `drive.upload_file` proposes
 `parent_folder_allowlist` from the upload's destination folder, and `drive.move_file` proposes
 `move_within_approved_folders` from the file's folder *before* the move. Some also still get a
-temp-accept grace window on top (see [Review model](#review-model)'s "Claude → Tool" section).
+temp-accept grace window on top (see
+[Related but distinct mechanisms](always-allow-rules-reference.md#related-but-distinct-mechanisms)).
 `sheets.write_range`, `sheets.format_range`,
 `sheets.insert_dimensions`, `drive.comment_file`, `docs.edit_content`, and `docs.format_content`
 are the exception: clicking Allow once on one of these also arms an in-memory, non-persisted
 acceptance scoped to one spreadsheet/file for 5 minutes — disclosed in the popup with a plain
-caption, not a separate button — see [Two flows by direction](#two-flows-by-direction).
+caption, not a separate button — see
+[Related but distinct mechanisms](always-allow-rules-reference.md#related-but-distinct-mechanisms).
 `sheets.add_sheet` and `sheets.rename_sheet`
 get neither; they're one-shot per file rather than something called repeatedly in a burst, so a
 standing rule (configured as above) is the only way to skip their popup. `sheets.delete_dimensions`
 also deliberately gets neither, despite being called in the same kind of burst
 `sheets.insert_dimensions` is: unlike insert/format, deleting rows or columns removes cell content
 with no undo path through PrivacyFence, so it only ever gets the standing-rule treatment — see
-[Two flows by direction](#two-flows-by-direction) for the reasoning.
+[Related but distinct mechanisms](always-allow-rules-reference.md#related-but-distinct-mechanisms)
+for the reasoning.
 
 **Slack**
 
@@ -1048,695 +914,73 @@ edits within a personal list while still requiring review for creates.
 
 > **Google Contacts**: `contacts_list`, `contacts_search`, and `contacts_get` are unconditionally auto-accepted. `contacts_update`, `contacts_create`, `contacts_add_label`, and `contacts_remove_label` are all `popup`-gated; `no_contact_info_change` above is the only configurable auto-accept rule, and it applies only to `contacts_update`. Contact deletion is not supported. **Google Tasks**: all three read tools plus `tasks_list_task_lists` are unconditionally auto-accepted; the five write tools (`tasks_create_task`, `tasks_update_task`, `tasks_complete_task`, `tasks_uncomplete_task`, `tasks_move_task`) are `popup`-gated, each independently configurable via `approved_task_list` above. **Telegram**: `telegram_list_chats` is unconditionally auto-accepted; `telegram_get_messages` and `telegram_search_messages` are `review`-gated by default but configurable via the rules above (sharing one operation key, `telegram.read_chat_messages`); `telegram_send_message` is `popup`-gated with no configurable rule. **Jira and Confluence** read tools (`jira_get_issue`, `confluence_get_page`, `confluence_get_page_by_title`, `confluence_download_attachment`) are `review`-gated by default but configurable via the rules above; their write tools remain `popup`-gated with no configurable rule, except `jira_transition_issue`, which accepts `approved_project_keys` as noted above. **Apps Script**: `apps_script_list_projects` is unconditionally auto-accepted; `apps_script_get_content` and `apps_script_get_execution_log` are `review`-gated with no configurable rule; `apps_script_write_content` is `popup`-gated with no configurable rule (Allow-once-only at first cut — see issue #154 open question 2).
 
----
+## Privacy filtering and PII
 
-## Always-allow suggestion candidates
+Privacy filtering runs before protected content is released to the MCP client. Organization policy can allow, redact, or block configured PII categories. Invalid configured policy values fail closed at startup/config validation rather than silently becoming permissive.
 
-Four operations can produce more than one plausible "Always allow" suggestion at once — e.g. a
-Drive read where you both own the file *and* it's in an approved folder. Rather than picking one
-to propose, the popup renders **one "Always allow" button per matching candidate**:
+The PII detector and privacy filter are implemented in `pii_detector.py` and `privacy_filter.py`. Tool-specific preview/extraction limits are documented in [`file-type-support.md`](file-type-support.md).
 
-| Family (`auto_accept.SUGGESTION_FAMILIES`) | Operations | Candidates, in fixed declaration order |
-|---|---|---|
-| `drive_read` | `drive.read_file_contents`, `drive.download_file` | `i_am_owner`, `approved_folder` |
-| `calendar_read_event` | `calendar.read_event_details` | `i_am_organizer`, `no_external_attendees`, `non_private_event` |
-| `jira_read_issue` | `jira.read_issue` | `i_am_reporter`, `i_am_assignee`, `approved_project_keys` |
-| `confluence_read_page` | `confluence.read_page`, `confluence.download_attachment` | `i_am_author`, `approved_space_keys` |
+## Audit logging
 
-`suggest_rule_choices()` (`auto_accept.py`) returns every candidate that actually matches the item
-on screen, walked in the fixed declaration order above — not a single top-priority pick, and not
-configurable (there used to be a `rule_suggestion_priority` `settings.yaml` key controlling this;
-it's gone, since once every match gets its own button there's nothing left to prioritize or
-exclude — a pre-existing `rule_suggestion_priority` block in an older `settings.yaml` still loads
-without error, it's just silently ignored like any other retired settings key). An item matching only one candidate still shows
-exactly one button, identical to every other single-candidate operation. An item matching 2+
-candidates shows one button per match, in their own
-row above Deny/Allow once — clicking any one of them goes straight to that rule's own
-confirmation dialog (`show_rule_confirmation_popup()`), the same two-click safety margin every
-other Always-allow button gets; there is no separate "choose from list" dialog. Cancelling that
-confirmation accepts the item once without creating any rule, same as the single-candidate case.
+PrivacyFence records tool/gate decisions to the audit log, including the connector/tool, decision, request metadata, and principal information where applicable. Security-sensitive audit integrity/forwarding behavior is implemented in the audit modules and described in [`security-and-compliance.md`](security-and-compliance.md).
 
-This affects only what the popup's Always-allow buttons *propose* — it has no effect on which
-already-configured `auto_accept_rules`/`auto_accept_grants` entries actually auto-accept a call.
-`suggest_rule_choices()` is outside `should_auto_accept()`'s and `preflight_from_args()`'s call
-graph, and this feature introduces no new rule names, so it needs no `ARGS_ONLY_RULES`/
-`DATA_DEPENDENT_RULES`/`known_rule_names()` changes.
+Treat the audit log as security-relevant state: protect its directory, include it in operational backup decisions where required, and do not expose it through connector content paths.
 
----
+## Web authentication and CSRF
 
-## Always allow for writes
+Local browser sessions are established from the one-time bootstrap exchange and then represented by the HttpOnly session cookie. Mutating browser requests require same-origin/session checks plus the CSRF value carried by the page/request flow.
 
-Most write popups still don't offer Always allow as a rule — auto-accepting a write silently is a
-materially bigger blast radius than auto-accepting a read (see [Review model](#review-model)). The
-operations below are a deliberate, narrow set of exceptions, declared in
-`auto_accept.WRITE_RULE_SUGGESTIONS`:
+CSP nonces are generated and applied to the inline scripts/styles required by the rendered application. Security headers are applied by the web-server middleware.
 
-| Operation key | Rule proposed | Value derived from |
-|---|---|---|
-| `gmail.create_draft` | `always_allow` | nothing — unconditional (see below) |
-| `gmail.add_label` / `gmail.remove_label` | `label_name_allowlist` | the label just added/removed |
-| `calendar.create_modify_event` / `calendar.set_visibility` | `personal_calendar` | the event's own `calendar_id` |
-| `drive.write_file` / `write_doc` / `comment_file` | `approved_sandbox_folder` | the file's current parent folder(s) |
-| `drive.upload_file` | `parent_folder_allowlist` | the upload's own destination `parent_folder_id` |
-| `drive.move_file` | `move_within_approved_folders` | the file's parent folder(s) **before** the move (not the destination) |
-| `sheets.write_range` / `add_sheet` / `rename_sheet` / `format_range` / `insert_dimensions` / `delete_dimensions` | `approved_sandbox_folder` | the spreadsheet's current parent folder(s) |
-| `docs.edit_content` / `format_content` | `approved_sandbox_folder` | the doc's current parent folder(s) |
-| `jira.create_issue` / `add_comment` / `update_issue` / `transition_issue` | `approved_project_keys` | `project_key` if given, else parsed from `issue_key`'s `"PROJ-123"` prefix |
-| `confluence.create_page` / `update_page` | `approved_space_keys` | the page's own `space_key` |
-| `tasks.create_task` / `update_task` / `complete_task` / `uncomplete_task` / `move_task` | `approved_task_list` | the task's own `task_list_id` (`move_task`: **both** `source_list_id` and `destination_list_id`) |
+Org-mode routes use the org session/identity machinery and apply principal-aware authorization rather than the local single-user session model.
 
-Every entry except `gmail.create_draft` is resource-identity-scoped — one folder, one label, one
-calendar, one project, one space, one task list — never a bare "accept every future write of this
-type" toggle; that property is what keeps this exception narrow rather than reopening the
-no-Always-allow policy across the board. `gmail.create_draft` is a deliberate exception to that
-exception: drafting has no recipient sent yet, unlike `gmail.send_message` (which stays out of this
-table entirely and is still reviewed via `to_is_myself`/`approved_recipient_domain` before it goes
-out), so an unconditional rule for drafting alone doesn't carry the blast radius a bare toggle would
-for an operation that actually delivers something. All of these rule names already existed and were
-already configurable by hand or via a grant (see
-[Auto-accept grants](#auto-accept-grants)/[Auto-accept rules](#auto-accept-rules) above) — this only
-adds a popup-time shortcut to create one on the spot, the same second-confirmation-dialog flow
-`suggest_rule()`'s Always allow already uses on the read side, reused here via
-`describe_rule_change()` (not `describe_rule()`, whose canned templates are read-direction-only
-English and would mislabel a write's own confirmation, since these same rule names are shared with
-a read operation key too). A value-less rule like `always_allow` shows just "Add auto-accept rule
-'always_allow' to 'gmail.create_draft'" — no "= None" — since `WriteRuleSuggestion.value_of` uses a
-`_NO_SUGGESTION` sentinel to tell "nothing to suggest" apart from "the value is legitimately None".
+## Browser notifications
 
-`gate.py`'s popup branch computes `suggest_write_rule(operation_key, ctx)` up front, wraps a
-non-`None` result into a single-entry `accept_all_choices` list (via `describe_rule_short()`, the
-same shape the review branch's multi-entry list uses) — the same `accept_all_choices` parameter
-`show_read_popup()` already uses to decide how many buttons to render — and handles a resulting
-`"accept_all"` decision (and its `chosen_index`) inside the same `_interact()` closure as the
-popup call itself (P3, docs/https-connector-refactor-plan.md §5-§6 — this used to be "the same
-`_popup_lock` acquisition"; the lock is gone, but the ordering guarantee it existed for — the rule
-confirmation and persistence happen as part of the one interaction, not deferred to some later
-observer — is unchanged), mirroring the review branch exactly. Every other write operation
-(roughly a dozen tools, e.g. `gmail_archive_message`, `slack_send_message`) gets `None` from
-`suggest_write_rule()` by construction — there's no fallback path, so they're structurally
-unaffected and their popups are visually unchanged (Deny / Allow once only).
+The shared web shell maintains the state stream, pending-approval count, and optional browser notifications. Notification detail is controlled by the web notification configuration:
 
----
+- `minimal` exposes only a pending-count style notification;
+- `standard` can include safe operation metadata such as connector/direction;
+- `detailed` may include the approval summary and therefore can expose gated content in the OS/browser notification surface.
 
-## Reading and proposing auto-accept changes over MCP
+Notification permission is requested only after a user interaction/decision path, not automatically on initial page load.
 
-`auto_accept_rules`/`auto_accept_grants` are readable/writable from the daemon side — the settings
-window's **Auto-accept Rules** page (`settings_controller.py` / `settings_window_html.py`) or the
-"Always allow" confirmation described above — and, additionally, from two MCP meta-tools, so
-Claude can inspect and propose changes to this config directly:
+## Connector lifecycle
 
-### `privacyfence_list_auto_accept_rules` — read
+Local mode builds one `ConnectorHost` at daemon startup. Org mode uses `ConnectorRegistry` to build connector sets lazily per principal and evict idle hosts.
 
-```
-privacyfence_list_auto_accept_rules(reason) -> {
-    "auto_accept_rules": {<operation_key>: [{"rule": <str>, "value": <any>}, ...]},
-    "auto_accept_grants": {<connector>: {<config_key>: [{...grant entry...}, ...]}},
-}
-```
+Connector setup documentation:
 
-The raw, addressable config sections straight from `settings.yaml` — not the compiled/merged view
-the evaluator uses internally — so a caller can identify an existing entry by its exact fields
-before proposing a change to it. No popup, no mutation, no external API call; records a lightweight
-`rules_listed` audit entry (see [Audit log](#audit-log)) since it discloses the full current rule
-set, the same reasoning as `privacyfence_check_policy`'s `policy_check` entry.
+- [`google-cloud-setup.md`](google-cloud-setup.md)
+- [`slack-setup.md`](slack-setup.md)
+- [`salesforce-setup.md`](salesforce-setup.md)
+- [`atlassian-setup.md`](atlassian-setup.md)
+- [`telegram-setup.md`](telegram-setup.md)
 
-### `privacyfence_propose_auto_accept_rule_change` — write, always gated
+The definitive tool surface lives in `src/privacyfence/connectors/` and the connector registry/daemon construction code.
 
-```
-privacyfence_propose_auto_accept_rule_change(target, operation, reason, ...) -> {
-    "confirmed": true, "changed": <bool>, "description": "<str>",
-}
-```
+## File and download handling
 
-`target` is `"rule"` (an `auto_accept_rules` entry) or `"grant"` (an `auto_accept_grants` entry);
-`operation` is `"add"`, `"update"`, or `"remove"`. This is the one write path an `/mcp` connection
-has into `settings.yaml`, and there is no way to reach it without a human confirming: every call
-blocks on the same confirmation dialog the "Always allow" button uses
-(`show_rule_confirmation_popup`) — even if an identical rule/grant already exists. A decline (or a
-call from a connection in an [unattended session](#scheduled--unattended-cowork-tasks)) makes the
-call throw rather than return a false-y result, the same "deny == exception" contract every other
-gated tool call already follows.
+PrivacyFence extracts/normalizes supported attachment types for preview and PII inspection using the bounded extraction paths documented in [`file-type-support.md`](file-type-support.md).
 
-- `target="rule"` fields: `operation_key`, `rule_name`, `value` (required for add/update — often a
-  list, matching the shape shown under [Auto-accept rules](#auto-accept-rules)), `old_value`
-  (update only — the prior value being replaced; omit to add alongside the existing value instead
-  of replacing it).
-- `target="grant"` fields: `connector`, `config_key`, `resource_id` (required), `name` (optional
-  cosmetic label), `tab` (no current resource type uses this, but the field is supported generically
-  should a future one need it), `capabilities` (add/update only — a map of capability key, e.g.
-  `"write"`, to `true`/`false`; see the capability tables under
-  [Auto-accept grants](#auto-accept-grants) for which keys apply to which resource type).
+Local-mode downloads can be written on the user's machine. Org-mode downloads are delivered inline or through encrypted short-lived staged downloads as documented in [`org-mode-download-delivery.md`](org-mode-download-delivery.md).
 
-Applying the change reuses the exact same persistence functions the settings page's editor and
-the "Always allow" flow already use (`auto_accept.add_auto_accept_rule`/`remove_auto_accept_rule`,
-`resource_grants.apply_grant_upsert`/`apply_grant_removal`), so an MCP-proposed change hot-reloads
-the live evaluator the same way. When it actually changes something, it's recorded as one of four
-audit decisions — `rule_changed_via_bridge_proposal`, `rule_removed_via_bridge_proposal`,
-`grant_changed_via_bridge_proposal`, `grant_removed_via_bridge_proposal` (the literal decision
-strings predate `/mcp` and are unchanged since — this is historical audit-log data on disk, not
-something a doc pass renames) — distinguishable from a UI-originated change. A confirmed proposal
-that turns out to be a no-op (e.g. removing a rule/grant value that was already gone) is
-`bridge_proposal_no_op` instead — distinct from both a real change and from a decline, which reuses
-the existing `rejected` decision rather than a new value.
+## Configuration
 
-Motivating example: a user's config can accumulate many individual `sheets.*` operations each
-hand-pinned to `approved_sandbox_folder` (see the callout under
-[Auto-accept rules](#auto-accept-rules)) when what's actually wanted is one
-`auto_accept_grants.drive.sandbox_folders` grant. With these two tools, Claude can list the current
-rules, identify the duplicates, and propose removing them and adding the equivalent grant instead —
-each step still confirmed by a human, same as if they'd done it by hand in the settings page.
+`config/settings.yaml` (and the packaged example under resources) defines local/web/connector behavior. Org deployments additionally use the signed/validated organization configuration bundle and org-specific identity/settings.
 
----
+Configuration that affects security boundaries is validated strictly; invalid values should stop startup rather than silently widen access.
 
-## Scheduled / unattended Cowork tasks
+## Installation and packaging
 
-A scheduled Claude Cowork Routine can run with nobody at the keyboard. If it calls a `review`- or
-`popup`-gated tool that no auto-accept rule covers, the normal behavior — open a popup and
-wait — means the task hangs indefinitely, and since every popup shares one lock, it also blocks
-every other approval (including an unrelated interactive one) behind it until someone finds and
-answers the dialog. Two additions address this. Design rationale (why a `contextvars`-scoped flag
-rather than a connector-level change, why args-only rules are classified by hand rather than
-inferred, alternatives considered) lives in code comments at the relevant call sites —
-`gate.py`'s `unattended_scope`/`is_unattended`, `auto_accept.py`'s `ARGS_ONLY_RULES`/
-`DATA_DEPENDENT_RULES`, and `web/mcp_dispatch.py`'s `begin_unattended_session`.
+Current packaging paths are documented in [`platform-support.md`](platform-support.md):
 
-### `privacyfence_check_policy` — preflight
+- macOS signed/notarized DMG;
+- Windows Inno Setup installer;
+- Debian/Ubuntu self-contained `.deb` for local desktop mode;
+- Python package/system-service path for Linux/server deployments.
 
-An MCP meta-tool (not backed by any connector) Claude can call before actually calling a gated
-tool, to find out whether that specific call would need a human:
+## Testing
 
-```
-privacyfence_check_policy(connector, tool, reason, args) -> {
-    "gate": "auto" | "review" | "popup",
-    "verdict": "auto_accept" | "requires_review" | "unknown",
-    "matched_rule": <str | null>,
-    "reason": "<str>",
-    "pii_gate_may_apply": <bool>,
-}
-```
+[`testing-policy.md`](testing-policy.md) describes the checks that currently run. [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) is the only plan document and tracks automation gaps that still exist.
 
-`reason` (required, same as every gated tool's — self-reported and unverified, logged as-is, never
-treated as fact) is one sentence on why Claude is checking this right now; recorded on the
-resulting `policy_check` audit entry, since that entry has no underlying tool call to take a reason
-from otherwise.
-
-It never calls a connector, opens a popup, or has any side effect beyond a lightweight
-`policy_check` audit entry (see [Audit log](#audit-log)) — safe to call as often as needed while
-planning a task. The verdict is only ever as certain as the underlying rule allows:
-
-- `auto_accept` — a rule matched using only the call's arguments (or an active temp-accept grace
-  window); the real call will auto-accept identically.
-- `requires_review` — every rule configured for this operation only needs arguments, and none
-  matched; fetching the real data cannot change that answer.
-- `unknown` — at least one configured rule needs the actual fetched item (e.g. `i_am_owner`,
-  `trusted_sender_domain`) to decide, which a preflight check can't see in advance.
-
-For `review`-gated (read) tools, `pii_gate_may_apply` is always `true`: the
-[PII detection gate](#pii-detection-gate) scans real content and can force a popup even when a
-rule matches, and that can never be predicted before the read happens.
-
-### Unattended sessions — fail fast instead of hang
-
-`privacyfence_begin_unattended_session(reason)` / `privacyfence_end_unattended_session(reason)`
-(also MCP meta-tools, each with a required `reason` — same self-reported, unverified, one
-sentence contract as `privacyfence_check_policy`'s) let Claude mark the current connection as
-running a scheduled/unattended task, for as long as that connection stays open. `reason` is
-recorded on the resulting `unattended_session_started`/`unattended_session_ended` audit entry —
-for calls this session denies without ever showing a popup, it's the only human-legible record of
-why the session was unattended in the first place. While marked, any `review`/`popup` call on that connection
-that isn't already covered by a matching auto-accept rule is **denied immediately** — audited as
-`denied_unattended`, distinct from a human's own `rejected` — instead of opening a popup nobody
-will answer. This applies even when a rule matched but the [PII gate](#pii-detection-gate) still
-routed the call to a human. Nothing that would auto-accept today stops auto-accepting; this only
-changes the failure mode for calls that would otherwise open an unanswered dialog and hold up
-every other approval behind it.
-
-**Off by default.** Set in the organization config bundle (`org_config.json`, installed via
-"Install/Update Organization Config…" on PrivacyFence Settings' **General** page — see
-[scripts/build_org_bundle.py](../scripts/build_org_bundle.py)'s `--enable-unattended-sessions`
-flag), not in `settings.yaml`:
-
-```json
-{
-  "unattended_sessions": { "enabled": true }
-}
-```
-
-`privacyfence_begin_unattended_session` errors until an administrator opts in — a Claude session
-gaining the ability to switch its own connection into fail-fast mode is a deliberate
-per-organization choice, not a per-user setting, so it isn't exposed as a settings-page toggle.
-The unattended flag is scoped to one Streamable HTTP MCP session (a Cowork task's own connection to
-`/mcp` — `web/mcp_dispatch.py`'s `McpDispatcher`, keyed the same way a bridge connection used to be
-before P5 retired it) and clears automatically if the session ends, so there's no persistent state
-to clean up.
-
-The web settings page does not currently surface how many sessions are in this state — a pre-#120
-native menu bar item briefly showed a live count (e.g. "PrivacyFence is running — 1 unattended
-session active"), but no surface since (the two-item tray issue #120 replaced it with, and now the
-web settings page after P10 deleted that tray entirely) has an equivalent —
-`SettingsController` doesn't surface the count anywhere as of this writing —
-`McpDispatcher.set_unattended_changed_listener` is still wired up
-(`SettingsController._on_unattended_changed`, via `SettingsController.wire_unattended_listener`)
-but its only current effect is triggering a state re-render of whatever page happens to be open,
-not displaying the count itself. The underlying `McpDispatcher.unattended_session_count()` this
-would read from still exists and is accurate — only the display is currently missing.
-
----
-
-## Audit log
-
-Every decision — accepted, denied, or auto-accepted — is appended to a JSON-lines file in `logs/audit/YYYY-WNN.jsonl`. At startup, any week that has a `.jsonl` file but no `.xlsx` is automatically exported to a formatted Excel workbook with a colour-coded **Decisions** sheet and a **Summary** tab (the latter includes a "By PII category" breakdown when any entry has one). Each entry also records whether the [PII detection gate](#pii-detection-gate) flagged the content and which category label(s) (e.g. "IBAN (bank account number)") — never the matched text itself, unless the opt-in `pii_detection.audit_match_details` trial setting described in that section is turned on, and even then only for an approved request, and only ever in redacted form for a category whose match is itself the sensitive value.
-
-**Append-integrity, event identity, and provenance (SEC-23).** Every entry is additionally
-chained to the one before it with a keyed hash — `entry_hash` is an HMAC-SHA256 (keyed by a
-per-install key generated on first use, `.audit_chain.key` next to the `.jsonl` files) over the
-entry's own fields plus `prev_hash`, the previous entry's `entry_hash` (or a genesis value for the
-first entry in a chain). `AuditLogger.verify_chain()` (or `python3 scripts/verify_audit_log.py
-logs/audit`, standalone) recomputes and checks this: an entry edited, inserted, or removed after
-the fact breaks the chain at that point, without needing anywhere else to compare against. Honest
-caveat: the key lives next to the log it protects, so this catches accidental corruption and a
-party who can write the `.jsonl` files without also reading the key file — not a fully privileged
-local administrator who can read both; centralized forwarding (below) is what actually removes a
-tampered copy from that same trust boundary. Each entry also carries a stable `event_id` (unique
-to that one line, unlike `request_id`, which is deliberately shared across a deferred-approval's
-"pending" and its later "decided" entry), an explicit `schema_version` (bumped whenever the entry
-shape changes — see `audit_log.py`'s `CURRENT_SCHEMA_VERSION`), this install's own `deployment_id`
-(a random id persisted once at `data_dir()/deployment_id`, so entries from multiple machines/
-servers can be told apart once aggregated), and a `security_config_hash` fingerprinting the
-`settings.yaml` privacy policy in effect when the decision was recorded (`audit_log.
-compute_security_config_hash()`) — refreshed on every settings change, not just at daemon startup.
-
-**Centralized forwarding (org mode, SEC-23).** `org_config.json`'s `audit_forwarding` section
-(off by default) additionally forwards each entry, best-effort and off the decision path, to a
-syslog server (RFC 5424, RFC 6587 octet-counting for TCP) or a generic HTTPS/JSON webhook — Splunk
-HEC, Datadog's Logs API, an Elastic ingest pipeline, an OTLP-over-HTTP/JSON log receiver all speak
-this on the wire; it is not a full OTLP SDK. See
-[org-mode-setup-guide.md's "Centralized audit-log forwarding"](org-mode-setup-guide.md#11-centralized-audit-log-forwarding-optional)
-for the `build_org_bundle.py --enable-audit-forwarding` flags. A forwarding failure (collector
-down, network partition) never blocks or loses the local decision — the `.jsonl` file, with its
-own hash chain, stays the authoritative record regardless.
-
-Two decision values relate to [scheduled/unattended tasks](#scheduled--unattended-cowork-tasks):
-`denied_unattended` (a call denied without ever prompting, because the connection was in an
-unattended session and no auto-accept rule matched — kept distinct from a human's own `rejected`)
-and `policy_check` (a `privacyfence_check_policy` preflight call — not a real decision, recorded
-for pattern-spotting only). Both get their own row on the Summary sheet and their own colour on
-the Decisions sheet.
-
-Six more relate to
-[reading/proposing auto-accept changes over MCP](#reading-and-proposing-auto-accept-changes-over-mcp):
-`rules_listed` (a `privacyfence_list_auto_accept_rules` call — like `policy_check`, not a real
-decision, recorded because it discloses the full current rule set) and, once a
-`privacyfence_propose_auto_accept_rule_change` proposal is confirmed,
-`rule_changed_via_bridge_proposal` / `rule_removed_via_bridge_proposal` /
-`grant_changed_via_bridge_proposal` / `grant_removed_via_bridge_proposal` when it actually changed
-something, or `bridge_proposal_no_op` when it didn't (e.g. removing a rule/grant value that was
-already gone). A declined proposal reuses the existing `rejected` decision rather than a new value.
-
-See [connector-qa-testing.md](connector-qa-testing.md) for a Claude Cowork prompt that drives every connector's tools end to end against real accounts — the fastest way to catch a gate, auto-accept rule, or connector client that's drifted from what's documented here.
-
----
-
-## Security, privacy & compliance
-
-For information security, IT, GDPR, and EU AI Act reviewers: see
-[security-and-compliance.md](security-and-compliance.md) for the deployment model
-(local, not SaaS), IT's connector-level access authority, the human-in-the-loop review model,
-data handling, and PrivacyFence's positioning under GDPR and the AI Act. For org mode specifically —
-its support/readiness level, backup/restore, upgrade/rollback, persisted-state compatibility, and
-restart/single-daemon availability behaviour — see
-[org-mode-operational-readiness.md](org-mode-operational-readiness.md).
-
----
-
-## Installation
-
-PrivacyFence splits configuration into two steps done by two different people:
-
-1. **IT admin, once per organization:** register a cloud app for each service you want (Google,
-   Slack, Salesforce, Atlassian) and package the result into one organization config bundle with
-   `scripts/build_org_bundle.py`. See the "For IT admins" section of each doc below. Telegram is
-   not part of this step — its `api_id`/`api_hash` identify the PrivacyFence app itself, not your
-   organization, and are already baked into the release build. If your organization does Workspace
-   room/resource booking, there's one more optional, one-time step here: syncing the room directory
-   into the bundle from a *second*, admin-scoped Google Cloud project via
-   `scripts/sync_room_directory.py` — see "Room directory sync" in
-   [google-cloud-setup.md](google-cloud-setup.md).
-2. **Every user, from PrivacyFence Settings** (the embedded web page — `web.settings.enabled: true`
-   by default, see `settings.yaml.example`): install the bundle IT sent you from the **General**
-   page, then click **Authenticate…** on each connector you want from the **Connectors** page.
-   Almost everywhere this opens your browser to sign in — Telegram is the only connector that
-   instead asks for your phone number and a verification code via its own in-page sign-in flow,
-   since MTProto has no browser-OAuth equivalent. The daemon logs the exact URL (including the
-   session token) on startup — `Web settings active -- open at http://localhost:8765/settings?token=...`.
-
-> See [google-cloud-setup.md](google-cloud-setup.md), [slack-setup.md](slack-setup.md), [salesforce-setup.md](salesforce-setup.md), [atlassian-setup.md](atlassian-setup.md), and [telegram-setup.md](telegram-setup.md) for the full walkthroughs.
-
-### From the DMG (recommended)
-
-The DMG carries both halves of PrivacyFence — the daemon and the Claude extension — so this is
-the only download you need:
-
-1. Download the latest `PrivacyFence-<version>.dmg` from the [Releases](../../../releases) page.
-2. Open the DMG, drag **PrivacyFenceApp.app** to `/Applications`.
-3. Launch it. Releases are code-signed and notarized by Apple, so Gatekeeper lets it open
-   normally — no quarantine warning, no manual `xattr` step. The daemon starts immediately in the
-   background (no Dock icon, no menu bar item); there's no setup wizard to walk through.
-4. To start PrivacyFence automatically at login, install the LaunchAgent once:
-   ```bash
-   cp com.privacyfence.app.plist ~/Library/LaunchAgents/
-   launchctl load ~/Library/LaunchAgents/com.privacyfence.app.plist
-   ```
-5. Open PrivacyFence Settings — the daemon logs the exact URL (with its session token) to
-   `~/.privacyfence/logs/privacyfence.log` on startup, e.g.
-   `http://localhost:8765/settings?token=...` — then on the **General** page click
-   **Install/Update Organization Config…** and select the bundle your IT team sent you.
-6. On the **Connectors** page, click **Authenticate…** for each connector you want — this takes
-   effect immediately (the daemon's live connector list is hot-reloaded), no quit/reopen needed.
-7. Still in the mounted DMG, double-click **PrivacyFence.mcpb** — Claude Desktop installs the
-   MCP server for you (Settings → Extensions → Install Extension… happens automatically), with no
-   config file edited and no token copied — see [Connecting Claude](#connecting-claude) below.
-
-### From the `.deb` (Linux, `local` mode)
-
-The Linux equivalent of the DMG above — a `dpkg -i`-able package wrapping a self-contained
-PyInstaller build of the daemon, for someone installing PrivacyFence on their own Linux desktop
-the same way a macOS user drags `PrivacyFenceApp.app` to `/Applications`. See
-[`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md) for the full design.
-
-1. Download the latest `privacyfence_<version>_amd64.deb` from the [Releases](../../../releases)
-   page.
-2. `sudo apt install ./privacyfence_<version>_amd64.deb` (or `sudo dpkg -i` — the package declares
-   no `python3-*` dependencies to resolve). Installs the daemon to `/opt/privacyfence`, a
-   `privacyfence-app` wrapper on `PATH` at `/usr/bin/privacyfence-app`, and an XDG autostart entry
-   at `/etc/xdg/autostart/privacyfence.desktop`.
-3. Log out and back in — the autostart entry fires at the next graphical login (works the same way
-   across GNOME/KDE/XFCE/etc., no per-user `systemctl --user enable` step needed). To start it
-   immediately instead, run `privacyfence-app &`.
-4. Open PrivacyFence Settings (`http://localhost:8765/settings` — the daemon logs the exact URL,
-   with its session token, to `~/.privacyfence/logs/privacyfence.log` on startup) and continue
-   with the organization config and connector authentication steps as in the DMG instructions
-   above.
-5. Install **PrivacyFence.mcpb** into Claude Desktop, downloaded separately from the same release.
-
-`apt remove`/`dpkg -r` leaves `~/.privacyfence` (config, credentials, audit log) untouched — that
-data belongs to the app, not the package. `apt purge` cleans up anything package-owned beyond
-that, which today is nothing (no system-wide config exists to purge).
-
-### From source
-
-**Requirements:** Python 3.11+, macOS or Linux, pip 21.3+ (needed for a `pyproject.toml`-only
-editable install — this repo has no `setup.py`; an older pip fails with *"File 'setup.py' or
-'setup.cfg' not found... editable mode currently requires a setuptools-based build"*)
-
-Use a 3.11+ interpreter explicitly when creating the venv — a bare `python3` often resolves to an
-older system Python (e.g. macOS's stock 3.9), which fails install with *"Package 'privacyfence'
-requires a different Python: 3.9.6 not in '>=3.11'"*.
-
-```bash
-git clone https://github.com/privacyfence/privacyfence
-cd privacyfence
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip
-pip install -e .
-```
-
-Copy the config (privacy policy / auto-accept rules — no secrets live here):
-
-```bash
-cp src/privacyfence/resources/settings.yaml.example config/settings.yaml
-```
-
-Build (or obtain from IT) an organization config bundle, then authorize each connector you want —
-either from PrivacyFence Settings' **Connectors** page once `privacyfence-app` is running (the
-daemon logs the URL on startup), or headlessly from the CLI. Running
-from source (unbundled) keeps all of this — config, `org/`, `credentials/`, logs — inside the repo
-folder itself; only a PyInstaller-bundled `.app` uses `~/.privacyfence` instead (see
-[dev-vs-live-setup.md](dev-vs-live-setup.md)):
-
-```bash
-python3 scripts/build_org_bundle.py --google-client-secret /path/to/client_secret.json -o org_config.json
-mkdir -p org && cp org_config.json org/
-
-privacyfence-app --gmail-oauth
-privacyfence-app --drive-oauth
-privacyfence-app --calendar-oauth
-privacyfence-app --contacts-oauth
-privacyfence-app --tasks-oauth
-privacyfence-app --slack-oauth        # if the bundle has a Slack app
-privacyfence-app --salesforce-oauth   # if the bundle has a Salesforce Connected App
-privacyfence-app --atlassian-oauth    # if the bundle has an Atlassian OAuth app
-privacyfence-app --telegram-setup     # phone+code sign-in (needs PRIVACYFENCE_TELEGRAM_API_ID/API_HASH env vars for a dev build)
-```
-
-Start the daemon:
-
-```bash
-privacyfence-app
-```
-
-### Windows
-
-The installer carries both halves of PrivacyFence — the daemon and the Claude extension — same as
-the DMG:
-
-1. Download the latest `PrivacyFence-<version>-setup.exe` from the [Releases](../../../releases)
-   page.
-2. Run it. Releases are Authenticode-signed. It installs to `%ProgramFiles%\PrivacyFence\`,
-   registers a Task Scheduler task (`schtasks /create ... /sc onlogon`) so the daemon starts at
-   login and restarts itself if it crashes — the direct analogue of the macOS LaunchAgent's
-   `KeepAlive`/`SuccessfulExit=false` — and starts the daemon immediately, no reboot needed.
-3. Open PrivacyFence Settings — the daemon logs the exact URL (with its session token) to
-   `%USERPROFILE%\.privacyfence\logs\privacyfence.log` on startup, e.g.
-   `http://localhost:8765/settings?token=...` — then on the **General** page click
-   **Install/Update Organization Config…** and select the bundle your IT team sent you.
-4. On the **Connectors** page, click **Authenticate…** for each connector you want.
-5. Install **PrivacyFence.mcpb** (installed alongside the daemon under
-   `%ProgramFiles%\PrivacyFence\`) into Claude Desktop.
-
-Uninstalling (via **Add or Remove Programs**) removes the program files and the scheduled task
-only — `%USERPROFILE%\.privacyfence\` (credentials, settings, audit log) is left in place, same as
-the DMG doesn't touch `~/.privacyfence` on removal.
-
-**Known accepted gap:** several places `chmod` credential/token files to `0o600`/`0o700`; on
-Windows this is a silent no-op rather than an error, so credentials rely on default NTFS
-user-profile ACLs (which already restrict a single-user Windows profile to that user) rather than
-an explicit lock-down. This is a deliberate v1 decision, not an oversight — revisit only if a
-security review flags it as insufficient.
-
-### Linux
-
-Through P9, PrivacyFence was not a working Linux daemon at all — `run_app()` always ended by
-opening the native macOS menu bar, so `privacyfence-app` crashed right after startup on any other
-platform. P10 (`docs/https-connector-refactor-plan.md` §12, decision D6) deleted that native UI
-layer entirely, so the daemon now starts and runs headlessly on any platform Python and its
-dependencies support — nothing left in `src/privacyfence/` imports a macOS-specific module.
-
-Linux splits into two genuinely different install paths — see
-[`windows-linux-support-plan.md`](windows-linux-support-plan.md)'s "Terminology" section for why
-these are different audiences with different packaging needs, not two flavors of the same install:
-
-- **`local` mode (desktop)** — the `.deb` documented above under "Installation", or a bare
-  `pip`/`pipx install privacyfence` plus the repo-root `privacyfence.service` (a systemd `--user`
-  unit — install per its own header comment). Both give you a single-user desktop daemon with the
-  implicit `local` principal.
-- **`org` mode (server)** — `pip`/`pipx install privacyfence` plus a **system** (not `--user`)
-  systemd unit running as a dedicated service account, fronted by a reverse proxy and an org OIDC
-  IdP for sign-in. Walked through end-to-end in
-  [`org-mode-setup-guide.md`](org-mode-setup-guide.md) (Ubuntu + Caddy + Google identity) — that
-  guide's own status note is the current source of truth on how battle-tested this path is; treat
-  it as ready to try, not yet a fully verified production install, per #121 in the issue tracker.
-
-Two pieces of the Linux/PyPI packaging story underpin both paths: publishing to PyPI (CLAUDE.md's
-"Publishing to PyPI") and `~/.privacyfence` path resolution for a real `pip install privacyfence`
-(or a PyInstaller-frozen `.deb` install) rather than a repo checkout (`paths.py`'s
-`_is_installed_package()`/`is_bundled()`).
-
----
-
-## Connecting Claude
-
-The daemon and its MCP-facing pieces are built and shipped separately:
-
-- **PrivacyFenceApp.app** (built by `scripts/build_dmg.sh`) — the daemon: owns credentials,
-  connectors, the review gate, the audit log, the LaunchAgent, and (`web.mcp.enabled`, on by default
-  as of D11/P4b — see `settings.yaml.example`) the embedded `/mcp` Streamable HTTP endpoint. Install
-  this first via the DMG, in every case below.
-- **PrivacyFence.mcpb** (built by `scripts/build_mcpb.sh`, from `mcpb/shim/`) — a thin
-  stdio-to-Streamable-HTTP transport proxy for Claude Desktop, which still only speaks stdio to
-  local extensions. Install this into Claude Desktop.
-- **`/mcp` directly** — Claude Code (and any other MCP client with native Streamable HTTP + bearer
-  auth support) talks to the daemon's `/mcp` endpoint with no intermediate process at all.
-
-Until P5, `bridge/` — the original Node/TypeScript stdio MCP server this replaced for Desktop — existed
-alongside the shim as a migration-window rollback (`PrivacyFence (Legacy Bridge).mcpb`, a second
-extension built straight from `bridge/`, unchanged). P5 removed the bridge, its build step, and that
-second extension once both transports had shipped a stable release each; `PrivacyFence.mcpb` (the
-shim, above) is the only Desktop extension there is now.
-
-### Option A: one-click extension (Claude Desktop)
-
-`PrivacyFence.mcpb` ships inside the DMG alongside `PrivacyFenceApp.app` (see above) — just
-double-click it and Claude Desktop installs the MCP server for you, no
-`claude_desktop_config.json` editing.
-
-The daemon (PrivacyFenceApp.app) must already be installed and configured first, with
-`web.mcp.enabled` on (the shipped default, `config/settings.yaml`'s `web.mcp.enabled: true`) so
-`/mcp` is actually listening — the extension only contains the shim, bundled by esbuild into a
-single dependency-free `server/shim.js` with no
-node_modules/ and no Python runtime shipped at all (Claude Desktop supplies its own Node runtime —
-`server.type = "node"` in `mcpb/manifest.json.tmpl`), which is why it's ~300KB instead of the
-daemon's ~185MB. The shim discovers the daemon's `/mcp` URL and bearer token itself, from
-`~/.privacyfence/mcp_url` and `~/.privacyfence/mcp_token` (both written by the daemon once it binds)
-— nothing to copy into Claude Desktop by hand.
-
-To build it yourself:
-
-```bash
-pip install pyinstaller
-brew install create-dmg
-bash scripts/build_dmg.sh
-```
-
-(Node + npm must also be on PATH — used to build `mcpb/shim/` and to run the `@anthropic-ai/mcpb`
-CLI via npx.) This runs `scripts/build_mcpb.sh` as part of assembling the DMG. To build just the
-extension on its own (e.g. for a quick local test without a full DMG), run
-`bash scripts/build_mcpb.sh` directly — it produces `dist/PrivacyFence-<version>.mcpb`.
-
-### Option B: `/mcp` directly (Claude Code, or other clients with native Streamable HTTP support)
-
-With `web.mcp.enabled` on (the shipped default) and the daemon running, register `/mcp` directly —
-no shim, no extra process:
-
-```bash
-claude mcp add --transport http privacyfence http://localhost:8765/mcp \
-  --header "Authorization: Bearer $(cat ~/.privacyfence/mcp_token)"
-```
-
-(Port and token: see the daemon's own startup log line, or `config/settings.yaml`'s `web.port` and
-`~/.privacyfence/mcp_token` directly.)
-
-If you're running the daemon from source rather than the DMG, `./scripts/dev_start.sh` does the
-equivalent registration for you (against a freshly-built dev shim, or `claude mcp add` directly if
-the `claude` CLI is on PATH) — see [`docs/dev-vs-live-setup.md`](dev-vs-live-setup.md).
-
----
-
-## Building a DMG
-
-```bash
-pip install pyinstaller
-bash scripts/build_dmg.sh
-```
-
-The script produces `dist/PrivacyFence-<version>.dmg` (containing `PrivacyFenceApp.app`).
-
-## Building a Windows installer
-
-On a Windows build host, with [Inno Setup](https://jrsoftware.org/isinfo.php)'s `iscc.exe` on
-PATH:
-
-```powershell
-pip install -e ".[dev]"
-pwsh ./scripts/build_installer.ps1
-```
-
-The script produces `dist/PrivacyFence-<version>-setup.exe` (containing `PrivacyFenceApp.exe`,
-`privacyfence-app.exe`, and `PrivacyFence.mcpb`). See the script's own header comment for the full
-prerequisite list and the optional `SIGN_CERT_PATH`/`SIGN_CERT_PASSWORD` signing env vars.
-
-## Building a `.deb`
-
-```bash
-pip install pyinstaller
-apt-get install -y dpkg-dev lintian
-bash scripts/build_deb.sh
-```
-
-The script produces `dist/privacyfence_<version>_<arch>.deb`. See
-[`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md) for the packaging design.
-
----
-
-## Configuration reference
-
-See [`config/settings.yaml.example`](../src/privacyfence/resources/settings.yaml.example) for a fully annotated configuration file covering all connectors, auto-accept rules, and logging options.
-
----
-
-## Architecture notes
-
-- Claude Desktop's stdio shim is stateless and disposable — Claude can kill and restart it at any
-  time without losing any state. All state (credentials, tokens, filters, queue) lives in the
-  daemon, which stays running independently.
-- `/mcp` is a local, loopback-bound (`localhost`) Streamable HTTP endpoint, authenticated by a
-  persistent random bearer token (`~/.privacyfence/mcp_token`, reused across daemon restarts, not
-  regenerated per launch) required on every request; its URL
-  is discovered via `~/.privacyfence/mcp_url` (see `src/privacyfence/web/server.py`'s module
-  docstring). Claude Code talks to it directly; Claude Desktop's shim (`mcpb/shim/`) proxies it over
-  stdio, discovering the same `mcp_url`/`mcp_token` files itself, with no config file edited and no
-  token copied by hand.
-- The daemon uses two threads: the main thread waits on a plain `threading.Event` until shutdown is
-  requested (PrivacyFence Settings' "Quit PrivacyFence" action, or SIGINT/Ctrl-C — see
-  `daemon_main.py`'s `_wait_for_shutdown`), and a web-server thread runs uvicorn serving `/mcp` and
-  every web page (every connector call now actually runs on this thread's own asyncio event loop).
-  Through P9 this looked different: the main thread ran a native `rumps` menu bar app (a hard macOS
-  requirement for AppKit), the main approval window was native AppKit/WKWebView
-  (`approval_window.py`, shown from any thread via
-  `performSelectorOnMainThread_withObject_waitUntilDone_`), and smaller secondary confirmation/
-  list-picker dialogs (PII confirmation, rule confirmation, rule choice, the Atlassian multi-resource
-  picker) ran through a second, smaller AppKit+WKWebView host (`dialog_window.py`). P10
-  (`docs/https-connector-refactor-plan.md` §12, decision D6) deleted all of that, along with
-  `menu_bar.py`/`settings_window.py`/`approval_popup.py` — the pure HTML those hosts rendered
-  (`approval_window_html.py`/`dialog_window_html.py`/`settings_window_html.py`) is unchanged and now
-  serves the same content over the web instead, through `WebApprovalUI` (`web_approval_ui.py`).
-  `gate.py` still reaches the active approval surface through the pluggable `ApprovalUI` interface
-  (`approval_ui.py`) rather than importing `WebApprovalUI` directly — it's the only implementation
-  now, but the seam stays so a future one (e.g. mobile remote approval, or a Windows-native dialog
-  for #121) can plug in without changing the policy loop.
-- All tools are advertised to Claude with `readOnlyHint = true` — see below.
-- The approval card follows the browser/OS's light/dark appearance automatically — no config toggle,
-  it's plain CSS `prefers-color-scheme`.
-- The daemon checks GitHub Releases once a day for a newer version (`update_checker.py`) and shows an
-  in-page banner on PrivacyFence Settings' **General** page if one is found (`Download` / `Skip This
-  Version` / `Remind Me Later`) — never downloads or installs anything automatically. On by default;
-  toggle from that same page ("Check for Updates") or `update_check.enabled` in `settings.yaml`. See
-  [security-and-compliance.md](security-and-compliance.md) for what this network call does and
-  doesn't send.
-
-### Why every tool is advertised as read-only
-
-`/mcp` annotates *every* registered tool — reads and writes alike — as
-`readOnlyHint = true`, `destructiveHint = false`, `idempotentHint = true`,
-regardless of the tool's real `read_only` flag.
-
-This is a deliberate trick, and it is safe because **PrivacyFence — not
-Claude — performs the actual authorization**:
-
-- MCP tool annotations are, by the spec's own wording, *"hints, not
-  guarantees."* Claude Code / Cowork use them only to decide **which
-  permission prompts to render** — they are a UI signal, never a security
-  boundary.
-- Write tools default to `destructiveHint = true`. On the **Team plan** that
-  makes Cowork prompt on **every single call** and greys out *"Allow all for
-  this task,"* with no org-level pre-approval available
-  ([anthropics/claude-ai-mcp#491](https://github.com/anthropics/claude-ai-mcp/issues/491)).
-  The result is a redundant approval wall on top of the one PrivacyFence
-  already enforces.
-- Every tool call is forwarded over IPC to the PrivacyFence daemon, which
-  applies the per-tool **gate** (`auto` / `review` / `popup`), the
-  **auto-accept rules**, and the **audit log** *before* any external read or
-  write happens. That gate is the real, enforced control point. Presenting a
-  uniformly read-only surface to Claude simply removes the duplicate,
-  un-configurable client-side prompt and lets PrivacyFence's own gate do the
-  checking.
-
-The tool's true nature is still recorded internally (`spec.read_only`) for the
-daemon's gating and the audit trail — only what Claude is *told* is overridden.
-The MCP annotation is cosmetic; the daemon's decision is authoritative.
-
----
-
-## License
-
-Apache License 2.0. See [LICENSE](../LICENSE) and [NOTICE](../NOTICE).
+The source files, tests, workflow definitions, build scripts, and configuration examples are authoritative if this reference drifts.
