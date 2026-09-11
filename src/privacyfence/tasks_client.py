@@ -47,11 +47,21 @@ class Task:
     title: str
     notes: str
     due: str
-    status: str   # "needsAction" | "completed"
+    status: str   # "needsAction" | "completed" -- completion state, NOT existence;
+                  # see `deleted` below for that.
     completed: str
     updated: str
     position: str
     parent: str   # parent task id or ""
+    # Tasks API's Task resource documents this field itself (default False):
+    # a deleted task is tombstoned, not purged, so tasks.get on one still
+    # returns 200 with the task's last-known fields (status unchanged --
+    # a deleted task doesn't become "completed") and this set to True,
+    # rather than 404. Callers that need to tell "still exists" apart from
+    # "deleted but not yet purged" (e.g. qa_fixture_recorder.py's
+    # lifecycle_tasks, confirming its own delete actually took) must check
+    # this, not status.
+    deleted: bool = False
 
     def short_summary(self) -> str:
         return f"{self.title} ({'done' if self.status == 'completed' else 'todo'})"
@@ -331,4 +341,5 @@ class TasksClient:
             updated=raw.get("updated", ""),
             position=raw.get("position", ""),
             parent=raw.get("parent", ""),
+            deleted=bool(raw.get("deleted", False)),
         )

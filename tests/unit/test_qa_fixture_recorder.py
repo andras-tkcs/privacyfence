@@ -26,6 +26,7 @@ to be pointed at a real, already-authenticated account.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timezone
@@ -1394,9 +1395,15 @@ class TestFixturePresence:
 class _FakeCalendarClient:
     def __init__(self):
         self.events: dict[str, str] = {}
+        self._cancelled_ids: set[str] = set()
         self._n = 0
         self.delete_should_fail = False
         self.delete_leaves_it = False  # simulates a delete call that "succeeds" but doesn't
+        # Simulates the real bug this module was root-caused against
+        # (connector-live-check.yml run 34637559330): delete "succeeds" and
+        # the event is functionally gone, but a refetch still returns 200
+        # with status "cancelled" instead of ever 404ing.
+        self.delete_leaves_a_cancelled_ghost = False
 
     def create_event(self, calendar_id, title, start_time, end_time, description=""):
         self._n += 1
@@ -1405,9 +1412,11 @@ class _FakeCalendarClient:
         return SimpleNamespace(id=event_id, title=title)
 
     def get_event(self, calendar_id, event_id):
+        if event_id in self._cancelled_ids:
+            return SimpleNamespace(id=event_id, title=self.events.get(event_id, ""), status="cancelled")
         if event_id not in self.events:
             raise recorder.CalendarClientError(f"event {event_id} not found")
-        return SimpleNamespace(id=event_id, title=self.events[event_id])
+        return SimpleNamespace(id=event_id, title=self.events[event_id], status="confirmed")
 
     def update_event(self, calendar_id, event_id, title=None):
         if event_id not in self.events:
@@ -1430,8 +1439,146 @@ class _FakeCalendarClient:
     def _do_delete(self, event_id):
         if self.delete_should_fail:
             raise RuntimeError("simulated delete failure")
-        if not self.delete_leaves_it:
+        if self.delete_leaves_a_cancelled_ghost:
+            self._cancelled_ids.add(event_id)
+        elif not self.delete_leaves_it:
             self.events.pop(event_id, None)
+
+
+class TestDeleteDiagnosticLogging:
+    """_attempt_delete's ``request_desc`` and _confirm_deleted's
+    ``raw_refetch`` -- one-off diagnostic logging added to root-cause
+    https://github.com/privacyfence/privacyfence/actions/runs/34632070157
+    ("cleanup call succeeded but the object still exists afterward" for
+    calendar/tasks) without touching _EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS
+    again. Gated behind DEBUG (only reachable via -v/--verbose, see
+    test_qa_fixture_recorder_verbose_flag below) so it's silent in ordinary
+    --check/--record/--lifecycle runs.
+    """
+
+    def test_silent_by_default_at_info_level(self, caplog):
+        caplog.set_level(logging.INFO, logger="qa_fixture_recorder")
+
+        delete_note = recorder._attempt_delete(
+            lambda: {"echo": "response body"}, request_desc="calendar_id='cal1', event_id='evt1'"
+        )
+
+        def _not_found():
+            raise recorder.CalendarClientError("gone")
+
+        ok, confirm_note = recorder._confirm_deleted(
+            _not_found, recorder.CalendarClientError, raw_refetch=lambda: {"status": "cancelled"},
+        )
+
+        assert delete_note == ""
+        assert ok and confirm_note == ""
+        assert caplog.text == ""  # no DEBUG handler configured -> nothing logged
+
+    def test_verbose_logs_delete_request_and_response(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="qa_fixture_recorder")
+
+        delete_note = recorder._attempt_delete(
+            lambda: {"echo": "response body"}, request_desc="calendar_id='cal1', event_id='evt1'"
+        )
+
+        assert delete_note == ""
+        assert "calendar_id='cal1', event_id='evt1'" in caplog.text
+        assert "response body" in caplog.text
+
+    def test_verbose_logs_raw_status_and_full_response_on_every_attempt(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="qa_fixture_recorder")
+        raw_responses = iter([
+            {"status": "cancelled", "id": "evt1"},
+            {"status": "cancelled", "id": "evt1"},
+        ])
+
+        def _still_there():
+            # Never raises -- simulates the actual bug under investigation:
+            # the object comes back with status "cancelled" instead of the
+            # refetch raising not_found_error.
+            return SimpleNamespace(id="evt1")
+
+        ok, note = recorder._confirm_deleted(
+            _still_there, recorder.CalendarClientError,
+            attempts=2, delay_seconds=0, sleep=lambda seconds: None,
+            raw_refetch=lambda: next(raw_responses),
+        )
+
+        assert not ok
+        assert "still exists" in note
+        assert caplog.text.count("raw status='cancelled'") == 2
+
+    def test_raw_refetch_failure_is_logged_and_never_affects_the_verdict(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="qa_fixture_recorder")
+
+        def _boom():
+            raise RuntimeError("network blip")
+
+        def _not_found():
+            raise recorder.CalendarClientError("gone")
+
+        ok, note = recorder._confirm_deleted(_not_found, recorder.CalendarClientError, raw_refetch=_boom)
+
+        assert ok and note == ""  # the real (non-diagnostic) check still passed
+        assert "raw_refetch failed" in caplog.text
+
+
+class TestConfirmDeletedIsDeleted:
+    """_confirm_deleted's ``is_deleted`` parameter -- the actual fix for
+    root-caused-by-TestDeleteDiagnosticLogging's-evidence bug: Calendar and
+    Tasks never 404 a just-deleted object (Calendar keeps returning it with
+    status "cancelled", Tasks with deleted: true), so the old
+    refetch()-must-raise-only contract could never succeed for either,
+    regardless of retry budget.
+    """
+
+    def test_is_deleted_true_on_first_successful_refetch_short_circuits_immediately(self):
+        calls = []
+
+        def _refetch():
+            calls.append(1)
+            return SimpleNamespace(status="cancelled")
+
+        def _no_sleep(seconds):
+            raise AssertionError("should not have retried at all, let alone slept")
+
+        ok, note = recorder._confirm_deleted(
+            _refetch, recorder.CalendarClientError,
+            attempts=10, delay_seconds=0, sleep=_no_sleep,
+            is_deleted=lambda event: event.status == "cancelled",
+        )
+
+        assert ok and note == ""
+        assert len(calls) == 1  # never needed a second attempt, let alone all 10
+
+    def test_is_deleted_false_still_retries_and_eventually_reports_still_exists(self):
+        ok, note = recorder._confirm_deleted(
+            lambda: SimpleNamespace(status="confirmed"), recorder.CalendarClientError,
+            attempts=3, delay_seconds=0, sleep=lambda seconds: None,
+            is_deleted=lambda event: event.status == "cancelled",
+        )
+
+        assert not ok
+        assert "still exists" in note
+
+    def test_not_found_error_still_wins_even_with_is_deleted_given(self):
+        def _not_found():
+            raise recorder.CalendarClientError("gone")
+
+        ok, note = recorder._confirm_deleted(
+            _not_found, recorder.CalendarClientError,
+            is_deleted=lambda event: False,  # would say "not deleted" if it were ever even called
+        )
+
+        assert ok and note == ""
+
+    def test_task_deleted_flag_is_deleted(self):
+        ok, note = recorder._confirm_deleted(
+            lambda: SimpleNamespace(status="needsAction", deleted=True), recorder.TasksClientError,
+            is_deleted=lambda task: task.deleted,
+        )
+
+        assert ok and note == ""
 
 
 class TestLifecycleCalendar:
@@ -1484,6 +1631,28 @@ class TestLifecycleCalendar:
         assert result.ok
         assert result.cleanup_ok is False
         assert "still exists" in result.note
+
+    def test_deleted_event_that_ghosts_as_status_cancelled_is_recognized_as_cleaned_up(self, monkeypatch):
+        """Regression test for the actual bug root-caused via
+        connector-live-check.yml run 34637559330: the real Calendar API
+        never 404s a just-deleted event, it keeps returning it with status
+        "cancelled" -- before is_deleted was wired in, this looked
+        indistinguishable from a real, permanent cleanup failure no matter
+        how large the retry budget was."""
+        fake = _FakeCalendarClient()
+        fake.delete_leaves_a_cancelled_ghost = True
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: fake)
+
+        def _no_sleep(seconds):
+            raise AssertionError("status: cancelled is recognized on the first attempt -- should never retry")
+
+        monkeypatch.setattr(recorder.time, "sleep", _no_sleep)
+
+        result = recorder.lifecycle_calendar(manifest={})
+
+        assert result.ok
+        assert result.cleanup_ok is True
+        assert "still exists" not in result.note
 
     def test_create_failure_never_attempts_cleanup(self, monkeypatch):
         fake = _FakeCalendarClient()
@@ -1678,9 +1847,17 @@ class TestLifecycleJira:
 class _FakeTasksClient:
     def __init__(self):
         self.tasks: dict[str, str] = {}
+        self._deleted_ids: set[str] = set()
         self._n = 0
         self.delete_should_fail = False
         self.delete_leaves_it = False
+        # Simulates the real bug this module was root-caused against
+        # (connector-live-check.yml run 34637559330): delete "succeeds" and
+        # the task is functionally gone, but a refetch still returns 200
+        # with deleted: true (tombstoned, not purged) instead of ever
+        # 404ing -- and status stays "needsAction" (completion state,
+        # unrelated to existence), never becoming any kind of "not found".
+        self.delete_leaves_a_tombstone = False
 
     def create_task(self, task_list_id, title, notes=""):
         self._n += 1
@@ -1689,9 +1866,11 @@ class _FakeTasksClient:
         return SimpleNamespace(id=task_id, title=title)
 
     def get_task(self, task_list_id, task_id):
+        if task_id in self._deleted_ids:
+            return SimpleNamespace(id=task_id, title=self.tasks.get(task_id, ""), deleted=True)
         if task_id not in self.tasks:
             raise recorder.TasksClientError(f"task {task_id} not found")
-        return SimpleNamespace(id=task_id, title=self.tasks[task_id])
+        return SimpleNamespace(id=task_id, title=self.tasks[task_id], deleted=False)
 
     def update_task(self, task_list_id, task_id, title=None):
         if task_id not in self.tasks:
@@ -1714,7 +1893,9 @@ class _FakeTasksClient:
     def _do_delete(self, task_id):
         if self.delete_should_fail:
             raise RuntimeError("simulated delete failure")
-        if not self.delete_leaves_it:
+        if self.delete_leaves_a_tombstone:
+            self._deleted_ids.add(task_id)
+        elif not self.delete_leaves_it:
             self.tasks.pop(task_id, None)
 
 
@@ -1778,6 +1959,28 @@ class TestLifecycleTasks:
         assert result.ok
         assert result.cleanup_ok is False
         assert "still exists" in result.note
+
+    def test_deleted_task_that_ghosts_as_a_tombstone_is_recognized_as_cleaned_up(self, monkeypatch):
+        """Regression test for the actual bug root-caused via
+        connector-live-check.yml run 34637559330: the real Tasks API never
+        404s a just-deleted task, it keeps returning it (tombstoned, not
+        purged) with deleted: true, immediately -- before is_deleted was
+        wired in, this looked indistinguishable from a real, permanent
+        cleanup failure no matter how large the retry budget was."""
+        fake = _FakeTasksClient()
+        fake.delete_leaves_a_tombstone = True
+        monkeypatch.setattr(recorder, "_build_tasks_client", lambda: fake)
+
+        def _no_sleep(seconds):
+            raise AssertionError("deleted: true is recognized on the first attempt -- should never retry")
+
+        monkeypatch.setattr(recorder.time, "sleep", _no_sleep)
+
+        result = recorder.lifecycle_tasks(manifest={"tasks": {"task_list_id": "list1"}})
+
+        assert result.ok
+        assert result.cleanup_ok is True
+        assert "still exists" not in result.note
 
     def test_create_failure_never_attempts_cleanup(self, monkeypatch):
         fake = _FakeTasksClient()
