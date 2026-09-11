@@ -50,13 +50,17 @@ jobs:
       # venv: costs an extra ~1-2 minutes on this weekly/on-demand job, but
       # means a pyproject.toml dependency change is picked up automatically
       # instead of silently drifting from whatever this runner last had
-      # installed. No actions/setup-python -- python3.13 (matching
-      # tests.yml's full-suite version) is expected to already be on this
-      # runner's PATH; the point of skipping setup-python here is keeping
-      # this credential-holding job's own steps minimal and auditable.
+      # installed. No actions/setup-python -- plain `python3` (whatever
+      # this runner already has on PATH) is used rather than pinning an
+      # exact minor version: pyproject.toml only requires >=3.11, and
+      # that floor is all this job needs -- unlike
+      # scripts/update_dependency_locks.sh, this doesn't touch a lockfile,
+      # so there's no reproducibility reason to match tests.yml's 3.13
+      # exactly. The point of skipping setup-python here is keeping this
+      # credential-holding job's own steps minimal and auditable.
       - name: Build this run's venv
         run: |
-          python3.13 -m venv .venv
+          python3 -m venv .venv
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -e ".[test]"
 
