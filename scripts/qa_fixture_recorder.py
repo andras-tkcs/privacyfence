@@ -1472,24 +1472,32 @@ LIFECYCLE_TAG = "[QATEST-LIFECYCLE]"
 
 # Google's Calendar and Tasks APIs are eventually, not immediately, consistent
 # on delete: a delete call can return success while a get issued right after
-# still returns the object for a few seconds. lifecycle_calendar/
-# lifecycle_tasks pass these to _confirm_deleted so a real (permanent) "not
-# actually removed" finding isn't confused with that ordinary propagation
-# delay. Jira doesn't get this treatment -- it has shown no such delay here,
-# and retrying would only mask a real cleanup failure. Confluence never
-# calls _confirm_deleted at all; see lifecycle_confluence's own docstring.
+# still returns the object for a moment. lifecycle_calendar/lifecycle_tasks
+# pass these to _confirm_deleted so a real (permanent) "not actually removed"
+# finding isn't confused with that ordinary propagation delay. Jira doesn't
+# get this treatment -- it has shown no such delay here, and retrying would
+# only mask a real cleanup failure. Confluence never calls _confirm_deleted
+# at all; see lifecycle_confluence's own docstring.
 #
-# 4 attempts * 1.0s (a ~3s retry window) was the original budget here, but
+# 4 attempts * 1.0s (a ~3s retry window) was the original budget here, then
+# widened to 10 attempts * 3.0s (~27s) after
 # https://github.com/privacyfence/privacyfence/actions/runs/34632070157
 # still reported "cleanup call succeeded but the object still exists
-# afterward" for both calendar and tasks on that budget -- this is not a
-# permission problem (the delete call itself never raised; both connectors'
-# OAuth scopes, calendar_client.SCOPES/tasks_client.SCOPES, are the
-# full-access, non-readonly scope, which includes delete) but propagation
-# that, on this runner, sometimes outlasts 3 seconds. Widened to a ~27s
-# window (10 attempts * 3.0s) -- generous relative to how rarely this
-# actually needs more than a couple of retries, but this job's 20-minute
-# timeout (connector-live-check.yml) has ample room for the rare slow case.
+# afterward" for both calendar and tasks on that budget. That widening
+# turned out to be the wrong fix, diagnosed via connector-live-check.yml run
+# 34637559330 (root-caused with -v/--verbose and _confirm_deleted's
+# raw_refetch/is_deleted -- see its docstring): neither provider was ever
+# going to 404 no matter how long this retried, because neither one 404s a
+# deleted object at all -- Calendar keeps returning it with
+# status: "cancelled", Tasks with deleted: true, and _confirm_deleted's
+# is_deleted parameter (wired in lifecycle_calendar/lifecycle_tasks below)
+# is the actual fix, not this budget. The ~27s window stays as real,
+# legitimate propagation slack on top of that fix (is_deleted becoming true
+# a beat later than the delete call returning is still possible in
+# principle) -- this job's 20-minute timeout (connector-live-check.yml) has
+# ample room for it, and in practice is_deleted is already true on the very
+# first attempt (confirmed by that same run's logs), so this budget is no
+# longer the thing standing between a real cleanup failure and a false one.
 _EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS = 10
 _EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS = 3.0
 
@@ -1539,34 +1547,52 @@ def _confirm_deleted(
     attempts: int = 1,
     delay_seconds: float = 0.0,
     sleep: Callable[[float], None] = time.sleep,
+    is_deleted: Callable[[Any], bool] | None = None,
     raw_refetch: Callable[[], Any] | None = None,
 ) -> tuple[bool, str]:
-    """True (with no note) if calling ``refetch`` now raises
-    ``not_found_error`` -- i.e. the object is actually gone, not just that
-    the delete call itself didn't raise.
+    """True (with no note) if the object is actually gone -- either
+    ``refetch`` now raises ``not_found_error`` (a real 404), or, when
+    ``is_deleted`` is given, it says the object ``refetch`` *did* return
+    counts as gone anyway.
 
-    ``attempts`` > 1 retries (waiting ``delay_seconds`` between tries) before
-    giving up -- for providers whose delete is eventually rather than
-    immediately consistent, where an immediate refetch can still return the
-    object even though the delete call itself already succeeded. Callers for
-    a provider known to be immediately consistent (e.g. Jira) should leave
-    this at the default of one attempt: retrying there would only mask a
-    real cleanup failure behind a few seconds of pointless waiting.
+    That second case exists because 06aeb29 widening this function's retry
+    budget to 10 attempts * 3.0s (~27s) for calendar/tasks turned out not to
+    be the fix: root-causing it (see connector-live-check.yml run
+    34637559330 with -v/--verbose, and _attempt_delete's ``request_desc``/
+    this function's own ``raw_refetch`` diagnostic logging below) showed
+    Calendar/Tasks never actually 404 after a delete -- calendarClient's
+    events.get on a just-deleted event keeps returning 200 with
+    ``status: "cancelled"`` (every one of 10 attempts, 27s apart, came back
+    byte-for-byte identical), and Tasks API's tasks.get on a just-deleted
+    task returns 200 with ``deleted: true`` immediately, on the very first
+    attempt -- Tasks tombstones rather than purges, and its ``status``
+    field is completion state ("needsAction"/"completed"), unrelated to
+    existence. No retry budget, however large, would ever turn either of
+    those into a 404: the check itself needed the fix, not the budget.
+    ``is_deleted`` is exactly that fix -- called on refetch()'s parsed
+    return value (CalendarEvent.status == "cancelled", or Task.deleted)
+    whenever refetch() doesn't raise.
+
+    ``attempts`` > 1 retries (waiting ``delay_seconds`` between tries)
+    before giving up -- kept even now that ``is_deleted`` exists, since a
+    provider can still be genuinely eventually consistent on top of this
+    (the object briefly still present at all, not just present-but-tagged-
+    deleted). Callers for a provider known to be immediately consistent
+    (e.g. Jira) should leave this at the default of one attempt: retrying
+    there would only mask a real cleanup failure behind a few seconds of
+    pointless waiting.
 
     ``raw_refetch``, when given, is called (and its result logged at DEBUG
     level, including the raw ``status`` field and the full raw response) on
     every attempt before ``refetch`` itself -- diagnostic-only, same
-    one-off purpose as _attempt_delete's ``request_desc`` above. Deliberately
-    a *second*, separate call rather than reusing refetch's own result: the
-    real client methods (get_event/get_task) parse the response into a
-    dataclass and never expose the raw body, and this needs to see exactly
-    what the provider returned -- specifically whether it's a 404
-    (not_found_error, what this function already treats as "gone") or a 200
-    with ``status: "cancelled"``/``deleted: true`` still in the body (which
-    the current check doesn't treat as "gone" at all, so a real object stuck
-    that way would retry every attempt and never be told apart from a
-    genuinely slow one). A raw_refetch failure is logged and swallowed --
-    never allowed to affect the actual pass/fail verdict below.
+    one-off purpose as _attempt_delete's ``request_desc`` above; this is
+    what produced the evidence described above. Deliberately a *second*,
+    separate call rather than reusing refetch's own result: the real client
+    methods (get_event/get_task) parse the response into a dataclass, and
+    seeing the exact raw body -- not just what is_deleted concluded from
+    it -- is what let this get root-caused instead of just patched-around.
+    A raw_refetch failure is logged and swallowed -- never allowed to
+    affect the actual pass/fail verdict below.
     """
     for attempt in range(attempts):
         if raw_refetch is not None and logger.isEnabledFor(logging.DEBUG):
@@ -1579,11 +1605,13 @@ def _confirm_deleted(
             except Exception as exc:  # noqa: BLE001 - diagnostic only, must never affect the verdict below
                 logger.debug("confirm-deleted attempt %d/%d: raw_refetch failed: %s", attempt + 1, attempts, exc)
         try:
-            refetch()
+            result = refetch()
         except not_found_error:
             return True, ""
         except Exception as exc:  # noqa: BLE001 - unexpected on refetch is itself worth reporting
             return False, f"unexpected error confirming deletion: {exc}"
+        if is_deleted is not None and is_deleted(result):
+            return True, ""
         if attempt < attempts - 1:
             sleep(delay_seconds)
     return False, "cleanup call succeeded but the object still exists afterward"
@@ -1634,6 +1662,11 @@ def lifecycle_calendar(manifest: dict[str, Any]) -> LifecycleResult:
                     lambda: client.get_event(calendar_id, event_id), CalendarClientError,
                     attempts=_EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS,
                     delay_seconds=_EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS,
+                    # Calendar never 404s a just-deleted event -- events.get
+                    # keeps returning it with status "cancelled" (see
+                    # _confirm_deleted's docstring); that's this provider's
+                    # actual "gone" signal, not an exception.
+                    is_deleted=lambda event: event.status == "cancelled",
                     raw_refetch=lambda: (
                         client._get_service().events().get(calendarId=calendar_id, eventId=event_id).execute()
                     ),
@@ -1785,6 +1818,13 @@ def lifecycle_tasks(manifest: dict[str, Any]) -> LifecycleResult:
                     lambda: client.get_task(task_list_id, task_id), TasksClientError,
                     attempts=_EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS,
                     delay_seconds=_EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS,
+                    # Tasks never 404s a just-deleted task either -- tasks.get
+                    # keeps returning it (tombstoned, not purged) with
+                    # deleted: true, immediately, and its `status` field is
+                    # completion state ("needsAction"/"completed"), unrelated
+                    # to existence (see _confirm_deleted's docstring and
+                    # Task.deleted).
+                    is_deleted=lambda task: task.deleted,
                     raw_refetch=lambda: (
                         client._get_service().tasks().get(tasklist=task_list_id, task=task_id).execute()
                     ),
