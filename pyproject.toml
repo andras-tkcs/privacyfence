@@ -231,6 +231,15 @@ markers = [
     "browser: real Chromium via Playwright",
     "packaged: runs against a built installer/artifact",
     "live: touches a real third-party provider (self-hosted runner only)",
+    # docs/automated-test-strategy-plan.md Phase 2.3: OS-level path/process/
+    # locking/daemon-discovery behavior, homed under tests/platform/ rather
+    # than scattered across existing files. Deliberately a separate marker
+    # from `system` -- Phase 0's own status note flagged this as an open
+    # naming decision (Phase 2.3's text said "the platform marker from
+    # Phase 0" before Phase 0's own marker list turned out to have no such
+    # entry); `system` stays reserved for Phase 3's canonical daemon/MCP/
+    # approval/audit scenario, a different concept from this one.
+    "platform: OS-level path/process/locking/daemon behavior (tests/platform/)",
 ]
 
 [tool.coverage.run]
