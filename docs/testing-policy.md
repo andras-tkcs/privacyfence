@@ -12,11 +12,11 @@ drift, `--record`) against the four dedicated test accounts (Google, Slack, Atla
 Salesforce) on a weekly schedule (plus `workflow_dispatch`) — never on `pull_request`, and never
 on a GitHub-hosted runner. It targets a self-hosted runner this project provisions and controls
 (label `privacyfence-test`), provisioned per
-[`connector-ci-integration-plan.md`](connector-ci-integration-plan.md) Phase B. The four OAuth
+[`connector-live-check-setup.md`](connector-live-check-setup.md) Phase B. The four OAuth
 token files and `org/org_config.json` live only as local files on that runner — they are never
-added as GitHub Actions secrets, and are never transmitted to GitHub at all. See that document's
-Phase A–D for the full account/runner setup and the reasoning behind isolating this tier from
-every GitHub-hosted job.
+added as GitHub Actions secrets, and are never transmitted to GitHub at all. See
+[`connector-live-check-setup.md`](connector-live-check-setup.md) for the full account/runner setup
+and the reasoning behind isolating this tier from every GitHub-hosted job.
 
 On drift, the job re-records the affected fixtures and opens an ordinary PR
 (`chore/connector-live-fixture-drift`) with the redacted diff; a maintainer reviews it exactly as
@@ -171,7 +171,7 @@ The instructions below are for running this by hand, from your own machine, betw
 runs — still valid and still the right thing to do for a PR that touches a `*_client.py` or
 `connectors/**` file. §0 above describes the one place this also now runs automatically: a
 project-owned self-hosted runner, on a schedule, per
-[`connector-ci-integration-plan.md`](connector-ci-integration-plan.md).
+[`connector-live-check-setup.md`](connector-live-check-setup.md).
 
 Two modes:
 

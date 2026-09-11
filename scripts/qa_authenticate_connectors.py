@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Runs the local, per-connector OAuth authentication steps that
-`docs/connector-ci-integration-plan.md` Phase A calls for once per service
+`docs/connector-live-check-setup.md` Phase A calls for once per service
 (A.1.8 Google, A.2.7 Slack, A.3.5 Atlassian, A.4.6 Salesforce) -- so instead
 of typing up to nine separate `privacyfence-app --<connector>-oauth`
 commands by hand against the four dedicated QA accounts from Phase A.1-A.4,
@@ -22,7 +22,7 @@ different flag (`--telegram-setup`) with a different (phone/code) prompt
 shape. Run that one by hand if/when you need it.
 
 Prerequisites (see `docs/qa-environment-setup.md`'s "Prerequisites"
-checklist and `connector-ci-integration-plan.md` Phase A.1-A.4, steps 1-7 of
+checklist and `connector-live-check-setup.md` Phase A.1-A.4, steps 1-7 of
 each): the org config bundle (`org_config.qa.json`, built by
 `scripts/build_org_bundle.py` per A.1.7/A.2.6/A.3.4/A.4.5) must already be
 installed at `org/org_config.json` -- `--org-config` below can do that copy
@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"Warning: {DEFAULT_ORG_CONFIG_PATH} not found. Each step below will likely fail its "
             "provider-config lookup. Pass --org-config, or install one first -- see "
-            "docs/connector-ci-integration-plan.md Phase A.1.7/A.2.6/A.3.4/A.4.5.",
+            "docs/connector-live-check-setup.md Phase A.1.7/A.2.6/A.3.4/A.4.5.",
             file=sys.stderr,
         )
 
@@ -187,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "\nAll requested connectors authenticated. Next: "
             ".venv/bin/python scripts/qa_fixture_recorder.py --check "
-            "(Phase A.5 exit criteria, connector-ci-integration-plan.md)."
+            "(Phase A.5 exit criteria, connector-live-check-setup.md)."
         )
     else:
         print("\nOne or more steps did not complete. Re-run with --only to retry just those.")

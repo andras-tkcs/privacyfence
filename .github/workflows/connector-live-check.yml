@@ -2,7 +2,7 @@ name: Connector live check
 
 # Runs only on a schedule or by explicit maintainer trigger -- never on
 # pull_request, never on push from a branch a non-maintainer controls.
-# Targets the self-hosted runner provisioned in docs/connector-ci-integration-plan.md
+# Targets the self-hosted runner provisioned in docs/connector-live-check-setup.md
 # Phase B (label `privacyfence-test`), which is the only place these
 # connectors' live OAuth credentials ever exist. See docs/testing-policy.md's
 # "Runner-local live tier" section.
@@ -68,7 +68,7 @@ jobs:
       # QA_SECRETS_DIR (org_config.json, credentials/) is deliberately
       # kept outside any Actions workspace and copied in fresh each run --
       # see the module comment above and
-      # docs/connector-ci-integration-plan.md Phase B.3. paths.py's
+      # docs/connector-live-check-setup.md Phase B.3. paths.py's
       # data_dir() resolves credential storage relative to wherever this
       # checkout physically sits on disk, so the copy has to land at
       # these exact paths for the script to see it.
@@ -92,7 +92,7 @@ jobs:
           for required in credentials org/org_config.json; do
             if [ ! -e "${secrets_dir}/${required}" ]; then
               echo "##[error] ${secrets_dir}/${required} not found." \
-                   "See docs/connector-ci-integration-plan.md Phase B.3" \
+                   "See docs/connector-live-check-setup.md Phase B.3" \
                    "for how this runner's QA credentials are provisioned."
               exit 1
             fi
