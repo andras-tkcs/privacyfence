@@ -192,7 +192,12 @@ async def test_shim_proxies_a_real_initialize_and_tool_call_over_mcp(
     params = StdioServerParameters(
         command="node",
         args=[str(built_shim_entry)],
-        env={"HOME": str(shim_home)},
+        # protocol.ts resolves mcp_url/mcp_token via Node's os.homedir(),
+        # which reads $USERPROFILE on Windows and never consults $HOME at
+        # all there (unlike Python's os.path.expanduser(), which checks
+        # both) -- set both so the spawned shim agrees with shim_home
+        # regardless of which platform this runs on.
+        env={"HOME": str(shim_home), "USERPROFILE": str(shim_home)},
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
