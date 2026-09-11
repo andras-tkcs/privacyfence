@@ -151,19 +151,20 @@ trade-off that the sandbox itself has a rolling expiry (see step 9).
 
 ### A.5 Phase A exit criteria
 
-- [ ] Four independent test accounts exist, none sharing credentials with any production/personal
+- [x] Four independent test accounts exist, none sharing credentials with any production/personal
       account.
-- [ ] A single `org_config.qa.json` exists with all four connectors' client id/secret merged in.
-- [ ] `tests/fixtures/qa_environment.yaml` is filled in (copied from
+- [x] A single `org_config.qa.json` exists with all four connectors' client id/secret merged in.
+- [x] `tests/fixtures/qa_environment.yaml` is filled in (copied from
       `tests/fixtures/qa_environment.yaml.example`) with every seed artifact id from A.1–A.4.
 - [ ] `.venv/bin/python scripts/qa_fixture_recorder.py --check` (no args = all connectors) passes
       locally against these accounts, run from a developer machine, per `testing-policy.md` §2.1.
 
-**As of this writing, the last item is not yet done on the production runner** — the accounts and
-`org_config.json`/`credentials/` exist and the workflow's infrastructure is confirmed working
-end-to-end, but `tests/fixtures/qa_environment.yaml` hasn't been filled in yet, so `--check` fails
-with its own clean "manifest not found" error rather than actually exercising any connector. See
-the note in Phase B.3 about where that file needs to go once it exists.
+All four are now provisioned on the production runner (`~/privacyfence/credentials/`,
+`~/privacyfence/org/org_config.json`, `~/privacyfence/tests/fixtures/qa_environment.yaml` — see
+Phase B.3's layout). The last item — an actual passing `--check` against real connector data,
+rather than just the infrastructure running cleanly — is confirmed by the next
+`connector-live-check.yml` run once Phase B.3's copy step includes `qa_environment.yaml` (see the
+workflow file).
 
 ---
 
@@ -218,7 +219,9 @@ build farm).
 
 This is the core safety property of the self-hosted-runner approach: the connector credentials
 (OAuth token files, plus `org_config.json`) live **only as local files on this VM**, never as GitHub
-Actions secrets, never transmitted to GitHub at all.
+Actions secrets, never transmitted to GitHub at all. `tests/fixtures/qa_environment.yaml` lives
+alongside them for a different reason (see below) — it isn't a credential, but it's still
+runner-local state that has to survive an ephemeral, every-run-wiped checkout.
 
 The workflow (see `.github/workflows/connector-live-check.yml`'s `QA_SECRETS_DIR`) expects exactly
 this layout at `~/privacyfence` (i.e. `/home/pf-runner/privacyfence` for the `pf-runner` user):
@@ -235,27 +238,28 @@ this layout at `~/privacyfence` (i.e. `/home/pf-runner/privacyfence` for the `pf
 │   ├── atlassian_token.json    # shared by Jira + Confluence
 │   └── slack_token.json
 │       # (no salesforce/telegram token file yet as of this writing -- see A.5)
-└── org/
-    └── org_config.json     # the merged org_config.qa.json from Phase A, installed under its
-                             # real filename -- see paths.py's org_dir() for why it must be
-                             # exactly this name
+├── org/
+│   └── org_config.json     # the merged org_config.qa.json from Phase A, installed under its
+│                            # real filename -- see paths.py's org_dir() for why it must be
+│                            # exactly this name
+└── tests/
+    └── fixtures/
+        └── qa_environment.yaml   # the filled-in seed-artifact manifest from Phase A.5
 ```
 
 This is deliberately **not** a git clone, and deliberately **not** where the workflow's own code or
 venv live — those are rebuilt fresh in the ephemeral Actions job workspace on every run (see the
-workflow file); only credentials need to survive between runs, so only credentials live here.
+workflow file); only this runner-local state needs to survive between runs, so only this lives here.
 
 1. Copy the OAuth token files produced by Phase A's local authentication steps into
    `~/privacyfence/credentials/` (`scp` over SSH once, from whichever machine you ran Phase A on —
    the token files are the same regardless of which machine runs the check afterward).
 2. Copy the finished `org_config.qa.json` to `~/privacyfence/org/org_config.json` (note the rename).
-3. Lock down file permissions: `chmod 600` on every credential file, owned by `pf-runner` only.
-4. **`tests/fixtures/qa_environment.yaml` is not part of this layout yet** — the workflow doesn't
-   copy it in (it isn't a credential, so it doesn't need the same protection, but nothing wires it up
-   today; see A.5). Once a real, filled-in copy exists, the natural place for it is
-   `~/privacyfence/tests/fixtures/qa_environment.yaml`, added to `QA_SECRETS_DIR` and copied in by
-   the same step in the workflow file that copies `credentials/`/`org_config.json` today — do both
-   changes together, not just the runner-side file placement, or the workflow won't pick it up.
+3. Copy the filled-in `tests/fixtures/qa_environment.yaml` from Phase A.5 to
+   `~/privacyfence/tests/fixtures/qa_environment.yaml`.
+4. Lock down file permissions: `chmod 600` on every credential file, owned by `pf-runner` only.
+   (`qa_environment.yaml` isn't a credential and doesn't need the same lockdown, but there's no harm
+   in treating it the same way.)
 5. **Do not** add any of these as GitHub Actions **secrets**. If a future maintainer is tempted to
    "just add it as a repo secret for convenience," that reintroduces exactly the exposure this
    design avoids — GitHub-hosted runners (including any other workflow with access to that secret)
@@ -316,9 +320,11 @@ Real failure modes hit standing this up, in the order they tend to surface:
 - **`python3 -m venv .venv` fails with "ensurepip is not available"** — the matching `pythonX.Y-venv`
   apt package isn't installed (see B.1.4).
 - **`error: manifest not found at .../tests/fixtures/qa_environment.yaml`** — this is
-  `qa_fixture_recorder.py`'s own expected, correct behavior when Phase A.5 hasn't been finished, not
-  an infrastructure problem. Fill in the manifest (Phase A.5) and wire its copy into B.3.4 once it's
-  ready; there's nothing to fix in the workflow itself for this one.
+  `qa_fixture_recorder.py`'s own expected, correct behavior when Phase A.5 hasn't been finished yet
+  (e.g. rebuilding this setup from scratch), not an infrastructure problem. The workflow already
+  copies a real manifest in from `QA_SECRETS_DIR` once one exists (Phase B.3.3) — fill in
+  `tests/fixtures/qa_environment.yaml` (Phase A.5) and place it there; there's nothing to fix in the
+  workflow itself for this one.
 
 ---
 
