@@ -1477,6 +1477,7 @@ class TestLifecycleCalendar:
         fake = _FakeCalendarClient()
         fake.delete_leaves_it = True
         monkeypatch.setattr(recorder, "_build_calendar_client", lambda: fake)
+        monkeypatch.setattr(recorder.time, "sleep", lambda seconds: None)
 
         result = recorder.lifecycle_calendar(manifest={})
 
@@ -1503,10 +1504,6 @@ class _FakeConfluenceClient:
     def __init__(self):
         self.pages: dict[str, dict] = {}
         self._n = 0
-        self.delete_should_fail = False
-        self.delete_leaves_it = False
-        self._client = MagicMock()
-        self._client.delete.side_effect = self._do_delete
 
     def create_page(self, space_key, title, body="", parent_id=""):
         self._n += 1
@@ -1526,19 +1523,19 @@ class _FakeConfluenceClient:
         self.pages[page_id] = {"title": title, "body": body}
         return SimpleNamespace(id=page_id, title=title, body=body)
 
-    def _request(self, fn, *args, **kwargs):
-        return fn(*args, **kwargs)
-
-    def _do_delete(self, path):
-        if self.delete_should_fail:
-            raise RuntimeError("simulated delete failure")
-        if not self.delete_leaves_it:
-            page_id = path.rsplit("/", 1)[-1]
-            self.pages.pop(page_id, None)
-
 
 class TestLifecycleConfluence:
-    def test_happy_path_creates_updates_and_cleans_up(self, monkeypatch):
+    """Confluence never deletes what it creates here -- unlike calendar/jira/
+    tasks below, there's no delete/cleanup path to exercise at all (see
+    lifecycle_confluence's own docstring for why: it would need a
+    delete:page:confluence OAuth scope this org-wide app deliberately never
+    requests). So there's no _FakeConfluenceClient delete simulation, and no
+    cleanup-failure/cleanup-leaves-it-behind cases to cover -- just that the
+    create/get/update/get-after-update sequence itself is verified, and that
+    cleanup_ok is always None (n/a), win or lose.
+    """
+
+    def test_happy_path_creates_and_updates_without_attempting_cleanup(self, monkeypatch):
         fake = _FakeConfluenceClient()
         monkeypatch.setattr(recorder, "_build_confluence_client", lambda: fake)
 
@@ -1546,10 +1543,10 @@ class TestLifecycleConfluence:
 
         assert result.connector == "confluence"
         assert result.ok
-        assert result.cleanup_ok is True
-        assert not fake.pages
+        assert result.cleanup_ok is None
+        assert fake.pages  # the created page is deliberately left behind
 
-    def test_update_mismatch_is_reported_and_still_cleans_up(self, monkeypatch):
+    def test_update_mismatch_is_reported_and_page_is_still_left_behind(self, monkeypatch):
         fake = _FakeConfluenceClient()
         fake.update_page = lambda page_id, title, body: SimpleNamespace(
             id=page_id, title=fake.pages[page_id]["title"], body=body
@@ -1560,32 +1557,10 @@ class TestLifecycleConfluence:
 
         assert not result.ok
         assert "update_page did not persist" in result.note
-        assert result.cleanup_ok is True
-        assert not fake.pages
+        assert result.cleanup_ok is None
+        assert fake.pages
 
-    def test_cleanup_call_failure_is_reported(self, monkeypatch):
-        fake = _FakeConfluenceClient()
-        fake.delete_should_fail = True
-        monkeypatch.setattr(recorder, "_build_confluence_client", lambda: fake)
-
-        result = recorder.lifecycle_confluence(manifest={})
-
-        assert result.ok
-        assert result.cleanup_ok is False
-        assert "cleanup call failed" in result.note
-
-    def test_cleanup_that_does_not_actually_remove_the_object_is_caught(self, monkeypatch):
-        fake = _FakeConfluenceClient()
-        fake.delete_leaves_it = True
-        monkeypatch.setattr(recorder, "_build_confluence_client", lambda: fake)
-
-        result = recorder.lifecycle_confluence(manifest={})
-
-        assert result.ok
-        assert result.cleanup_ok is False
-        assert "still exists" in result.note
-
-    def test_create_failure_never_attempts_cleanup(self, monkeypatch):
+    def test_create_failure_is_reported(self, monkeypatch):
         fake = _FakeConfluenceClient()
 
         def _boom(*args, **kwargs):
@@ -1796,6 +1771,7 @@ class TestLifecycleTasks:
         fake = _FakeTasksClient()
         fake.delete_leaves_it = True
         monkeypatch.setattr(recorder, "_build_tasks_client", lambda: fake)
+        monkeypatch.setattr(recorder.time, "sleep", lambda seconds: None)
 
         result = recorder.lifecycle_tasks(manifest={"tasks": {"task_list_id": "list1"}})
 
@@ -1853,6 +1829,53 @@ class TestConfirmDeleted:
         assert not ok
         assert "unexpected error" in note
         assert "network blip" in note
+
+    def test_default_is_a_single_attempt_with_no_sleep(self):
+        sleeps: list[float] = []
+
+        ok, note = recorder._confirm_deleted(
+            lambda: SimpleNamespace(id="x"), recorder.CalendarClientError, sleep=sleeps.append,
+        )
+
+        assert not ok
+        assert "still exists" in note
+        assert sleeps == []
+
+    def test_retries_until_the_object_is_confirmed_gone(self):
+        # Simulates eventual consistency: the object is still visible on the
+        # first two refetches, then genuinely gone by the third.
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def _refetch():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                return SimpleNamespace(id="x")
+            raise recorder.CalendarClientError("not found")
+
+        ok, note = recorder._confirm_deleted(
+            _refetch, recorder.CalendarClientError,
+            attempts=5, delay_seconds=2.0, sleep=sleeps.append,
+        )
+
+        assert ok
+        assert note == ""
+        assert calls["n"] == 3
+        # Slept between attempts 1->2 and 2->3, but not after the confirming attempt.
+        assert sleeps == [2.0, 2.0]
+
+    def test_gives_up_after_exhausting_all_attempts(self):
+        sleeps: list[float] = []
+
+        ok, note = recorder._confirm_deleted(
+            lambda: SimpleNamespace(id="x"), recorder.CalendarClientError,
+            attempts=3, delay_seconds=1.0, sleep=sleeps.append,
+        )
+
+        assert not ok
+        assert "still exists" in note
+        # Slept between attempts, but not a fourth time after the last one.
+        assert sleeps == [1.0, 1.0]
 
 
 class TestRenderLifecycleReport:
