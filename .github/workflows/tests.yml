@@ -184,12 +184,17 @@ jobs:
   # release-time Windows job alone" as a decision for once it had actually
   # been run for real. docs/automated-test-strategy-plan.md Phase 2.1 makes
   # that call: promoted to a permanent per-PR leg (renamed test-windows ->
-  # platform-windows to match) now that it's proven green. Still the full
-  # core suite, not narrowed to Phase 2.3's targeted tests/platform/ subset
-  # -- automated-test-strategy-plan.md's Phase 2 status note records why
-  # promoting the new tests/platform/ suite (they run here automatically,
-  # `pyproject.toml`'s `testpaths` already covers all of `tests/`) was kept
-  # separate from actually narrowing this job down to just that subset.
+  # platform-windows to match) now that it's proven green.
+  #
+  # Deliberately still the full core suite, not narrowed to Phase 2.3's
+  # targeted tests/platform/ subset -- Phase 2.4 considered narrowing and
+  # decided against it: this job's own first real run found four genuine
+  # cross-platform bugs (docs/windows-support-plan.md Phase 6.3) in ordinary
+  # modules with no platform marker (settings_controller.py, drive.py, a
+  # shim-contract test, an audit-log test), none of which lived in
+  # tests/platform/'s own subject matter -- a subset chosen ahead of time
+  # would have missed them. See automated-test-strategy-plan.md Phase 2's
+  # status note for the full reasoning.
   platform-windows:
     runs-on: windows-latest
 
@@ -220,7 +225,8 @@ jobs:
   # build already exercises on macos-latest separately). Deliberately not
   # scoped to `scripts/build_dmg.sh`/signing/notarization -- that stays
   # build.yml's job, tag-triggered only; this job runs from source, on
-  # every PR, the same way platform-windows does.
+  # every PR, the same way platform-windows does. Same Phase 2.4 decision as
+  # platform-windows above: full core suite, not narrowed to tests/platform/.
   platform-macos:
     runs-on: macos-latest
 
