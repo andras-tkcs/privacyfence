@@ -22,6 +22,19 @@ concurrency:
   cancel-in-progress: false   # never cancel a run mid-way through a live
                                # provider call sequence
 
+env:
+  # The one persistent, hand-provisioned working copy on this runner --
+  # NOT the ephemeral actions/checkout workspace Actions would otherwise
+  # give this job. org_config.json, credentials/, tests/fixtures/
+  # qa_environment.yaml and the runner-local .venv all live here (Phase
+  # B.3) because paths.py's data_dir() resolves org/credential storage
+  # relative to wherever this package's own source files physically sit
+  # on disk, for a non-installed source checkout -- so the script has to
+  # actually run from this exact directory to see any of them. A fresh
+  # actions/checkout workspace is a different directory and would never
+  # see this runner's credentials no matter how it's configured.
+  PF_CHECKOUT: /home/pf-runner/privacyfence
+
 jobs:
   live-check:
     runs-on: [self-hosted, privacyfence-test]
@@ -29,20 +42,17 @@ jobs:
                            # minutes of read calls, not an open-ended job
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          clean: false   # `clean: true` (the default) runs a hard clean of
-                          # this checkout directory before checking out --
-                          # which wipes every untracked file in it, including
-                          # the runner-local .venv below, org_config.qa.json,
-                          # the credentials/ directory, and
-                          # tests/fixtures/qa_environment.yaml (Phase B.3 all
-                          # deliberately live inside this same job workspace,
-                          # never as GitHub Actions secrets). `clean: false`
-                          # still force-checks-out tracked files (so a stale
-                          # local edit to a tracked file can't linger) but
-                          # leaves untracked runner-local state alone.
+      # No actions/checkout here -- see the PF_CHECKOUT comment above.
+      # Instead, fast-forward the runner's own persistent clone to this
+      # workflow's commit in place. This only ever touches tracked files
+      # (a plain `git checkout --force`, no `clean`/`git clean` step), so
+      # credentials/, org/, .venv/ and tests/fixtures/qa_environment.yaml
+      # -- all gitignored -- are left exactly as this runner has them.
+      - name: Update the persistent checkout to this commit
+        working-directory: ${{ env.PF_CHECKOUT }}
+        run: |
+          git fetch origin "${{ github.sha }}"
+          git checkout --force FETCH_HEAD
 
       # No setup-python/setup-node steps here -- the self-hosted runner
       # keeps its own persistent venv (Phase B), rebuilt manually when
@@ -51,6 +61,7 @@ jobs:
       # doesn't, since the point is minimal, auditable actions on a
       # credential-holding machine.
       - name: Verify the runner-local venv exists
+        working-directory: ${{ env.PF_CHECKOUT }}
         run: |
           if [ ! -x .venv/bin/python ]; then
             echo "##[error] .venv/bin/python not found in $(pwd)." \
@@ -62,6 +73,7 @@ jobs:
 
       - name: Run qa_fixture_recorder.py --check
         id: check
+        working-directory: ${{ env.PF_CHECKOUT }}
         run: |
           .venv/bin/python scripts/qa_fixture_recorder.py --check \
             --report-file /tmp/qa-check-report.md
@@ -71,6 +83,7 @@ jobs:
 
       - name: Re-record on drift
         if: steps.check.outcome == 'failure'
+        working-directory: ${{ env.PF_CHECKOUT }}
         run: |
           .venv/bin/python scripts/qa_fixture_recorder.py --record \
             --report-file /tmp/qa-record-report.md
@@ -79,10 +92,16 @@ jobs:
       # a maintainer reviews the redacted diff exactly as the manual
       # process in testing-policy.md Sec 2.1 already describes, this just
       # removes the "someone has to remember to run it" step.
+      #
+      # `path:` points this action at PF_CHECKOUT rather than the
+      # workflow's default working directory -- with no actions/checkout
+      # step, ${{ github.workspace }} is an empty directory, not a git
+      # repository at all.
       - name: Open drift PR
         if: steps.check.outcome == 'failure'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
+          path: ${{ env.PF_CHECKOUT }}
           branch: chore/connector-live-fixture-drift
           title: "chore: connector live fixture drift detected"
           commit-message: "Update recorded fixtures after provider API drift"
