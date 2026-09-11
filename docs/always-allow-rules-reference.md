@@ -71,7 +71,7 @@ The confirmation dialog after clicking still shows the full sentence (`describe_
 | `drive_sheets_get_values` | `i_am_owner`, else `approved_folder` — same family as the two rows above |
 
 `i_am_owner`/`approved_folder` is a fixed pair, checked in that order, not configurable — see
-[Always-allow suggestion candidates](TECHNICAL_REFERENCE.md#always-allow-suggestion-candidates).
+[How this doc is organized](#how-this-doc-is-organized).
 When a file is both owned by you *and* in an approved folder, Always allow renders **both** as
 their own buttons instead of silently picking one — see
 [Multiple matching candidates](#multiple-matching-candidates) below.
@@ -367,7 +367,9 @@ itself propose adding/updating/removing an `auto_accept_rules` or `auto_accept_g
 their own.
 Every call still blocks on the same confirmation dialog Always allow uses
 (`show_rule_confirmation_popup`) — there's no way for a rule to land without a human confirming it.
-See [Reading and proposing auto-accept changes over MCP](TECHNICAL_REFERENCE.md#reading-and-proposing-auto-accept-changes-over-mcp).
+See `privacyfence_list_auto_accept_rules`/`privacyfence_propose_auto_accept_rule_change` in
+`src/privacyfence/web/mcp_tools.py` (or the tool's own MCP description) for the exact request/response
+shape.
 
 **Auto-accept grants** (`auto_accept_grants` in `settings.yaml`, and PrivacyFence Settings' **Auto-
 accept Rules → \<Connector\> → Trusted \*** sections) — the resource-scoped alternative to a narrow
