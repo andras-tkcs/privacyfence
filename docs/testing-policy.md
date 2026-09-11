@@ -8,9 +8,14 @@ this document is about which ones run automatically versus which ones a human ha
 ## 0. Runner-local live tier (scheduled, not per-PR)
 
 `.github/workflows/connector-live-check.yml` runs `qa_fixture_recorder.py --check` (and, on
-drift, `--record`) against the four dedicated test accounts (Google, Slack, Atlassian,
-Salesforce) on a weekly schedule (plus `workflow_dispatch`) — never on `pull_request`, and never
-on a GitHub-hosted runner. It targets a self-hosted runner this project provisions and controls
+drift, `--record`), then `qa_fixture_recorder.py --lifecycle` (§2.1's bounded lifecycle mode --
+create/read/update/delete a fresh QA object per write-capable connector), against the four
+dedicated test accounts (Google, Slack, Atlassian, Salesforce) on a weekly schedule (plus
+`workflow_dispatch`) — never on `pull_request`, and never on a GitHub-hosted runner. Unlike
+`--check`'s drift (data, not a failure), a `--lifecycle` failure fails the job outright: a failed
+write/read/update is a real provider-contract regression, and a cleanup call that ran but didn't
+actually remove what it created would otherwise silently accumulate objects in the QA accounts
+forever. It targets a self-hosted runner this project provisions and controls
 (label `privacyfence-test`), provisioned per
 [`connector-live-check-setup.md`](connector-live-check-setup.md) Phase B. The four OAuth
 token files and `org/org_config.json` live only as local files on that runner — they are never
@@ -173,14 +178,29 @@ runs — still valid and still the right thing to do for a PR that touches a `*_
 project-owned self-hosted runner, on a schedule, per
 [`connector-live-check-setup.md`](connector-live-check-setup.md).
 
-Two modes:
+Three modes:
 
 - `--check [connector ...]` — calls each connector's read methods against its seed artifact,
   asserts non-empty/expected results, prints a report. Never writes a file. Safe to run any time.
+  The printed report also includes a **fixture freshness** line per connector checked: `< 60 days`
+  healthy, `60–90 days` warning, `> 90 days` refresh required (1.9,
+  `docs/automated-test-strategy-plan.md` Phase 1 residual work) — a quick signal for whether a
+  connector's recorded fixture is due for a fresh `--record`, without doing the day-count
+  arithmetic by hand.
 - `--record [connector ...]` — the same calls, plus identity-field redaction (author email, account
   id, display name, ...) and structural de-identification (opaque resource ids, decorative URLs —
   neither of which any test actually depends on the specific value of), then writes the result to
   `tests/fixtures/live/<connector>/<method>.json`.
+- `--lifecycle [connector ...]` — 1.8 (`docs/automated-test-strategy-plan.md` Phase 1 residual
+  work). For each write-capable connector that supports it (`calendar`, `confluence`, `jira`,
+  `tasks` — see the comment above `LIFECYCLE_CHECKS` in `qa_fixture_recorder.py` for why
+  `contacts`/`gmail`/`drive`/`slack`/`salesforce`/`telegram` aren't included), creates a fresh,
+  uniquely-tagged QA object, reads it back, updates it, reads it back again, then deletes it and
+  confirms the deletion actually took, using the same run's redaction-free internal SDK access
+  `RawCapture`/`RawCaptureExecute` already use — never a tool any MCP client can reach, since
+  nothing in `connectors/**` ever registers a delete tool at all. Never writes a fixture file. Runs
+  on the same weekly self-hosted-runner schedule as `--check`/`--record` (§0 above); safe to run by
+  hand too, same caveats as `--check`/`--record`.
 
 **When to run this**: only when a PR touches `src/privacyfence/*_client.py` or
 `src/privacyfence/connectors/**` — not every PR. Scope it to the connector(s) touched, using the
@@ -254,6 +274,7 @@ full release-time checklist tying all three tiers together.
 | `npm test` (mcpb/shim/'s own suite) | Yes, every PR | Always — this is the merge gate |
 | `npm run typecheck` (mcpb/shim/) | Yes, every PR | Always — this is the merge gate |
 | `qa_fixture_recorder.py --check` / `--record` (`connector-live-check.yml`) | Yes, but only on a project-owned self-hosted runner, never GitHub-hosted, never on `pull_request` | Weekly schedule + manual dispatch |
+| `qa_fixture_recorder.py --lifecycle` (`connector-live-check.yml`) | Yes, same runner/trigger restrictions as `--check`/`--record` above; unlike drift, a failure fails the job | Weekly schedule + manual dispatch |
 | `qa_fixture_recorder.py --check` (manual) | No | PR touches a `*_client.py`/`connectors/**` file, between scheduled runs |
 | `qa_web_smoke.py` | No | PR touches `web_shell.py`, `approval_list_html.py`, web routes' JS, `resources/sw.js`, or the CSP |
 | `connector-qa-testing.md`'s live Cowork pass | No | Before a release, or a broad gate/auto-accept change |

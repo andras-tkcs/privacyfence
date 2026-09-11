@@ -26,6 +26,7 @@ to be pointed at a real, already-authenticated account.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1266,6 +1267,67 @@ class TestRenderReport:
 
 
 # ---------------------------------------------------------------------------- #
+# Fixture freshness reporting (1.9, docs/automated-test-strategy-plan.md
+# Phase 1 residual work) -- < 60 days healthy / 60-90 days warning / > 90
+# days refresh required, folded into the same report --check/--record
+# already print.
+# ---------------------------------------------------------------------------- #
+
+class TestFreshnessStatus:
+    def test_under_warning_threshold_is_healthy(self):
+        assert recorder._freshness_status(0) == "healthy"
+        assert recorder._freshness_status(59.9) == "healthy"
+
+    def test_between_thresholds_is_warning(self):
+        assert recorder._freshness_status(60) == "warning"
+        assert recorder._freshness_status(89.9) == "warning"
+
+    def test_at_or_over_stale_threshold_is_refresh_required(self):
+        assert recorder._freshness_status(90) == "refresh required"
+        assert recorder._freshness_status(400) == "refresh required"
+
+
+class TestFixtureFreshnessLines:
+    def _touch(self, path: Path, age_days: float) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+        ts = datetime.now().timestamp() - age_days * 86400
+        os.utime(path, (ts, ts))
+
+    def test_missing_directory_reports_refresh_required(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(recorder, "FIXTURES_DIR", tmp_path)
+        lines = recorder._fixture_freshness_lines(["confluence"])
+        assert len(lines) == 1
+        assert "no recorded fixtures yet" in lines[0]
+        assert "[refresh required]" in lines[0]
+
+    def test_recent_fixture_is_healthy(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(recorder, "FIXTURES_DIR", tmp_path)
+        self._touch(tmp_path / "confluence" / "get_page.json", age_days=1)
+        lines = recorder._fixture_freshness_lines(["confluence"])
+        assert "[healthy]" in lines[0]
+
+    def test_sixty_to_ninety_days_is_warning(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(recorder, "FIXTURES_DIR", tmp_path)
+        self._touch(tmp_path / "jira" / "get_issue.json", age_days=75)
+        lines = recorder._fixture_freshness_lines(["jira"])
+        assert "[warning]" in lines[0]
+
+    def test_over_ninety_days_is_refresh_required(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(recorder, "FIXTURES_DIR", tmp_path)
+        self._touch(tmp_path / "slack" / "get_thread_replies.json", age_days=120)
+        lines = recorder._fixture_freshness_lines(["slack"])
+        assert "[refresh required]" in lines[0]
+
+    def test_newest_file_wins_when_a_connector_has_several(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(recorder, "FIXTURES_DIR", tmp_path)
+        self._touch(tmp_path / "confluence" / "list_spaces.json", age_days=120)
+        self._touch(tmp_path / "confluence" / "get_page.json", age_days=1)
+        lines = recorder._fixture_freshness_lines(["confluence"])
+        assert "[healthy]" in lines[0]  # the newer file, not the older one, sets the status
+
+
+# ---------------------------------------------------------------------------- #
 # Fixture presence -- the CI guard (TST-08, docs/security-remediation-plan.md
 # Phase 3.12): everything above runs against fakes/mocks and proves the
 # recorder's own logic, but nothing until this class ever looks at the
@@ -1311,3 +1373,549 @@ class TestFixturePresence:
             for filename in filenames
         }
         assert on_disk == expected
+
+
+# ---------------------------------------------------------------------------- #
+# Bounded lifecycle tests (1.8, docs/automated-test-strategy-plan.md Phase 1
+# residual work). None of these use a mocked *_client.py's own SDK object the
+# way TestCheckConfluence/TestCheckJira/... above do -- those already prove
+# each check_<connector>() function correctly drives the real client through
+# a mocked provider. What's under test here is lifecycle_<connector>()'s own
+# sequencing logic (create -> verify -> update -> verify -> delete -> confirm
+# gone, with cleanup always attempted even when an earlier step fails), which
+# is independent of any one connector's HTTP plumbing -- so each fake below
+# is a minimal in-memory stand-in for the *_client.py class itself, exposing
+# exactly the methods lifecycle_<connector>() calls, nothing more.
+# ---------------------------------------------------------------------------- #
+
+class _FakeCalendarClient:
+    def __init__(self):
+        self.events: dict[str, str] = {}
+        self._n = 0
+        self.delete_should_fail = False
+        self.delete_leaves_it = False  # simulates a delete call that "succeeds" but doesn't
+
+    def create_event(self, calendar_id, title, start_time, end_time, description=""):
+        self._n += 1
+        event_id = f"evt{self._n}"
+        self.events[event_id] = title
+        return SimpleNamespace(id=event_id, title=title)
+
+    def get_event(self, calendar_id, event_id):
+        if event_id not in self.events:
+            raise recorder.CalendarClientError(f"event {event_id} not found")
+        return SimpleNamespace(id=event_id, title=self.events[event_id])
+
+    def update_event(self, calendar_id, event_id, title=None):
+        if event_id not in self.events:
+            raise recorder.CalendarClientError(f"event {event_id} not found")
+        if title is not None:
+            self.events[event_id] = title
+        return SimpleNamespace(id=event_id, title=self.events[event_id])
+
+    def _get_service(self):
+        service = MagicMock()
+
+        def _delete(calendarId, eventId):
+            req = MagicMock()
+            req.execute.side_effect = lambda: self._do_delete(eventId)
+            return req
+
+        service.events.return_value.delete.side_effect = _delete
+        return service
+
+    def _do_delete(self, event_id):
+        if self.delete_should_fail:
+            raise RuntimeError("simulated delete failure")
+        if not self.delete_leaves_it:
+            self.events.pop(event_id, None)
+
+
+class TestLifecycleCalendar:
+    def test_happy_path_creates_updates_and_cleans_up(self, monkeypatch):
+        fake = _FakeCalendarClient()
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: fake)
+
+        result = recorder.lifecycle_calendar(manifest={})
+
+        assert result.connector == "calendar"
+        assert result.ok
+        assert result.cleanup_ok is True
+        assert not fake.events  # the created event is gone afterward
+
+    def test_update_mismatch_is_reported_and_still_cleans_up(self, monkeypatch):
+        fake = _FakeCalendarClient()
+        # A provider that silently drops the update -- returns the
+        # *original* title instead of applying the new one.
+        fake.update_event = lambda calendar_id, event_id, title=None: SimpleNamespace(
+            id=event_id, title=fake.events[event_id]
+        )
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: fake)
+
+        result = recorder.lifecycle_calendar(manifest={})
+
+        assert not result.ok
+        assert "update_event did not persist" in result.note
+        assert result.cleanup_ok is True  # cleanup still ran despite the failed assertion
+        assert not fake.events
+
+    def test_cleanup_call_failure_is_reported(self, monkeypatch):
+        fake = _FakeCalendarClient()
+        fake.delete_should_fail = True
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: fake)
+
+        result = recorder.lifecycle_calendar(manifest={})
+
+        assert result.ok  # the create/read/update sequence itself passed
+        assert result.cleanup_ok is False
+        assert "cleanup call failed" in result.note
+
+    def test_cleanup_that_does_not_actually_remove_the_object_is_caught(self, monkeypatch):
+        fake = _FakeCalendarClient()
+        fake.delete_leaves_it = True
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: fake)
+
+        result = recorder.lifecycle_calendar(manifest={})
+
+        assert result.ok
+        assert result.cleanup_ok is False
+        assert "still exists" in result.note
+
+    def test_create_failure_never_attempts_cleanup(self, monkeypatch):
+        fake = _FakeCalendarClient()
+
+        def _boom(*args, **kwargs):
+            raise recorder.CalendarClientError("simulated create failure")
+
+        fake.create_event = _boom
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: fake)
+
+        result = recorder.lifecycle_calendar(manifest={})
+
+        assert not result.ok
+        assert result.cleanup_ok is None  # nothing was ever created
+
+
+class _FakeConfluenceClient:
+    def __init__(self):
+        self.pages: dict[str, dict] = {}
+        self._n = 0
+        self.delete_should_fail = False
+        self.delete_leaves_it = False
+        self._client = MagicMock()
+        self._client.delete.side_effect = self._do_delete
+
+    def create_page(self, space_key, title, body="", parent_id=""):
+        self._n += 1
+        page_id = f"pg{self._n}"
+        self.pages[page_id] = {"title": title, "body": body}
+        return SimpleNamespace(id=page_id, title=title, body=body)
+
+    def get_page(self, page_id):
+        if page_id not in self.pages:
+            raise recorder.ConfluenceClientError(f"page {page_id} not found")
+        data = self.pages[page_id]
+        return SimpleNamespace(id=page_id, title=data["title"], body=data["body"])
+
+    def update_page(self, page_id, title, body):
+        if page_id not in self.pages:
+            raise recorder.ConfluenceClientError(f"page {page_id} not found")
+        self.pages[page_id] = {"title": title, "body": body}
+        return SimpleNamespace(id=page_id, title=title, body=body)
+
+    def _request(self, fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def _do_delete(self, path):
+        if self.delete_should_fail:
+            raise RuntimeError("simulated delete failure")
+        if not self.delete_leaves_it:
+            page_id = path.rsplit("/", 1)[-1]
+            self.pages.pop(page_id, None)
+
+
+class TestLifecycleConfluence:
+    def test_happy_path_creates_updates_and_cleans_up(self, monkeypatch):
+        fake = _FakeConfluenceClient()
+        monkeypatch.setattr(recorder, "_build_confluence_client", lambda: fake)
+
+        result = recorder.lifecycle_confluence(manifest={})
+
+        assert result.connector == "confluence"
+        assert result.ok
+        assert result.cleanup_ok is True
+        assert not fake.pages
+
+    def test_update_mismatch_is_reported_and_still_cleans_up(self, monkeypatch):
+        fake = _FakeConfluenceClient()
+        fake.update_page = lambda page_id, title, body: SimpleNamespace(
+            id=page_id, title=fake.pages[page_id]["title"], body=body
+        )
+        monkeypatch.setattr(recorder, "_build_confluence_client", lambda: fake)
+
+        result = recorder.lifecycle_confluence(manifest={})
+
+        assert not result.ok
+        assert "update_page did not persist" in result.note
+        assert result.cleanup_ok is True
+        assert not fake.pages
+
+    def test_cleanup_call_failure_is_reported(self, monkeypatch):
+        fake = _FakeConfluenceClient()
+        fake.delete_should_fail = True
+        monkeypatch.setattr(recorder, "_build_confluence_client", lambda: fake)
+
+        result = recorder.lifecycle_confluence(manifest={})
+
+        assert result.ok
+        assert result.cleanup_ok is False
+        assert "cleanup call failed" in result.note
+
+    def test_cleanup_that_does_not_actually_remove_the_object_is_caught(self, monkeypatch):
+        fake = _FakeConfluenceClient()
+        fake.delete_leaves_it = True
+        monkeypatch.setattr(recorder, "_build_confluence_client", lambda: fake)
+
+        result = recorder.lifecycle_confluence(manifest={})
+
+        assert result.ok
+        assert result.cleanup_ok is False
+        assert "still exists" in result.note
+
+    def test_create_failure_never_attempts_cleanup(self, monkeypatch):
+        fake = _FakeConfluenceClient()
+
+        def _boom(*args, **kwargs):
+            raise recorder.ConfluenceClientError("simulated create failure")
+
+        fake.create_page = _boom
+        monkeypatch.setattr(recorder, "_build_confluence_client", lambda: fake)
+
+        result = recorder.lifecycle_confluence(manifest={})
+
+        assert not result.ok
+        assert result.cleanup_ok is None
+
+
+class _FakeJiraClient:
+    def __init__(self):
+        self.issues: dict[str, str] = {}
+        self._n = 0
+        self.delete_should_fail = False
+        self.delete_leaves_it = False
+        self._client = MagicMock()
+        self._client.delete_issue.side_effect = self._do_delete
+
+    def create_issue(self, project_key, summary, description=""):
+        self._n += 1
+        issue_key = f"PFQA-{self._n}"
+        self.issues[issue_key] = summary
+        return SimpleNamespace(key=issue_key, summary=summary)
+
+    def get_issue(self, issue_key):
+        if issue_key not in self.issues:
+            raise recorder.JiraClientError(f"issue {issue_key} not found")
+        return SimpleNamespace(key=issue_key, summary=self.issues[issue_key])
+
+    def update_issue(self, issue_key, fields):
+        if issue_key not in self.issues:
+            raise recorder.JiraClientError(f"issue {issue_key} not found")
+        if "summary" in fields:
+            self.issues[issue_key] = fields["summary"]
+        return SimpleNamespace(key=issue_key, summary=self.issues[issue_key])
+
+    def _request(self, fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def _do_delete(self, issue_key):
+        if self.delete_should_fail:
+            raise RuntimeError("simulated delete failure")
+        if not self.delete_leaves_it:
+            self.issues.pop(issue_key, None)
+
+
+class TestLifecycleJira:
+    def test_happy_path_creates_updates_and_cleans_up(self, monkeypatch):
+        fake = _FakeJiraClient()
+        monkeypatch.setattr(recorder, "_build_jira_client", lambda: fake)
+
+        result = recorder.lifecycle_jira(manifest={})
+
+        assert result.connector == "jira"
+        assert result.ok
+        assert result.cleanup_ok is True
+        assert not fake.issues
+
+    def test_update_mismatch_is_reported_and_still_cleans_up(self, monkeypatch):
+        fake = _FakeJiraClient()
+        fake.update_issue = lambda issue_key, fields: SimpleNamespace(
+            key=issue_key, summary=fake.issues[issue_key]
+        )
+        monkeypatch.setattr(recorder, "_build_jira_client", lambda: fake)
+
+        result = recorder.lifecycle_jira(manifest={})
+
+        assert not result.ok
+        assert "update_issue did not persist" in result.note
+        assert result.cleanup_ok is True
+        assert not fake.issues
+
+    def test_cleanup_call_failure_is_reported(self, monkeypatch):
+        fake = _FakeJiraClient()
+        fake.delete_should_fail = True
+        monkeypatch.setattr(recorder, "_build_jira_client", lambda: fake)
+
+        result = recorder.lifecycle_jira(manifest={})
+
+        assert result.ok
+        assert result.cleanup_ok is False
+        assert "cleanup call failed" in result.note
+
+    def test_cleanup_that_does_not_actually_remove_the_object_is_caught(self, monkeypatch):
+        fake = _FakeJiraClient()
+        fake.delete_leaves_it = True
+        monkeypatch.setattr(recorder, "_build_jira_client", lambda: fake)
+
+        result = recorder.lifecycle_jira(manifest={})
+
+        assert result.ok
+        assert result.cleanup_ok is False
+        assert "still exists" in result.note
+
+    def test_create_failure_never_attempts_cleanup(self, monkeypatch):
+        fake = _FakeJiraClient()
+
+        def _boom(*args, **kwargs):
+            raise recorder.JiraClientError("simulated create failure")
+
+        fake.create_issue = _boom
+        monkeypatch.setattr(recorder, "_build_jira_client", lambda: fake)
+
+        result = recorder.lifecycle_jira(manifest={})
+
+        assert not result.ok
+        assert result.cleanup_ok is None
+
+
+class _FakeTasksClient:
+    def __init__(self):
+        self.tasks: dict[str, str] = {}
+        self._n = 0
+        self.delete_should_fail = False
+        self.delete_leaves_it = False
+
+    def create_task(self, task_list_id, title, notes=""):
+        self._n += 1
+        task_id = f"tsk{self._n}"
+        self.tasks[task_id] = title
+        return SimpleNamespace(id=task_id, title=title)
+
+    def get_task(self, task_list_id, task_id):
+        if task_id not in self.tasks:
+            raise recorder.TasksClientError(f"task {task_id} not found")
+        return SimpleNamespace(id=task_id, title=self.tasks[task_id])
+
+    def update_task(self, task_list_id, task_id, title=None):
+        if task_id not in self.tasks:
+            raise recorder.TasksClientError(f"task {task_id} not found")
+        if title is not None:
+            self.tasks[task_id] = title
+        return SimpleNamespace(id=task_id, title=self.tasks[task_id])
+
+    def _get_service(self):
+        service = MagicMock()
+
+        def _delete(tasklist, task):
+            req = MagicMock()
+            req.execute.side_effect = lambda: self._do_delete(task)
+            return req
+
+        service.tasks.return_value.delete.side_effect = _delete
+        return service
+
+    def _do_delete(self, task_id):
+        if self.delete_should_fail:
+            raise RuntimeError("simulated delete failure")
+        if not self.delete_leaves_it:
+            self.tasks.pop(task_id, None)
+
+
+class TestLifecycleTasks:
+    def test_missing_task_list_id_fails_without_building_a_client(self, monkeypatch):
+        def _unexpected():
+            raise AssertionError("_build_tasks_client should not be called without a task_list_id")
+
+        monkeypatch.setattr(recorder, "_build_tasks_client", _unexpected)
+
+        result = recorder.lifecycle_tasks(manifest={})
+
+        assert not result.ok
+        assert result.cleanup_ok is None
+        assert "task_list_id" in result.note
+
+    def test_happy_path_creates_updates_and_cleans_up(self, monkeypatch):
+        fake = _FakeTasksClient()
+        monkeypatch.setattr(recorder, "_build_tasks_client", lambda: fake)
+
+        result = recorder.lifecycle_tasks(manifest={"tasks": {"task_list_id": "list1"}})
+
+        assert result.connector == "tasks"
+        assert result.ok
+        assert result.cleanup_ok is True
+        assert not fake.tasks
+
+    def test_update_mismatch_is_reported_and_still_cleans_up(self, monkeypatch):
+        fake = _FakeTasksClient()
+        fake.update_task = lambda task_list_id, task_id, title=None: SimpleNamespace(
+            id=task_id, title=fake.tasks[task_id]
+        )
+        monkeypatch.setattr(recorder, "_build_tasks_client", lambda: fake)
+
+        result = recorder.lifecycle_tasks(manifest={"tasks": {"task_list_id": "list1"}})
+
+        assert not result.ok
+        assert "update_task did not persist" in result.note
+        assert result.cleanup_ok is True
+        assert not fake.tasks
+
+    def test_cleanup_call_failure_is_reported(self, monkeypatch):
+        fake = _FakeTasksClient()
+        fake.delete_should_fail = True
+        monkeypatch.setattr(recorder, "_build_tasks_client", lambda: fake)
+
+        result = recorder.lifecycle_tasks(manifest={"tasks": {"task_list_id": "list1"}})
+
+        assert result.ok
+        assert result.cleanup_ok is False
+        assert "cleanup call failed" in result.note
+
+    def test_cleanup_that_does_not_actually_remove_the_object_is_caught(self, monkeypatch):
+        fake = _FakeTasksClient()
+        fake.delete_leaves_it = True
+        monkeypatch.setattr(recorder, "_build_tasks_client", lambda: fake)
+
+        result = recorder.lifecycle_tasks(manifest={"tasks": {"task_list_id": "list1"}})
+
+        assert result.ok
+        assert result.cleanup_ok is False
+        assert "still exists" in result.note
+
+    def test_create_failure_never_attempts_cleanup(self, monkeypatch):
+        fake = _FakeTasksClient()
+
+        def _boom(*args, **kwargs):
+            raise recorder.TasksClientError("simulated create failure")
+
+        fake.create_task = _boom
+        monkeypatch.setattr(recorder, "_build_tasks_client", lambda: fake)
+
+        result = recorder.lifecycle_tasks(manifest={"tasks": {"task_list_id": "list1"}})
+
+        assert not result.ok
+        assert result.cleanup_ok is None
+
+
+class TestAttemptDelete:
+    def test_success_returns_empty_string(self):
+        assert recorder._attempt_delete(lambda: None) == ""
+
+    def test_failure_returns_a_note_naming_the_error(self):
+        def _boom():
+            raise RuntimeError("boom")
+
+        note = recorder._attempt_delete(_boom)
+        assert "cleanup call failed" in note
+        assert "boom" in note
+
+
+class TestConfirmDeleted:
+    def test_expected_error_confirms_deletion(self):
+        def _refetch():
+            raise recorder.CalendarClientError("not found")
+
+        ok, note = recorder._confirm_deleted(_refetch, recorder.CalendarClientError)
+        assert ok
+        assert note == ""
+
+    def test_object_still_present_is_not_confirmed(self):
+        ok, note = recorder._confirm_deleted(lambda: SimpleNamespace(id="x"), recorder.CalendarClientError)
+        assert not ok
+        assert "still exists" in note
+
+    def test_unexpected_error_is_reported_not_swallowed(self):
+        def _refetch():
+            raise RuntimeError("network blip")
+
+        ok, note = recorder._confirm_deleted(_refetch, recorder.CalendarClientError)
+        assert not ok
+        assert "unexpected error" in note
+        assert "network blip" in note
+
+
+class TestRenderLifecycleReport:
+    def test_report_includes_result_and_cleanup_columns(self):
+        results = [
+            recorder.LifecycleResult("calendar", True, "all verified", cleanup_ok=True),
+            recorder.LifecycleResult("jira", False, "update_issue did not persist", cleanup_ok=True),
+            recorder.LifecycleResult("tasks", False, "tasks.task_list_id must be set", cleanup_ok=None),
+        ]
+        report = recorder.render_lifecycle_report(results)
+        assert "✅ pass" in report
+        assert "❌ fail" in report
+        assert "✅ removed" in report
+        assert "❌ NOT removed" not in report  # no cleanup_ok=False case in this fixture
+        assert "n/a" in report
+        assert "update_issue did not persist" in report
+
+
+class TestRunLifecycle:
+    def test_unknown_connector_is_skipped_with_a_warning(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(recorder, "MANIFEST_PATH", tmp_path / "qa_environment.yaml")
+        (tmp_path / "qa_environment.yaml").write_text("{}", encoding="utf-8")
+
+        rc = recorder.run_lifecycle(["not-a-real-connector"], report_file=None)
+
+        assert rc == 0  # nothing ran, so nothing failed
+        assert "not-a-real-connector" in capsys.readouterr().err
+
+    def test_one_connectors_unexpected_exception_does_not_abort_the_batch(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(recorder, "MANIFEST_PATH", tmp_path / "qa_environment.yaml")
+        (tmp_path / "qa_environment.yaml").write_text("{}", encoding="utf-8")
+
+        def _boom(manifest):
+            raise RuntimeError("totally unexpected")
+
+        calendar_fake = _FakeCalendarClient()
+        monkeypatch.setattr(
+            recorder, "LIFECYCLE_CHECKS",
+            {"confluence": _boom, "calendar": lambda manifest: recorder.lifecycle_calendar(manifest)},
+        )
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: calendar_fake)
+
+        rc = recorder.run_lifecycle(["confluence", "calendar"], report_file=None)
+
+        assert rc == 1  # confluence's unexpected failure still fails the run...
+        assert not calendar_fake.events  # ...but calendar still ran (and cleaned up) regardless
+
+    def test_report_file_is_written(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(recorder, "MANIFEST_PATH", tmp_path / "qa_environment.yaml")
+        (tmp_path / "qa_environment.yaml").write_text("{}", encoding="utf-8")
+        fake = _FakeCalendarClient()
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: fake)
+        report_file = tmp_path / "report.md"
+
+        rc = recorder.run_lifecycle(["calendar"], report_file=str(report_file))
+
+        assert rc == 0
+        assert "calendar" in report_file.read_text(encoding="utf-8")
+
+    def test_cleanup_failure_fails_the_run_even_though_the_crud_sequence_passed(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(recorder, "MANIFEST_PATH", tmp_path / "qa_environment.yaml")
+        (tmp_path / "qa_environment.yaml").write_text("{}", encoding="utf-8")
+        fake = _FakeCalendarClient()
+        fake.delete_should_fail = True
+        monkeypatch.setattr(recorder, "_build_calendar_client", lambda: fake)
+
+        rc = recorder.run_lifecycle(["calendar"], report_file=None)
+
+        assert rc == 1

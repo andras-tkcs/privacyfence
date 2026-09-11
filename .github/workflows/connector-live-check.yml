@@ -123,6 +123,19 @@ jobs:
           .venv/bin/python scripts/qa_fixture_recorder.py --record \
             --report-file /tmp/qa-record-report.md
 
+      # 1.8 (docs/automated-test-strategy-plan.md Phase 1 residual work):
+      # create/read/update/delete a fresh, uniquely-tagged QA object per
+      # write-capable connector, on the same weekly schedule as --check
+      # above. Unlike --check's drift, never continue-on-error -- a failed
+      # write/read/update is a real provider-contract regression, and a
+      # cleanup that didn't actually remove what it created would silently
+      # accumulate objects in the QA accounts forever if this were swallowed
+      # the same way drift is.
+      - name: Run qa_fixture_recorder.py --lifecycle
+        run: |
+          .venv/bin/python scripts/qa_fixture_recorder.py --lifecycle \
+            --report-file /tmp/qa-lifecycle-report.md
+
       # Opens a PR only when --record actually changed a fixture file --
       # a maintainer reviews the redacted diff exactly as the manual
       # process in testing-policy.md Sec 2.1 already describes, this just

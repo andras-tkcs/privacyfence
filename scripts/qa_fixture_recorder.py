@@ -26,8 +26,20 @@ this imports the same ``privacyfence`` package and third-party clients
         fields() below), and writes the result to
         tests/fixtures/live/<connector>/<method>.json.
 
-Both modes accept ``--report-file PATH`` to also save the printed report,
-ready to paste into a PR description (see ``docs/testing-policy.md`` §2.1).
+    .venv/bin/python scripts/qa_fixture_recorder.py --lifecycle [connector ...]
+        For each write-capable connector that supports it (calendar,
+        confluence, jira, tasks -- see the comment above LIFECYCLE_CHECKS
+        below for why the other connectors aren't included), creates a
+        fresh, uniquely-tagged QA object, reads it back, updates it, reads
+        it back again, then deletes it and confirms the deletion actually
+        took. Never touches a fixture file. Proves what --check/--record
+        can't: that a real provider still accepts this codebase's own
+        create_*/update_* calls, and that this scheduled job cleans up
+        after itself instead of accumulating QA-account clutter forever.
+
+Both --check/--record accept ``--report-file PATH`` to also save the printed
+report, ready to paste into a PR description (see ``docs/testing-policy.md``
+§2.1); so does --lifecycle.
 
 Only reads from ``tests/fixtures/qa_environment.yaml`` -- a small, non-secret
 manifest of your seed artifacts' IDs/keys/tags (see
@@ -47,6 +59,7 @@ import os
 import shutil
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -57,7 +70,11 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from privacyfence import daemon_main  # noqa: E402
 from privacyfence.app_credentials import telegram_app_credentials  # noqa: E402
-from privacyfence.confluence_client import ConfluenceClient, ConfluenceClientError  # noqa: E402
+from privacyfence.confluence_client import (  # noqa: E402
+    _V2_PAGES_PATH,
+    ConfluenceClient,
+    ConfluenceClientError,
+)
 from privacyfence.jira_client import JiraClient, JiraClientError  # noqa: E402
 from privacyfence.salesforce_client import SalesforceClient, SalesforceClientError  # noqa: E402
 from privacyfence.gmail_client import GmailClient, GmailClientError  # noqa: E402
@@ -411,18 +428,39 @@ class CheckResult:
         self.fixture_relpath = fixture_relpath
 
 
+# 1.9 (docs/automated-test-strategy-plan.md Phase 1 residual work): thresholds
+# a maintainer glancing at the printed/pasted report can act on without doing
+# the day-count arithmetic themselves. Deliberately just these two cutoffs,
+# matching the plan's own wording -- a third "critically stale" tier would be
+# more to tune for no reader benefit until one is actually needed.
+_FRESHNESS_WARNING_DAYS = 60
+_FRESHNESS_STALE_DAYS = 90
+
+
+def _freshness_status(age_days: float) -> str:
+    if age_days < _FRESHNESS_WARNING_DAYS:
+        return "healthy"
+    if age_days < _FRESHNESS_STALE_DAYS:
+        return "warning"
+    return "refresh required"
+
+
 def _fixture_freshness_lines(connectors: list[str]) -> list[str]:
     lines = []
     for connector in connectors:
         conn_dir = FIXTURES_DIR / connector
         if not conn_dir.exists() or not any(conn_dir.glob("*.json")):
-            lines.append(f"Fixture freshness: tests/fixtures/live/{connector}/ has no recorded fixtures yet.")
+            lines.append(
+                f"Fixture freshness: tests/fixtures/live/{connector}/ has no recorded fixtures yet. "
+                "[refresh required]"
+            )
             continue
         newest = max((f.stat().st_mtime for f in conn_dir.glob("*.json")), default=0)
         age_days = (datetime.datetime.now().timestamp() - newest) / 86400
         lines.append(
             f"Fixture freshness: tests/fixtures/live/{connector}/*.json last recorded "
-            f"{datetime.datetime.fromtimestamp(newest):%Y-%m-%d} ({age_days:.0f} days ago)."
+            f"{datetime.datetime.fromtimestamp(newest):%Y-%m-%d} ({age_days:.0f} days ago) "
+            f"[{_freshness_status(age_days)}]."
         )
     return lines
 
@@ -1371,6 +1409,302 @@ assert set(EXPECTED_FIXTURES) == set(CONNECTOR_CHECKS), (
 
 
 # ---------------------------------------------------------------------------- #
+# Bounded lifecycle tests (1.8, docs/automated-test-strategy-plan.md Phase 1
+# residual work) -- create a fresh, uniquely-tagged QA object, read it back,
+# update it, read it back again, then delete it and confirm the deletion
+# actually took. Unlike CONNECTOR_CHECKS above (which only ever reads a
+# durable, hand-created seed artifact), this proves two things neither
+# --check nor --record can: that a real provider still accepts this
+# codebase's own create_*/update_* calls as written, and that this scheduled
+# job cleans up after itself instead of quietly accumulating QA-account
+# clutter, run after run, forever.
+#
+# Scoped to only the connectors whose PrivacyFence client exposes a full
+# create/get/update triple *and* a safe way to remove what gets created:
+#   - calendar, confluence, jira, tasks
+# Deliberately excludes the rest of CONNECTOR_CHECKS's connectors, checked
+# against each *_client.py before writing this rather than assumed:
+#   - contacts -- ContactsClient.create_contact()'s own docstring says
+#     "Contact deletion is not supported." A lifecycle test that can't clean
+#     up after itself would permanently pollute the QA Google account, not
+#     just this one run -- worse than not testing it at all.
+#   - gmail -- create_draft() has no matching get_draft()/update_draft() in
+#     GmailClient, so there is no read/update step to exercise; creating and
+#     immediately deleting a draft is not the create/read/update/delete
+#     cycle this phase asks for.
+#   - drive, slack -- both have write methods (create_blank_file/
+#     write_sheet_values, send_message) but neither exposes the kind of
+#     update-in-place-then-read-it-back pair the four connectors above do.
+#     Left for a future extension of this section rather than forced into a
+#     shape that doesn't fit.
+#   - salesforce, telegram -- SalesforceClient and the QA Telegram flow are
+#     read-only from PrivacyFence's side (see CONNECTOR_CHECKS above); there
+#     is nothing to create in the first place.
+#
+# None of calendar_client.py/confluence_client.py/jira_client.py/
+# tasks_client.py expose a delete_*() method at all, and no connectors/*.py
+# registers a delete tool for any provider -- a deliberate product-safety
+# choice that nothing MCP-reachable ever deletes a user's real data (see
+# docs/automated-test-strategy-plan.md's own note on this). Cleanup here
+# reaches past that boundary on purpose, the same way RawCapture/
+# RawCaptureExecute above reach into each client's internal request/service
+# choke point: this script already runs with real QA-account credentials
+# nothing else in this codebase is trusted with, and only ever touches the
+# one object it just created itself this run (a fresh uuid4 suffix every
+# time, never a stored/durable id).
+# ---------------------------------------------------------------------------- #
+
+LIFECYCLE_TAG = "[QATEST-LIFECYCLE]"
+
+
+class LifecycleResult:
+    def __init__(self, connector: str, ok: bool, note: str, cleanup_ok: bool | None = None) -> None:
+        self.connector = connector
+        self.ok = ok
+        self.note = note
+        # None: nothing was ever created, so there was nothing to clean up
+        # (e.g. create_* itself failed, or the connector is unconfigured).
+        self.cleanup_ok = cleanup_ok
+
+
+def _attempt_delete(delete_fn: Callable[[], Any]) -> str:
+    """Runs ``delete_fn()``; returns "" on success or a note describing the
+    failure. A cleanup failure is itself the finding here, never masked by
+    a bare exception escaping and aborting the rest of the batch."""
+    try:
+        delete_fn()
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        return f"cleanup call failed: {exc}"
+    return ""
+
+
+def _confirm_deleted(refetch: Callable[[], Any], not_found_error: type[Exception]) -> tuple[bool, str]:
+    """True (with no note) if calling ``refetch`` now raises
+    ``not_found_error`` -- i.e. the object is actually gone, not just that
+    the delete call itself didn't raise."""
+    try:
+        refetch()
+    except not_found_error:
+        return True, ""
+    except Exception as exc:  # noqa: BLE001 - unexpected on refetch is itself worth reporting
+        return False, f"unexpected error confirming deletion: {exc}"
+    return False, "cleanup call succeeded but the object still exists afterward"
+
+
+def lifecycle_calendar(manifest: dict[str, Any]) -> LifecycleResult:
+    cfg = manifest.get("calendar") or {}
+    calendar_id = cfg.get("calendar_id", "primary")
+    client = _build_calendar_client()
+    suffix = uuid.uuid4().hex[:8]
+    title = f"{LIFECYCLE_TAG} calendar event {suffix}"
+    updated_title = f"{title} updated"
+    start = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+    end = start + datetime.timedelta(minutes=30)
+
+    event_id = ""
+    ok, note, cleanup_ok = False, "", None
+    try:
+        created = client.create_event(
+            calendar_id, title, start.isoformat(), end.isoformat(),
+            description=f"{LIFECYCLE_TAG} created by qa_fixture_recorder.py --lifecycle; safe to delete.",
+        )
+        event_id = created.id
+        if not event_id:
+            raise CalendarClientError("create_event returned no id")
+        fetched = client.get_event(calendar_id, event_id)
+        if fetched.title != title:
+            raise CalendarClientError(f"get_event after create returned title {fetched.title!r}, expected {title!r}")
+        updated = client.update_event(calendar_id, event_id, title=updated_title)
+        if updated.title != updated_title:
+            raise CalendarClientError(f"update_event did not persist the new title (got {updated.title!r})")
+        refetched = client.get_event(calendar_id, event_id)
+        if refetched.title != updated_title:
+            raise CalendarClientError("get_event after update did not reflect the new title")
+        ok, note = True, "create, get, update, get-after-update all verified"
+    except Exception as exc:  # noqa: BLE001 - an unexpected failure here is the finding itself
+        ok, note = False, str(exc)
+    finally:
+        if event_id:
+            delete_note = _attempt_delete(
+                lambda: client._get_service().events().delete(calendarId=calendar_id, eventId=event_id).execute()
+            )
+            if delete_note:
+                cleanup_ok, note = False, f"{note}; {delete_note}" if note else delete_note
+            else:
+                cleanup_ok, confirm_note = _confirm_deleted(
+                    lambda: client.get_event(calendar_id, event_id), CalendarClientError,
+                )
+                if confirm_note:
+                    note = f"{note}; {confirm_note}" if note else confirm_note
+    return LifecycleResult("calendar", ok, note, cleanup_ok)
+
+
+def lifecycle_confluence(manifest: dict[str, Any]) -> LifecycleResult:
+    cfg = manifest.get("confluence") or {}
+    space_key = cfg.get("space_key", "PFQA")
+    client = _build_confluence_client()
+    suffix = uuid.uuid4().hex[:8]
+    title = f"{LIFECYCLE_TAG} confluence page {suffix}"
+    updated_title = f"{title} updated"
+
+    page_id = ""
+    ok, note, cleanup_ok = False, "", None
+    try:
+        created = client.create_page(
+            space_key, title,
+            body=f"<p>{LIFECYCLE_TAG} created by qa_fixture_recorder.py --lifecycle; safe to delete.</p>",
+        )
+        page_id = created.id
+        if not page_id:
+            raise ConfluenceClientError("create_page returned no id")
+        fetched = client.get_page(page_id)
+        if fetched.title != title:
+            raise ConfluenceClientError(f"get_page after create returned title {fetched.title!r}, expected {title!r}")
+        updated = client.update_page(page_id, updated_title, fetched.body or f"<p>{LIFECYCLE_TAG} updated</p>")
+        if updated.title != updated_title:
+            raise ConfluenceClientError(f"update_page did not persist the new title (got {updated.title!r})")
+        refetched = client.get_page(page_id)
+        if refetched.title != updated_title:
+            raise ConfluenceClientError("get_page after update did not reflect the new title")
+        ok, note = True, "create, get, update, get-after-update all verified"
+    except Exception as exc:  # noqa: BLE001 - an unexpected failure here is the finding itself
+        ok, note = False, str(exc)
+    finally:
+        if page_id:
+            delete_note = _attempt_delete(
+                lambda: client._request(client._client.delete, f"{_V2_PAGES_PATH}/{page_id}")
+            )
+            if delete_note:
+                cleanup_ok, note = False, f"{note}; {delete_note}" if note else delete_note
+            else:
+                cleanup_ok, confirm_note = _confirm_deleted(
+                    lambda: client.get_page(page_id), ConfluenceClientError,
+                )
+                if confirm_note:
+                    note = f"{note}; {confirm_note}" if note else confirm_note
+    return LifecycleResult("confluence", ok, note, cleanup_ok)
+
+
+def lifecycle_jira(manifest: dict[str, Any]) -> LifecycleResult:
+    cfg = manifest.get("jira") or {}
+    project_key = cfg.get("project_key", "PFQA")
+    client = _build_jira_client()
+    suffix = uuid.uuid4().hex[:8]
+    summary = f"{LIFECYCLE_TAG} jira issue {suffix}"
+    updated_summary = f"{summary} updated"
+
+    issue_key = ""
+    ok, note, cleanup_ok = False, "", None
+    try:
+        created = client.create_issue(
+            project_key, summary,
+            description=f"{LIFECYCLE_TAG} created by qa_fixture_recorder.py --lifecycle; safe to delete.",
+        )
+        issue_key = created.key
+        if not issue_key:
+            raise JiraClientError("create_issue returned no key")
+        fetched = client.get_issue(issue_key)
+        if fetched.summary != summary:
+            raise JiraClientError(f"get_issue after create returned summary {fetched.summary!r}, expected {summary!r}")
+        updated = client.update_issue(issue_key, {"summary": updated_summary})
+        if updated.summary != updated_summary:
+            raise JiraClientError(f"update_issue did not persist the new summary (got {updated.summary!r})")
+        refetched = client.get_issue(issue_key)
+        if refetched.summary != updated_summary:
+            raise JiraClientError("get_issue after update did not reflect the new summary")
+        ok, note = True, "create, get, update, get-after-update all verified"
+    except Exception as exc:  # noqa: BLE001 - an unexpected failure here is the finding itself
+        ok, note = False, str(exc)
+    finally:
+        if issue_key:
+            delete_note = _attempt_delete(lambda: client._request(client._client.delete_issue, issue_key))
+            if delete_note:
+                cleanup_ok, note = False, f"{note}; {delete_note}" if note else delete_note
+            else:
+                cleanup_ok, confirm_note = _confirm_deleted(lambda: client.get_issue(issue_key), JiraClientError)
+                if confirm_note:
+                    note = f"{note}; {confirm_note}" if note else confirm_note
+    return LifecycleResult("jira", ok, note, cleanup_ok)
+
+
+def lifecycle_tasks(manifest: dict[str, Any]) -> LifecycleResult:
+    cfg = manifest.get("tasks") or {}
+    task_list_id = cfg.get("task_list_id", "")
+    if not task_list_id:
+        return LifecycleResult(
+            "tasks", False,
+            "tasks.task_list_id must be set in tests/fixtures/qa_environment.yaml -- "
+            "no default task list id is safe to assume",
+        )
+
+    client = _build_tasks_client()
+    suffix = uuid.uuid4().hex[:8]
+    title = f"{LIFECYCLE_TAG} task {suffix}"
+    updated_title = f"{title} updated"
+
+    task_id = ""
+    ok, note, cleanup_ok = False, "", None
+    try:
+        created = client.create_task(
+            task_list_id, title,
+            notes=f"{LIFECYCLE_TAG} created by qa_fixture_recorder.py --lifecycle; safe to delete.",
+        )
+        task_id = created.id
+        if not task_id:
+            raise TasksClientError("create_task returned no id")
+        fetched = client.get_task(task_list_id, task_id)
+        if fetched.title != title:
+            raise TasksClientError(f"get_task after create returned title {fetched.title!r}, expected {title!r}")
+        updated = client.update_task(task_list_id, task_id, title=updated_title)
+        if updated.title != updated_title:
+            raise TasksClientError(f"update_task did not persist the new title (got {updated.title!r})")
+        refetched = client.get_task(task_list_id, task_id)
+        if refetched.title != updated_title:
+            raise TasksClientError("get_task after update did not reflect the new title")
+        ok, note = True, "create, get, update, get-after-update all verified"
+    except Exception as exc:  # noqa: BLE001 - an unexpected failure here is the finding itself
+        ok, note = False, str(exc)
+    finally:
+        if task_id:
+            delete_note = _attempt_delete(
+                lambda: client._get_service().tasks().delete(tasklist=task_list_id, task=task_id).execute()
+            )
+            if delete_note:
+                cleanup_ok, note = False, f"{note}; {delete_note}" if note else delete_note
+            else:
+                cleanup_ok, confirm_note = _confirm_deleted(
+                    lambda: client.get_task(task_list_id, task_id), TasksClientError,
+                )
+                if confirm_note:
+                    note = f"{note}; {confirm_note}" if note else confirm_note
+    return LifecycleResult("tasks", ok, note, cleanup_ok)
+
+
+LIFECYCLE_CHECKS: dict[str, Callable[[dict[str, Any]], LifecycleResult]] = {
+    "calendar": lifecycle_calendar,
+    "confluence": lifecycle_confluence,
+    "jira": lifecycle_jira,
+    "tasks": lifecycle_tasks,
+}
+
+
+def render_lifecycle_report(results: list[LifecycleResult]) -> str:
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    lines = [
+        f"## PrivacyFence local QA lifecycle check — {now}", "",
+        "Command: `qa_fixture_recorder.py --lifecycle`", "",
+    ]
+    lines.append("| Connector | Result | Cleanup | Notes |")
+    lines.append("|---|---|---|---|")
+    for r in results:
+        mark = "✅ pass" if r.ok else "❌ fail"
+        cleanup_mark = "n/a" if r.cleanup_ok is None else ("✅ removed" if r.cleanup_ok else "❌ NOT removed")
+        lines.append(f"| {r.connector} | {mark} | {cleanup_mark} | {r.note} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------- #
 # CLI
 # ---------------------------------------------------------------------------- #
 
@@ -1405,15 +1739,56 @@ def run(mode: str, connectors: list[str], report_file: str | None) -> int:
     return 0 if all(r.ok for r in all_results) else 1
 
 
+def run_lifecycle(connectors: list[str], report_file: str | None) -> int:
+    manifest = load_manifest()
+    requested = connectors or sorted(LIFECYCLE_CHECKS)
+
+    results: list[LifecycleResult] = []
+    for name in requested:
+        check_fn = LIFECYCLE_CHECKS.get(name)
+        if check_fn is None:
+            print(
+                f"'{name}' has no lifecycle check implemented -- choices are: "
+                f"{', '.join(sorted(LIFECYCLE_CHECKS))} (see the comment above LIFECYCLE_CHECKS "
+                "for why the rest of CONNECTOR_CHECKS's connectors aren't here).",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            results.append(check_fn(manifest))
+        except Exception as exc:  # noqa: BLE001 - one connector's unexpected failure
+                                    # must never abort the rest of this batch
+            results.append(LifecycleResult(name, False, f"unexpected error: {exc}"))
+
+    report = render_lifecycle_report(results)
+    print(report)
+    if report_file:
+        Path(report_file).write_text(report + "\n", encoding="utf-8")
+
+    # A cleanup that ran but didn't actually remove the object is a failure
+    # even when the create/read/update sequence itself passed -- an orphaned
+    # QA object left behind by this job is exactly what 1.8 exists to catch.
+    return 0 if all(r.ok and r.cleanup_ok is not False for r in results) else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument("--check", action="store_true", help="Smoke-check only; never writes a fixture.")
     mode_group.add_argument("--record", action="store_true", help="Check and (re-)record fixtures.")
-    parser.add_argument("connectors", nargs="*", help="Connector name(s), e.g. confluence. Default: all implemented.")
+    mode_group.add_argument(
+        "--lifecycle", action="store_true",
+        help="Create/read/update/delete a fresh QA object per write-capable connector; never writes a fixture.",
+    )
+    parser.add_argument(
+        "connectors", nargs="*",
+        help="Connector name(s), e.g. confluence. Default: all implemented for the selected mode.",
+    )
     parser.add_argument("--report-file", help="Also save the printed report to this path.")
     args = parser.parse_args()
 
+    if args.lifecycle:
+        return run_lifecycle(args.connectors, args.report_file)
     mode = "record" if args.record else "check"
     return run(mode, args.connectors, args.report_file)
 
