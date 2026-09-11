@@ -363,6 +363,11 @@ Real failure modes hit standing this up, in the order they tend to surface:
   the refresh token itself may have been revoked; re-run the Atlassian OAuth step and refresh
   `org_config.json` on the runner. Either way this is an account/credential issue, not something to
   fix in the workflow.
+- **`--lifecycle`'s Confluence row reports `cleanup call failed: Unauthorized (401)`** while create/
+  get/update all pass — the QA account's stored Atlassian token predates the `delete:page:confluence`
+  scope (`atlassian_oauth.DEFAULT_SCOPES`), added specifically so this cleanup step can remove the
+  page it just created. Re-run the Atlassian OAuth step for the QA account (Phase A.3/B.3) to pick up
+  a token that has it; see `docs/atlassian-setup.md`'s matching troubleshooting entry.
 
 ---
 

@@ -1477,6 +1477,7 @@ class TestLifecycleCalendar:
         fake = _FakeCalendarClient()
         fake.delete_leaves_it = True
         monkeypatch.setattr(recorder, "_build_calendar_client", lambda: fake)
+        monkeypatch.setattr(recorder.time, "sleep", lambda seconds: None)
 
         result = recorder.lifecycle_calendar(manifest={})
 
@@ -1796,6 +1797,7 @@ class TestLifecycleTasks:
         fake = _FakeTasksClient()
         fake.delete_leaves_it = True
         monkeypatch.setattr(recorder, "_build_tasks_client", lambda: fake)
+        monkeypatch.setattr(recorder.time, "sleep", lambda seconds: None)
 
         result = recorder.lifecycle_tasks(manifest={"tasks": {"task_list_id": "list1"}})
 
@@ -1853,6 +1855,53 @@ class TestConfirmDeleted:
         assert not ok
         assert "unexpected error" in note
         assert "network blip" in note
+
+    def test_default_is_a_single_attempt_with_no_sleep(self):
+        sleeps: list[float] = []
+
+        ok, note = recorder._confirm_deleted(
+            lambda: SimpleNamespace(id="x"), recorder.CalendarClientError, sleep=sleeps.append,
+        )
+
+        assert not ok
+        assert "still exists" in note
+        assert sleeps == []
+
+    def test_retries_until_the_object_is_confirmed_gone(self):
+        # Simulates eventual consistency: the object is still visible on the
+        # first two refetches, then genuinely gone by the third.
+        calls = {"n": 0}
+        sleeps: list[float] = []
+
+        def _refetch():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                return SimpleNamespace(id="x")
+            raise recorder.CalendarClientError("not found")
+
+        ok, note = recorder._confirm_deleted(
+            _refetch, recorder.CalendarClientError,
+            attempts=5, delay_seconds=2.0, sleep=sleeps.append,
+        )
+
+        assert ok
+        assert note == ""
+        assert calls["n"] == 3
+        # Slept between attempts 1->2 and 2->3, but not after the confirming attempt.
+        assert sleeps == [2.0, 2.0]
+
+    def test_gives_up_after_exhausting_all_attempts(self):
+        sleeps: list[float] = []
+
+        ok, note = recorder._confirm_deleted(
+            lambda: SimpleNamespace(id="x"), recorder.CalendarClientError,
+            attempts=3, delay_seconds=1.0, sleep=sleeps.append,
+        )
+
+        assert not ok
+        assert "still exists" in note
+        # Slept between attempts, but not a fourth time after the last one.
+        assert sleeps == [1.0, 1.0]
 
 
 class TestRenderLifecycleReport:

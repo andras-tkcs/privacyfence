@@ -59,6 +59,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -1456,6 +1457,18 @@ assert set(EXPECTED_FIXTURES) == set(CONNECTOR_CHECKS), (
 
 LIFECYCLE_TAG = "[QATEST-LIFECYCLE]"
 
+# Google's Calendar and Tasks APIs are eventually, not immediately, consistent
+# on delete: a delete call can return success while a get issued right after
+# still returns the object for a few seconds. lifecycle_calendar/
+# lifecycle_tasks pass these to _confirm_deleted so a real (permanent) "not
+# actually removed" finding isn't confused with that ordinary propagation
+# delay. Jira and Confluence don't get this treatment: Jira has shown no such
+# delay here, and Confluence's own lifecycle failure mode seen so far
+# (missing delete:page:confluence scope -> 401 on the delete call itself,
+# never reaching _confirm_deleted) wouldn't be fixed by retrying anyway.
+_EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS = 4
+_EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS = 1.0
+
 
 class LifecycleResult:
     def __init__(self, connector: str, ok: bool, note: str, cleanup_ok: bool | None = None) -> None:
@@ -1478,16 +1491,35 @@ def _attempt_delete(delete_fn: Callable[[], Any]) -> str:
     return ""
 
 
-def _confirm_deleted(refetch: Callable[[], Any], not_found_error: type[Exception]) -> tuple[bool, str]:
+def _confirm_deleted(
+    refetch: Callable[[], Any],
+    not_found_error: type[Exception],
+    *,
+    attempts: int = 1,
+    delay_seconds: float = 0.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[bool, str]:
     """True (with no note) if calling ``refetch`` now raises
     ``not_found_error`` -- i.e. the object is actually gone, not just that
-    the delete call itself didn't raise."""
-    try:
-        refetch()
-    except not_found_error:
-        return True, ""
-    except Exception as exc:  # noqa: BLE001 - unexpected on refetch is itself worth reporting
-        return False, f"unexpected error confirming deletion: {exc}"
+    the delete call itself didn't raise.
+
+    ``attempts`` > 1 retries (waiting ``delay_seconds`` between tries) before
+    giving up -- for providers whose delete is eventually rather than
+    immediately consistent, where an immediate refetch can still return the
+    object even though the delete call itself already succeeded. Callers for
+    a provider known to be immediately consistent (e.g. Jira) should leave
+    this at the default of one attempt: retrying there would only mask a
+    real cleanup failure behind a few seconds of pointless waiting.
+    """
+    for attempt in range(attempts):
+        try:
+            refetch()
+        except not_found_error:
+            return True, ""
+        except Exception as exc:  # noqa: BLE001 - unexpected on refetch is itself worth reporting
+            return False, f"unexpected error confirming deletion: {exc}"
+        if attempt < attempts - 1:
+            sleep(delay_seconds)
     return False, "cleanup call succeeded but the object still exists afterward"
 
 
@@ -1533,6 +1565,8 @@ def lifecycle_calendar(manifest: dict[str, Any]) -> LifecycleResult:
             else:
                 cleanup_ok, confirm_note = _confirm_deleted(
                     lambda: client.get_event(calendar_id, event_id), CalendarClientError,
+                    attempts=_EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS,
+                    delay_seconds=_EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS,
                 )
                 if confirm_note:
                     note = f"{note}; {confirm_note}" if note else confirm_note
@@ -1674,6 +1708,8 @@ def lifecycle_tasks(manifest: dict[str, Any]) -> LifecycleResult:
             else:
                 cleanup_ok, confirm_note = _confirm_deleted(
                     lambda: client.get_task(task_list_id, task_id), TasksClientError,
+                    attempts=_EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS,
+                    delay_seconds=_EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS,
                 )
                 if confirm_note:
                     note = f"{note}; {confirm_note}" if note else confirm_note
