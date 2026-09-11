@@ -743,6 +743,42 @@ Most CI failures are diagnosable without local reproduction.
 
 ---
 
+## Phase 11 — Retire the platform-specific plan docs
+
+### Objective
+
+Return to one active plan doc under `docs/`, as this document's own docs-audit pass intended
+before `windows-support-plan.md`, `windows-linux-support-plan.md`,
+`linux-local-deb-packaging-plan.md`, and `manual-pre-release-test-plan.md` all had to be restored
+because they still tracked open work `main` had landed against them.
+
+### Already in this repo
+
+Every open item in those four documents is already tracked above, owned by the phase that covers
+it: `windows-support-plan.md`'s remaining phases and its Phase 6.3 open path-handling finding under
+Phase 2/Phase 6 above; `windows-linux-support-plan.md`'s Track B3 (the accepted POSIX
+file-permission gap) referenced from Phase 2.1 and Phase 6; `linux-local-deb-packaging-plan.md`'s
+P7.2/P7.3 under Phase 7/Phase 6.3; `manual-pre-release-test-plan.md` under Phase 9's reduction.
+This phase adds no new scope — it is bookkeeping once that scope is closed.
+
+### Remaining work
+
+1. Confirm every open item in `windows-support-plan.md`, `windows-linux-support-plan.md`,
+   `linux-local-deb-packaging-plan.md`, and `manual-pre-release-test-plan.md` has actually landed —
+   i.e. Phases 2, 6, 7, and 9 above are done, not just summarized as done here.
+2. Delete all four files from `docs/`.
+3. Update `docs/README.md`'s doc index and "active implementation plans" note to drop the four
+   retired entries, leaving `automated-test-strategy-plan.md` as the only plan doc again.
+4. Remove this document's own cross-references to the four retired documents (the "Already in this
+   repo" paragraph above, and any other mention elsewhere in this file) once they're gone, so
+   nothing here links to a deleted file.
+
+### Exit criteria
+
+`docs/` contains exactly one `*plan*.md`: this document.
+
+---
+
 ## Revised sequencing
 
 ```
@@ -773,10 +809,15 @@ Phase 8  Org-mode system CI                                       (mostly an aud
 Phase 9  Retire obsolete manual QA
    ↓
 Phase 10 Observability and maintenance polish
+   ↓
+Phase 11 Retire the platform-specific plan docs                  (bookkeeping only, once Phases 2,
+                                                                    6, 7, and 9 above are actually
+                                                                    done — last step in this plan)
 ```
 
 Phases 4 and 5 may proceed in parallel once Phase 3 is stable, as in the source strategy. Phase 7
-stays last for the same infrastructure-cost reason the source strategy gives.
+stays last for the same infrastructure-cost reason the source strategy gives. Phase 11 stays last
+of all: it only deletes docs once every phase above it has actually shipped.
 
 ## Suggested PR boundaries
 
@@ -815,6 +856,9 @@ plan's grounding pass found the work already done, and a note on which remain ge
 23. Org-mode system test audit/extension — likely small (Phase 8)
 24. Manual QA documentation reduction (Phase 9)
 25. CI diagnostic/observability polish (Phase 10)
+26. Retire `windows-support-plan.md`, `windows-linux-support-plan.md`,
+    `linux-local-deb-packaging-plan.md`, and `manual-pre-release-test-plan.md` once 12–24 above are
+    actually done (Phase 11) — last PR in this plan, bookkeeping only
 
 Each PR should leave the repository green.
 
@@ -849,3 +893,7 @@ combination.
 - Routine manual release validation takes minutes, not hours (Phase 9).
 - PrivacyFence can be confidently released without owning physical Windows, Linux, or macOS
   development machines.
+- `docs/` contains exactly one `*plan*.md` — this document — with `windows-support-plan.md`,
+  `windows-linux-support-plan.md`, `linux-local-deb-packaging-plan.md`, and
+  `manual-pre-release-test-plan.md` retired once the work they track has actually shipped
+  (Phase 11, last).
