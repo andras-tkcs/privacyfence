@@ -32,18 +32,32 @@ that's real but relatively heavy machinery this module doesn't need, since
 all it has to prove is that the entry point behaves correctly as a process,
 not that installation itself works. Instead, the spawned process's own
 bootstrap (a `-c` script, not `-m`, so it runs *before*
-``privacyfence.daemon_main`` is imported) sets ``sys.frozen``/
-``sys._MEIPASS`` -- the same two attributes ``paths.is_bundled()`` checks --
-which flips ``data_dir()`` onto its ``Path.home() / ".privacyfence"``
-branch, same as a real packaged .app. Pointing ``$HOME``/``%USERPROFILE%``
-(both -- ``Path.home()`` reads different env vars per platform, see
-docs/windows-support-plan.md 6.3's own "set both" fix for exactly this) at
-a fresh ``tmp_path`` then sandboxes everything the daemon touches.
+``privacyfence.daemon_main`` is imported) monkeypatches
+``privacyfence.paths.data_dir`` directly to a fixed, already-sandboxed
+directory -- the same technique every in-process test in this repo already
+uses (``monkeypatch.setattr(paths, "data_dir", ...)``), just applied before
+importing ``daemon_main`` rather than through pytest's fixture, since
+``daemon_main.py`` binds its own ``PROJECT_ROOT = str(data_dir())`` (and the
+``from .paths import data_dir`` name every function in that module then
+calls) once, at import time.
+
+An earlier version of this bootstrap instead faked ``sys.frozen``/
+``sys._MEIPASS`` (the two attributes ``paths.is_bundled()`` checks) to flip
+``data_dir()`` onto its real ``Path.home() / ".privacyfence"`` branch, the
+same branch a genuine packaged ``.app``/installer takes. That broke real
+Windows CI: `pywin32`'s own ``pywintypes.py`` special-cases ``sys.frozen``
+to mean "this is a real PyInstaller freeze with `pywintypes` bundled
+alongside it," and raises ``ImportError: Module 'pywintypes' isn't in
+frozen sys.path`` the moment anything imports it (here, transitively, via
+``mcp.os.win32.utilities`` -- a real dependency of the daemon's own web
+server module) in a process that set ``sys.frozen`` without actually being
+a PyInstaller bundle. Patching ``paths.data_dir`` directly sidesteps that
+entirely -- it never touches ``sys.frozen``, so nothing downstream
+mistakes this test process for a real frozen build.
 """
 from __future__ import annotations
 
 import contextlib
-import os
 import socket
 import subprocess
 import sys
@@ -60,11 +74,19 @@ pytestmark = pytest.mark.platform
 
 # Runs *before* `from privacyfence import daemon_main` -- daemon_main.py
 # computes PROJECT_ROOT (== data_dir()) as a module-level constant at
-# import time, so is_bundled() must already read True by then.
+# import time (`from .paths import data_dir` there copies whatever
+# `paths.data_dir` is bound to at that moment), so the patch below must
+# land first. sys.argv[1] is the sandbox directory to use -- see this
+# module's own docstring for why this doesn't fake sys.frozen instead.
 _BOOTSTRAP = """
 import sys
-sys.frozen = True
-sys._MEIPASS = "platform-test-bundle"
+from pathlib import Path
+
+from privacyfence import paths
+
+home = Path(sys.argv[1])
+paths.data_dir = lambda: paths.secure_mkdir(home)
+
 from privacyfence import daemon_main
 sys.exit(daemon_main.main([]))
 """
@@ -81,34 +103,31 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _prepare_home(tmp_path: Path, *, port: int) -> Path:
-    """A fresh $HOME with a pre-seeded settings.yaml -- a real free port
-    (see ``_free_port()`` above) and update_check disabled (this tier makes
-    no real outbound network calls, even ones the daemon itself treats as
-    best-effort/silent-on-failure -- see settings.yaml.example's own
-    update_check comment)."""
-    home = tmp_path / "home"
-    home.mkdir()
+def _prepare_sandbox(tmp_path: Path, *, port: int) -> Path:
+    """A fresh sandbox directory (what ``paths.data_dir()`` resolves to in
+    the spawned process -- see ``_BOOTSTRAP`` above) with a pre-seeded
+    settings.yaml -- a real free port (see ``_free_port()`` above) and
+    update_check disabled (this tier makes no real outbound network calls,
+    even ones the daemon itself treats as best-effort/silent-on-failure --
+    see settings.yaml.example's own update_check comment)."""
+    sandbox = tmp_path / "sandbox"
     example = Path(privacyfence.__file__).parent / "resources" / "settings.yaml.example"
     config = yaml.safe_load(example.read_text(encoding="utf-8"))
     config["web"]["port"] = port
     config["update_check"]["enabled"] = False
-    config_dir = home / ".privacyfence" / "config"
+    config_dir = sandbox / "config"
     config_dir.mkdir(parents=True)
     (config_dir / "settings.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
-    return home
+    return sandbox
 
 
 @contextlib.contextmanager
-def _daemon(home: Path):
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    env["USERPROFILE"] = str(home)  # Path.home() on Windows reads this, not $HOME
-    log_path = home / "daemon.log"
+def _daemon(sandbox: Path):
+    log_path = sandbox.parent / "daemon.log"
     with open(log_path, "wb") as log_fh:
         proc = subprocess.Popen(
-            [sys.executable, "-c", _BOOTSTRAP],
-            env=env, cwd=str(home), stdout=log_fh, stderr=subprocess.STDOUT,
+            [sys.executable, "-c", _BOOTSTRAP, str(sandbox)],
+            cwd=str(sandbox), stdout=log_fh, stderr=subprocess.STDOUT,
         )
         try:
             yield proc, log_path
@@ -122,8 +141,8 @@ def _daemon(home: Path):
                     proc.wait(timeout=5)
 
 
-def _wait_for_mcp_url(proc: subprocess.Popen, home: Path, log_path: Path, timeout: float = 20.0) -> str:
-    mcp_url_file = home / ".privacyfence" / "mcp_url"
+def _wait_for_mcp_url(proc: subprocess.Popen, sandbox: Path, log_path: Path, timeout: float = 20.0) -> str:
+    mcp_url_file = sandbox / "mcp_url"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc.poll() is not None:
@@ -165,9 +184,9 @@ def _wait_until_connectable(host: str, port: int, timeout: float = 10.0) -> None
 
 def test_daemon_starts_as_a_real_process_and_is_discoverable_via_mcp_url(tmp_path):
     port = _free_port()
-    home = _prepare_home(tmp_path, port=port)
-    with _daemon(home) as (proc, log_path):
-        mcp_url = _wait_for_mcp_url(proc, home, log_path)
+    sandbox = _prepare_sandbox(tmp_path, port=port)
+    with _daemon(sandbox) as (proc, log_path):
+        mcp_url = _wait_for_mcp_url(proc, sandbox, log_path)
 
         parsed = urlparse(mcp_url)
         assert parsed.scheme == "http"
@@ -184,15 +203,14 @@ def test_daemon_starts_as_a_real_process_and_is_discoverable_via_mcp_url(tmp_pat
         # raised inside _wait_for_mcp_url above.
         assert proc.poll() is None
 
-        lock_file = home / ".privacyfence" / "privacyfence.lock"
-        assert lock_file.exists()
+        assert (sandbox / "privacyfence.lock").exists()
 
 
 def test_terminate_frees_the_port_and_lock_for_a_fresh_instance(tmp_path):
     port = _free_port()
-    home = _prepare_home(tmp_path, port=port)
-    with _daemon(home) as (proc, log_path):
-        _wait_for_mcp_url(proc, home, log_path)
+    sandbox = _prepare_sandbox(tmp_path, port=port)
+    with _daemon(sandbox) as (proc, log_path):
+        _wait_for_mcp_url(proc, sandbox, log_path)
 
         proc.terminate()
         exit_code = proc.wait(timeout=15)
@@ -201,11 +219,11 @@ def test_terminate_frees_the_port_and_lock_for_a_fresh_instance(tmp_path):
     # No lingering listener from the dead process.
     assert not _can_connect("127.0.0.1", port)
 
-    # A second instance against the same $HOME starts cleanly right after --
-    # proves the instance lock (daemon_main._acquire_instance_lock) and any
-    # state the first process left behind don't wedge the next launch, the
-    # same property a real crash-and-restart depends on.
-    with _daemon(home) as (proc2, log_path2):
-        second_mcp_url = _wait_for_mcp_url(proc2, home, log_path2)
+    # A second instance against the same sandbox starts cleanly right after
+    # -- proves the instance lock (daemon_main._acquire_instance_lock) and
+    # any state the first process left behind don't wedge the next launch,
+    # the same property a real crash-and-restart depends on.
+    with _daemon(sandbox) as (proc2, log_path2):
+        second_mcp_url = _wait_for_mcp_url(proc2, sandbox, log_path2)
         assert urlparse(second_mcp_url).port == port
         _wait_until_connectable("127.0.0.1", port)
