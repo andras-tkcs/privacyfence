@@ -29,6 +29,21 @@ env:
   # ephemeral and rebuilt every run (see the two steps below): only this
   # directory needs to survive between runs.
   QA_SECRETS_DIR: ~/privacyfence
+  # Telegram's api_id/api_hash are NOT a per-account credential like the
+  # other four connectors' OAuth grants -- they're a single, shared app
+  # identity, the same for every user and every phone number, already
+  # baked into every distributed PrivacyFence release build (see
+  # app_credentials.py, docs/telegram-setup.md). This repo already
+  # stores them as the TELEGRAM_API_ID/TELEGRAM_API_HASH secrets
+  # build.yml uses on GitHub-hosted runners for exactly that -- reusing
+  # them here doesn't touch the "never provision a connector credential
+  # to GitHub Actions" policy at all, since that policy is specifically
+  # about the four real per-account OAuth grants. The actual per-account
+  # Telegram credential (the session file from --telegram-setup,
+  # credentials/telegram.session) still lives only in QA_SECRETS_DIR
+  # like the others -- this only supplies the app-level id/hash pair.
+  PRIVACYFENCE_TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+  PRIVACYFENCE_TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
 
 jobs:
   live-check:

@@ -223,6 +223,20 @@ Actions secrets, never transmitted to GitHub at all. `tests/fixtures/qa_environm
 alongside them for a different reason (see below) — it isn't a credential, but it's still
 runner-local state that has to survive an ephemeral, every-run-wiped checkout.
 
+**Telegram is the one exception, and deliberately so.** Its `api_id`/`api_hash` aren't a per-account
+credential like the other connectors' OAuth grants — they're a single shared *app* identity, the
+same for every user, already baked into every distributed PrivacyFence release build (see
+`app_credentials.py`, `docs/telegram-setup.md`). This repo already stores them as the
+`TELEGRAM_API_ID`/`TELEGRAM_API_HASH` GitHub Actions secrets `build.yml` uses on GitHub-hosted
+runners for exactly that, and `connector-live-check.yml` reuses those same secrets (mapped to the
+`PRIVACYFENCE_TELEGRAM_API_ID`/`PRIVACYFENCE_TELEGRAM_API_HASH` env vars `app_credentials.py`
+reads) rather than requiring a runner-local copy — this doesn't touch the "never provision a
+connector credential to GitHub Actions" policy, since that policy is about the four real
+per-account OAuth grants specifically. What *does* still need to live in `QA_SECRETS_DIR` is
+Telegram's actual per-account piece: the session file `--telegram-setup` produces
+(`credentials/telegram.session`), from signing in with your own phone number — that's a real
+credential, same category as the other four.
+
 The workflow (see `.github/workflows/connector-live-check.yml`'s `QA_SECRETS_DIR`) expects exactly
 this layout at `~/privacyfence` (i.e. `/home/pf-runner/privacyfence` for the `pf-runner` user):
 
@@ -236,8 +250,11 @@ this layout at `~/privacyfence` (i.e. `/home/pf-runner/privacyfence` for the `pf
 │   ├── tasks_token.json
 │   ├── apps_script_token.json
 │   ├── atlassian_token.json    # shared by Jira + Confluence
-│   └── slack_token.json
-│       # (no salesforce/telegram token file yet as of this writing -- see A.5)
+│   ├── slack_token.json
+│   ├── salesforce_token.json
+│   └── telegram.session    # from --telegram-setup against your own phone number -- the
+│                            # api_id/api_hash themselves come from GitHub secrets instead,
+│                            # see above
 ├── org/
 │   └── org_config.json     # the merged org_config.qa.json from Phase A, installed under its
 │                            # real filename -- see paths.py's org_dir() for why it must be
@@ -263,11 +280,14 @@ workflow file); only this runner-local state needs to survive between runs, so o
 5. **Do not** add any of these as GitHub Actions **secrets**. If a future maintainer is tempted to
    "just add it as a repo secret for convenience," that reintroduces exactly the exposure this
    design avoids — GitHub-hosted runners (including any other workflow with access to that secret)
-   would then be able to read it. The runner-local file is the whole point.
+   would then be able to read it. The runner-local file is the whole point. (This deliberately
+   doesn't apply to Telegram's `api_id`/`api_hash` — see above.)
 6. Set a recurring calendar reminder (quarterly) to rotate every credential — re-authenticate each
    connector, replace the token files on the VM, and revoke the old OAuth grant in each provider's
    console (Google Cloud Console → OAuth consent screen; Slack app → OAuth & Permissions → Revoke;
-   Atlassian → account → Connected apps; Salesforce → Setup → Connected Apps OAuth Usage).
+   Atlassian → account → Connected apps; Salesforce → Setup → Connected Apps OAuth Usage; Telegram →
+   re-run `--telegram-setup` for a fresh session, no separate revoke step since it's phone/code
+   based, not OAuth).
 
 ### B.4 What this design does and doesn't protect against
 
@@ -325,6 +345,24 @@ Real failure modes hit standing this up, in the order they tend to surface:
   copies a real manifest in from `QA_SECRETS_DIR` once one exists (Phase B.3.3) — fill in
   `tests/fixtures/qa_environment.yaml` (Phase A.5) and place it there; there's nothing to fix in the
   workflow itself for this one.
+- **`Telegram app credentials not available in this build.`** — the workflow already supplies
+  `PRIVACYFENCE_TELEGRAM_API_ID`/`PRIVACYFENCE_TELEGRAM_API_HASH` from the repo's existing
+  `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` secrets (see the app-identity note above), so this shouldn't
+  recur once that's in place. If it does: confirm those two repo secrets actually exist (Settings →
+  Secrets and variables → Actions) — they're the same ones `build.yml` needs for release packaging,
+  so a repo that's never cut a release might genuinely be missing them (register a Telegram app per
+  `docs/telegram-setup.md` "For maintainers" if so). A **different** error naming
+  `credentials/telegram.session` instead means the app-level id/hash resolved fine but the
+  per-account session file (from `--telegram-setup`) isn't in `QA_SECRETS_DIR` yet — that one really
+  is a `QA_SECRETS_DIR`/Phase B.3 gap, not this one.
+- **`Atlassian token refresh failed: 403 Client Error: Forbidden`** (Jira and/or Confluence) — a
+  `403` specifically on the token endpoint (as opposed to a `400`/`invalid_grant`) usually means the
+  OAuth app's client id/secret in `org_config.json` no longer matches what's registered at
+  [developer.atlassian.com/console/myapps/](https://developer.atlassian.com/console/myapps/), or the
+  app registration itself was deleted/deactivated — check there first. If the app still looks fine,
+  the refresh token itself may have been revoked; re-run the Atlassian OAuth step and refresh
+  `org_config.json` on the runner. Either way this is an account/credential issue, not something to
+  fix in the workflow.
 
 ---
 
