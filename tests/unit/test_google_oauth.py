@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import json
 import stat
+import sys
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from privacyfence import google_oauth
 
@@ -116,6 +119,9 @@ class TestExchangeCode:
 
 
 class TestSaveCredentials:
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_writes_to_json_output_with_restricted_permissions(self, tmp_path):
         creds = MagicMock()
         creds.to_json.return_value = json.dumps({"token": "at-1", "refresh_token": "rt-1"})

@@ -328,10 +328,9 @@ Prove the runtime works on Ubuntu, Windows, and macOS without tripling the full 
   coverage + coverage floor, `npm test`, `npm run typecheck`) plus `static-analysis` (`ruff`,
   informational `mypy`/`bandit`) on every PR — this is already the "Ubuntu stays comprehensive"
   half of the key decision.
-- `test-windows` already exists in `tests.yml`, running the full pytest suite with coverage on
-  `windows-latest` — but gated `if: github.event_name == 'workflow_dispatch'`, i.e. it is **not**
-  yet a permanent per-PR check. Its own comment already frames promoting it to permanent as a
-  pending decision.
+- `platform-windows` (renamed from `test-windows` by 2.1 below) runs the full pytest suite with
+  coverage on `windows-latest`, on every PR — no longer gated to `workflow_dispatch` only. Its
+  comment trail now records that promotion decision instead of merely flagging it as pending.
 - A `test-python-compat` job (3.11/3.12 matrix, reduced suite, `ubuntu-latest` only) already exists
   — Python-version compatibility is already Linux-only, matching §2.4's target.
 - No `platform-macos` job exists. `build.yml` runs on `macos-latest`, but that job builds and signs
@@ -339,12 +338,31 @@ Prove the runtime works on Ubuntu, Windows, and macOS without tripling the full 
   every PR.
 - No `tests/platform/` directory or `platform` pytest marker exists yet.
 
-### 2.1 Promote Windows CI
+### 2.1 Promote Windows CI — done
 
-Change `test-windows`'s trigger from `workflow_dispatch`-only to running on every PR (or narrow it
-to a `platform`-marked subset per 2.3 below, rather than the full suite, once that subset exists —
-whichever lands first). Rename the job `platform-windows` for clarity, keeping the existing
-Windows-specific comment trail intact.
+`tests.yml`'s Windows job now runs on every PR instead of `workflow_dispatch`-only, and is renamed
+`platform-windows` for clarity (the existing Windows-specific comment trail was kept, extended
+in place with the promotion decision rather than replaced). It still runs the full core suite
+rather than a `platform`-marked subset: Phase 2.3's `tests/platform/` directory and `platform`
+marker don't exist yet, and 2.1 always said to narrow later once that subset lands rather than
+block promotion on it — so the full-suite version landed first. `windows-support-plan.md`'s own
+Phase 6.2 (the item that originally left "permanent leg vs. release-time-only" as an open decision)
+is updated to record that this is the decision made.
+
+Turning this job on for real (rather than the `workflow_dispatch`-only leg it had been, which had
+in fact never actually been dispatched and passed) surfaced 55 test failures + 1 error on the very
+first run — exactly the kind of gap a full-suite promotion exists to find, not a regression from
+this change's own (CI-config-only) diff. Four were genuine, narrow, cross-platform-safe bugs and
+are fixed (a POSIX-only `strftime` directive, a `mimetypes.guess_type()` call whose result for a
+handful of known extensions shouldn't depend on the Windows registry, a bare `"npm"` passed to
+`subprocess.run()` instead of its resolved `npm.cmd` path, and a test that only set `$HOME` instead
+of also `$USERPROFILE`). The rest split into two buckets, both left red-skipped rather than papered
+over: the already-known-and-accepted POSIX file-permission gap (`windows-linux-support-plan.md`
+Track B3), and a new finding — POSIX-style path strings (`"credentials/telegram.session"`,
+a `"/tmp"` destination_dir) colliding with `ntpath`'s `os.path.join()`/`os.path.isabs()`, which in
+one case (`daemon_main._resolve_path`) silently resolves to a different on-disk location entirely
+on Python 3.13/Windows, not just a cosmetic separator mismatch. See `windows-support-plan.md`
+Phase 6.3 for the full breakdown and the design question the path finding raises.
 
 ### 2.2 Add macOS platform CI
 
@@ -734,8 +752,9 @@ Phase 0  Taxonomy / doc foundation                               (DONE — testi
 Phase 1  Live connector CI + Security Remediation 3.12 closure   (DONE — PR #283/#278/#284;
    ↓                                                               1.8/1.9 also done as a follow-up;
    ↓                                                               Apps Script fixture still open)
-Phase 2  Cross-platform core CI                                  (promote existing Windows job;
-   ↓                                                               add new macOS job)
+Phase 2  Cross-platform core CI                                  (2.1 DONE — Windows job promoted/
+   ↓                                                               renamed; 2.2-2.4 remaining: add
+   ↓                                                               new macOS job, targeted suite)
 Phase 3  Canonical cross-platform system test                    (new module, reuses existing
    ↓                                                               daemon/MCP test patterns)
 Phase 4  Browser/UI automation                                   (extend existing test_browser_
@@ -780,7 +799,7 @@ plan's grounding pass found the work already done, and a note on which remain ge
     residual work, items 1.8/1.9). Apps Script fixture coverage itself is not — blocked on a live QA
     Apps Script project to record against, and folded into whichever future PR sets that up rather
     than staying its own tracked row.
-11. Windows permanent portability CI — rename/promote only, small PR (Phase 2.1)
+11. ~~Windows permanent portability CI~~ — **done** (Phase 2.1), rename/promote only
 12. macOS portability CI — new job (Phase 2.2–2.3)
 13. Cross-platform daemon/MCP/approval/audit test — new module, reuses existing patterns (Phase 3)
 14. Browser approval-flow coverage gaps: "Always allow," multi-card, idempotency (Phase 4.1)

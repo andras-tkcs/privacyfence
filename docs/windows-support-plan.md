@@ -154,15 +154,68 @@ one platform of the three with strictly weaker autostart behavior.
       `build_installer.ps1` and Phase 5's signing, uploading the signed installer `.exe` to the same
       GitHub Release the macOS (and, once shipped, Linux `.deb`) jobs attach to — one release, three
       platform assets.
-- [ ] **6.2** Add a one-time (not permanent, unless it proves cheap and worth keeping) `windows-latest`
-      run of `pytest -v --cov=src/privacyfence --cov-report=term-missing` right after Phase 1 lands,
-      as a real-Windows confirmation that nothing path-separator- or `Path`-handling-related breaks
-      that Linux CI's existing full-suite run (already proven platform-independent, per
-      `windows-linux-support-plan.md`) can't catch. If it passes cleanly, a decision to make then:
-      keep it as a permanent `tests.yml` leg (small ongoing CI cost, catches regressions early) or
-      drop back to relying on `build.yml`'s release-time Windows job alone (cheaper, but Windows-only
-      bugs would surface only at release-build time instead of on every PR) — not a blocker either
-      way, just note the choice made once it's made.
+- [x] **6.2** Added a `windows-latest` run of `pytest -v --cov=src/privacyfence
+      --cov-report=term-missing` (`tests.yml`'s `test-windows` job) right after Phase 1 landed, as a
+      real-Windows confirmation that nothing path-separator- or `Path`-handling-related breaks that
+      Linux CI's existing full-suite run (already proven platform-independent, per
+      `windows-linux-support-plan.md`) can't catch. Gated to `workflow_dispatch` only at first — and,
+      it turned out, never actually dispatched-and-passed for real in that state (no recorded
+      `workflow_dispatch` run of this job exists prior to 6.3 below actually exercising it). The
+      decision this item left open — keep it permanent, or drop back to relying on `build.yml`'s
+      release-time Windows job alone — is now made: `docs/automated-test-strategy-plan.md` Phase 2.1
+      promoted it to a permanent per-PR leg (small ongoing CI cost, catches regressions before
+      release rather than only at tag-build time), renamed `platform-windows` to match. Still the
+      full core suite for now, not narrowed to a targeted subset — that's Phase 2.3's job, once
+      `tests/platform/` exists.
+- [x] **6.3** First real run of 6.2's promoted job (on the PR that landed 2.1 itself) failed 55
+      tests + 1 error — this is what actually running the full suite on Windows for the first time
+      was always going to surface, not a regression from that PR's own (CI-only) diff. Triaged and
+      closed out per-cause rather than blanket-skipped:
+      - **Fixed** (real, narrow, cross-platform-safe bugs, not Windows-only workarounds):
+        `settings_controller.py`'s org-install-date formatting used `strftime("%b %-d, %Y")` —
+        `%-d` is a glibc/macOS strftime extension the Windows CRT rejects
+        (`ValueError: Invalid format string`); rewritten to build the no-leading-zero day without a
+        platform-specific directive. `drive.py`'s upload preview/PII-scan guessed a local file's
+        MIME type via `mimetypes.guess_type()`, whose result for `.docx`/`.pptx`/`.xlsx`/`.zip` can
+        depend on that machine's Windows registry rather than being the one fixed answer this
+        connector always treats them as — `text_extraction.guess_mime_type()` now answers those four
+        extensions from a fixed table first. `test_shim_mcp_contract.py`'s `built_shim_entry` fixture
+        passed bare `"npm"` to `subprocess.run()`; Windows' `npm` is `npm.cmd`, and unlike
+        `shutil.which()` (which the fixture already called one line above), `CreateProcess` never
+        consults `PATHEXT` itself — resolved to `shutil.which("npm")`'s actual path instead.
+        `test_verify_audit_log.py`'s `~`-expansion test only set `$HOME`, which controls
+        `os.path.expanduser()` on POSIX but not reliably on Windows (`$USERPROFILE`) — now sets both.
+      - **Skipped on Windows, not fixed** (the POSIX file-permission model itself — ~40 tests across
+        `test_secure_files.py`, `test_paths.py`, every `*_client.py`'s `TestSaveToken`, `test_server.py`,
+        `test_webauthn_stepup.py`, and the `test_daemon_main.py` org-mode-startup tests that trip
+        `secure_files.audit_directory_permissions()` for the same reason): this is exactly B3's
+        already-documented "known, accepted gap" (`windows-linux-support-plan.md`, the ACL-tightening
+        note) — `chmod`/`stat().st_mode` verification has nothing meaningful to assert on Windows
+        without the ACL-tightening work that note already deferred, so these tests
+        `@pytest.mark.skipif(sys.platform == "win32", ...)` rather than pretending to prove something
+        Windows doesn't have. One related but distinct case, `TestInstanceLock::
+        test_lock_file_records_holder_pid`, is skipped for a different reason: portalocker's Windows
+        backend (Phase 1 above) takes a *mandatory* lock, so this test's own same-process re-open of
+        the lock file to read it back raises `PermissionError` there — the instance-lock feature
+        itself is unaffected, only this test's verification method doesn't port.
+      - **New finding, tracked, not fixed here** (7 tests, `test_daemon_main.py`'s `TestResolvePath`
+        (both cases) and `TestBuildConnectorsTelegram::test_built_when_creds_and_session_present`,
+        plus one preview-text test each in `test_confluence_connector.py`/`test_gmail_connector.py`
+        and two in `test_drive_connector.py`): code that builds a path by combining a POSIX-style
+        string (a literal like `"credentials/telegram.session"`, or a `destination_dir`/config value
+        of `"/tmp"`) with `os.path.join()`/`os.path.isabs()` gets Windows-`ntpath` behavior applied to
+        a string that was never meant to be OS-specific — at best a cosmetically mixed separator
+        (`/tmp\report.pdf`), at worst (`daemon_main._resolve_path("/etc/hosts")` returning
+        `D:/etc/hosts` instead of the path unchanged) a silently *different on-disk location* than
+        intended, because Python 3.13 narrowed `ntpath.isabs()` to require a drive letter, so a
+        rootless POSIX-style path that used to read as absolute on Windows no longer does. This
+        touches `_resolve_path()` (used to locate every credential/token file for the local
+        principal) and each connector's `resolve_*_destination()` helpers, so it's a real
+        security-adjacent design question — does this codebase treat these path strings as always
+        POSIX-style internally, or does it need to reject/normalize a POSIX-style absolute path on
+        Windows instead of silently reinterpreting it? — deliberately left for whoever picks this up
+        to design deliberately rather than patched reflexively under CI-red pressure. The seven tests
+        above are skipped on Windows in the meantime with a reason pointing back to this paragraph.
 
 ## Phase 7 — mcpb shim Windows support (B6)
 

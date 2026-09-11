@@ -103,6 +103,10 @@ class TestMain:
 
     def test_expands_user_home_in_path(self, tmp_path, monkeypatch, capsys):
         _record_entries(tmp_path, "2026-W28", 1)
+        # os.path.expanduser() reads $HOME on POSIX but $USERPROFILE on
+        # Windows -- set both so this test controls "home" the same way
+        # regardless of which platform it runs on.
         monkeypatch.setenv("HOME", str(tmp_path.parent))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path.parent))
         rc = verify_audit_log.main([f"~/{tmp_path.name}"])
         assert rc == 0
