@@ -23,8 +23,13 @@ note. [Phase 2](#phase-2--cross-platform-core-ci) (cross-platform core CI) has s
 PR #293, and is now also fully done, including 2.4 — closed by an explicit decision (keep the full
 core suite on `platform-windows`/`platform-macos` rather than narrow it to a targeted subset) rather
 than by building the narrowing infrastructure that decision's own grounding pass found no safe
-definition for; see that phase's own status note for the reasoning. Phases 3–10 are unaffected by
-any of these merges and reflect this plan's original grounding pass.
+definition for; see that phase's own status note for the reasoning.
+[Phase 3](#phase-3--canonical-cross-platform-system-test) (canonical cross-platform system test) is
+also now done — `tests/system/test_local_mode_system.py`, collected by every job that already runs
+the full suite, with no new CI wiring needed; see that phase's own status note for what shipped and
+where it deviated from the original design (the bootstrap-link-redaction gotcha, and the real
+"Quit PrivacyFence" action used for a genuinely clean shutdown rather than `proc.terminate()`).
+Phases 4–10 are unaffected by any of these merges and reflect this plan's original grounding pass.
 Phase 11 (update branch-protection required checks) is new in this revision — added once this plan
 was checked against `testing-policy.md`'s own "one job to merge" language and found not to close
 that gap anywhere — and Phase 12 is the renumbered "retire the platform-specific plan docs" phase
@@ -533,53 +538,75 @@ real detection the narrowed alternative would not.
 One scenario — real daemon → MCP → approval → audit — proven identical on Linux, Windows, and
 macOS.
 
-### Already in this repo
+### Status: done
 
-- `tests/integration/test_mcp_daemon_contract.py` already drives a real, socket-bound `WebServer`
-  with the official `mcp` Python client (initialize → `tools/list` → gated tool call → resolve via
-  HTTP → result), and already runs wherever the full suite runs (including `platform-windows` per
-  Phase 2, once promoted) — but it is one module inside the general suite, not a dedicated,
-  platform-assertion-bearing system scenario, and it currently has no macOS leg at all (no
-  `platform-macos` job yet).
-- `tests/integration/test_org_ubuntu_release_smoke.py` and
-  `tests/integration/test_macos_packaged_smoke.py` already prove very similar daemon→MCP→
-  approval→audit scenarios, but scoped to org-mode-on-Ubuntu and packaged-macOS-DMG respectively —
-  neither is the *local-mode-on-all-three-desktop-OSes* scenario this phase asks for.
-- No `tests/system/` directory exists yet.
+`tests/system/test_local_mode_system.py` (`@pytest.mark.system`) landed, collected by every job
+that runs the full suite (`test` on `ubuntu-latest`, `platform-windows`, `platform-macos`) via
+`pyproject.toml`'s existing `testpaths = ["tests"]` — no new CI wiring needed, the same shape
+Phase 2.3's `tests/platform/` established. What shipped, versus what this phase originally
+described:
 
-### Implementation
+- **Real process boundary, not an in-process call.** Every other daemon/MCP/approval test in this
+  repo (`test_mcp_daemon_contract.py`, `test_deferred_approval_round_trip.py`) drives `WebServer`/
+  `daemon_main` functions as a plain call inside the test's own process. This module instead reuses
+  Phase 2.3's own spawn technique (`tests/platform/test_daemon_process_lifecycle.py`'s `python -c
+  <bootstrap>`, monkeypatching `privacyfence.paths.data_dir` to an isolated sandbox before
+  `daemon_main` is ever imported) to run the real `daemon_main.main([])` entry point as a genuinely
+  separate OS process — exactly the reuse Phase 2.3's own text called for ("Phase 3 should reuse
+  this module's spawn/isolation pattern rather than reinventing it, the same way its own text
+  already says to reuse `test_mcp_daemon_contract.py`'s").
+- **Synthetic connector, injected differently than the in-process tests.** Since the daemon here is
+  a real subprocess, there's no shared Python object to hand a fake connector to the way
+  `test_deferred_approval_round_trip.py`'s in-process `WebServer` construction does. The bootstrap
+  script instead monkeypatches `daemon_main.build_connectors` to return one minimal real (not
+  mocked) `Connector` — same shape as that module's own `GatedTestConnector`, necessarily
+  reproduced rather than imported since it has to exist inside the spawned process's own `-c`
+  script — with a single write (`gate="popup"`) tool. No live provider needed, same as every other
+  daemon/MCP test in this repo.
+- **`GET /settings`/`GET /approvals` via a minted bootstrap code, not the logged link.** The
+  original design ("verify discovery/state files exist," then "GET /settings, GET /approvals")
+  undersold a real gotcha this phase's implementation found: the daemon's own startup log lines
+  that print those bootstrap links (`WebServer.mint_bootstrap_url()`) get their `?bootstrap=<code>`
+  query string redacted by `safe_errors.SecretRedactingFormatter` before it ever reaches the log
+  file — that formatter's key=value pattern matches the literal word "bootstrap," which is exactly
+  the point of the redaction (a leaked log line shouldn't be a usable credential) but also means a
+  test can't scrape a working link out of the log the way it might naively expect to. This module
+  instead mints its own code via `POST /api/bootstrap` (`Authorization: Bearer <web_token>`, the
+  same "still have filesystem access, no valid link handy" path `unauthorized_html`'s own 401 page
+  already recommends to a human), then follows the real `?bootstrap=` redirect to get a real session
+  cookie.
+- **Steps 1–8 as originally scoped**, plus one addition: the deferred-approval protocol (hold
+  window elapses → `approval_pending` → HTTP decide → a second identical call releases from the
+  ledger) is reused wholesale from `test_deferred_approval_round_trip.py` rather than re-derived,
+  for both the Allow and the Deny path — the same reasoning that reused Phase 2.3's spawn pattern
+  applies to reusing this in-process test's already-proven protocol shape.
+- **Step 9 (clean shutdown) via the real "Quit PrivacyFence" action, not `proc.terminate()`.**
+  `test_daemon_process_lifecycle.py`'s own termination test uses `proc.terminate()`
+  (SIGTERM/`TerminateProcess`) and deliberately only asserts "some exit code," not a clean one —
+  because `run_app()`'s own `finally` block (which closes the audit logger and releases the
+  instance lock) only runs if `_wait_for_shutdown()` returns normally, and an unhandled SIGTERM
+  doesn't reach that far. This module instead calls the real `POST /api/settings/quit_app` action
+  (the same route a human's "Quit PrivacyFence" button in `/settings` posts to), which calls
+  `SettingsController.quit_app()` → `daemon_main.request_shutdown()` → `_wait_for_shutdown()`
+  returns → the real `finally` block runs → `main()` returns `0` → the subprocess exits with a
+  genuinely clean code, not just a code.
+- **Platform-specific assertions, kept deliberately light.** The original design's per-OS bullets
+  (Windows path handling/single-instance lock/process spawning, Linux XDG paths/permissions/process
+  cleanup, macOS state paths/process discovery) turned out to already be Phase 2.3's own territory —
+  `tests/platform/`'s four modules (state/config path resolution, secure-directory creation,
+  cross-process single-instance locking, a real spawned-daemon-process lifecycle) cover exactly
+  those, cross-platform, already. Duplicating them here would have been pure churn (the same
+  reasoning Phase 2.3's own grounding pass used against re-covering ground `tests/unit/test_paths.py`
+  already had). What this module adds *on top* of that existing coverage, genuinely new: a
+  POSIX-only permission assertion (`0o700`, skipped on Windows per `secure_mkdir`'s own "best effort
+  on non-POSIX" docstring) against the audit-log directory this exact end-to-end scenario just wrote
+  to — not a directory some other test created for the purpose, but the one this contract's own
+  Allow/Deny decisions landed in.
 
-New `tests/system/test_local_mode_system.py`, `@pytest.mark.system`, run on `ubuntu-latest`,
-`windows-latest`, and `macos-latest`. Reuse `test_mcp_daemon_contract.py`'s daemon-startup and MCP
-client patterns rather than reinventing them; this module's job is to add the platform-specific
-assertions and the full audit-log inspection those two nearby files don't need for their own
-narrower purposes:
+### Exit criteria (met)
 
-1. Isolated temporary PrivacyFence home/config (already a pattern in `tests/conftest.py`).
-2. Start the real daemon process; wait for readiness (an `Event`/health-check poll per Phase 1.5's
-   deterministic-sync preference, not a fixed sleep).
-3. Verify discovery/state files exist (`mcp_url`, config dir).
-4. `GET /settings`, `GET /approvals`.
-5. Connect with the official MCP client; `tools/list`; call a synthetic gated tool.
-6. Confirm an approval is created; resolve Allow via HTTP; confirm the MCP result returns.
-7. Repeat with a second synthetic call resolved Deny; confirm the MCP error.
-8. Inspect the audit log; confirm both the allowed and denied decisions are present.
-9. Shut the daemon down; verify clean process exit and expected state paths.
-
-Platform-specific assertions layered on top of the shared scenario:
-
-- **Windows**: path handling, single-instance lock, process spawning, expected state location.
-- **Linux**: XDG/home paths, permissions where applicable, process cleanup.
-- **macOS**: expected state paths, process discovery, source-tree assumptions that don't require
-  signing (this module runs from source, not the packaged `.app` — that's Phase 6's job).
-
-Use fake/synthetic connectors behind the real gate, same as `test_mcp_daemon_contract.py` already
-does — no live provider needed.
-
-### Exit criteria
-
-The same daemon→MCP→approval→audit contract passes on `ubuntu-latest`, `windows-latest`, and
-`macos-latest`.
+- ✅ The same daemon→MCP→approval→audit contract passes on `ubuntu-latest`, `windows-latest`, and
+  `macos-latest` — one module, collected by all three jobs, no per-OS fork of the test itself.
 
 ---
 
@@ -981,8 +1008,10 @@ Phase 2  Cross-platform core CI                                  (DONE — Windo
    ↓                                                               tests/platform/ suite + marker;
    ↓                                                               2.4 closed by decision (keep the
    ↓                                                               full suite, don't narrow it))
-Phase 3  Canonical cross-platform system test                    (new module, reuses existing
-   ↓                                                               daemon/MCP test patterns)
+Phase 3  Canonical cross-platform system test                    (DONE — tests/system/test_local_
+   ↓                                                               mode_system.py, collected by every
+   ↓                                                               job that runs the full suite, no
+   ↓                                                               new CI wiring needed)
 Phase 4  Browser/UI automation                                   (extend existing test_browser_
    ↓                                                               smoke.py, not a new file)
 Phase 5  Gate/policy matrix                                      (mostly an audit of the existing
@@ -1043,7 +1072,9 @@ plan's grounding pass found the work already done, and a note on which remain ge
     `platform-macos` job, `tests/platform/` directory, `platform` pytest marker. Narrowing
     `platform-windows`/`platform-macos` down to that suite (Phase 2.4) is also done, but as a
     decision *not* to narrow — see Phase 2's own status note.
-13. Cross-platform daemon/MCP/approval/audit test — new module, reuses existing patterns (Phase 3)
+13. ~~Cross-platform daemon/MCP/approval/audit test~~ — **done** (Phase 3):
+    `tests/system/test_local_mode_system.py`, a real spawned daemon process reusing Phase 2.3's own
+    spawn pattern and test_deferred_approval_round_trip.py's deferred-approval protocol shape.
 14. Browser approval-flow coverage gaps: "Always allow," multi-card, idempotency (Phase 4.1)
 15. Browser PII/responsive/light-dark coverage (Phase 4.2–4.4)
 16. Gate matrix audit + close any real gap found (Phase 5) — likely small, since the matrix is
@@ -1080,7 +1111,8 @@ combination.
 - Runtime-relevant changes execute on real Windows and macOS runners on every PR, not just
   `workflow_dispatch` (Phase 2, fully done — 2.4 closed by the decision to keep the full suite on
   both jobs rather than narrow it, per that phase's own status note).
-- A canonical daemon/MCP/approval/audit scenario passes on all three desktop platforms (Phase 3).
+- A canonical daemon/MCP/approval/audit scenario passes on all three desktop platforms (Phase 3,
+  done).
 - Browser behavior is tested automatically against real Chromium, covering PII, responsive, and
   light/dark surfaces, not just the approval round trip already covered (Phase 4).
 - Every connector is periodically exercised against dedicated QA accounts (Phase 1, done for ten of
