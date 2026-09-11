@@ -89,6 +89,14 @@ MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / "qa_environment.yaml"
 
 QATEST_TAG = "[QATEST]"
 
+# Only used for the diagnostic logging around lifecycle_calendar/_tasks'
+# eventually-consistent-delete retries below -- every *_client.py already
+# gets its own logger this way and logs its own request/response at
+# info/debug level (e.g. jira_client.py's "create_issue created %s",
+# "update_issue %s: updated fields %s"); this script itself never had one
+# until now because it otherwise only ever prints its report to stdout.
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------- #
 # Identity-field redaction -- runs unconditionally on every recording, never
 # optional. Content being synthetic (docs/qa-environment-setup.md) does not
@@ -1498,14 +1506,29 @@ class LifecycleResult:
         self.cleanup_ok = cleanup_ok
 
 
-def _attempt_delete(delete_fn: Callable[[], Any]) -> str:
+def _attempt_delete(delete_fn: Callable[[], Any], *, request_desc: str = "") -> str:
     """Runs ``delete_fn()``; returns "" on success or a note describing the
     failure. A cleanup failure is itself the finding here, never masked by
-    a bare exception escaping and aborting the rest of the batch."""
+    a bare exception escaping and aborting the rest of the batch.
+
+    ``request_desc``, when given, is logged at DEBUG level before the call
+    (identifying which object this delete targets) together with the raw
+    response body ``delete_fn()`` returns on success -- one-off diagnostic
+    logging for https://github.com/privacyfence/privacyfence/actions/runs/34632070157
+    (root-causing "cleanup call succeeded but the object still exists
+    afterward" for calendar/tasks; see _EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS'
+    comment above and _confirm_deleted's own ``raw_refetch`` parameter).
+    Off by default (nothing calls this at DEBUG level in normal use) --
+    pass -v/--verbose to see it.
+    """
+    if request_desc and logger.isEnabledFor(logging.DEBUG):
+        logger.debug("delete request: %s", request_desc)
     try:
-        delete_fn()
+        response = delete_fn()
     except Exception as exc:  # noqa: BLE001 - see docstring
         return f"cleanup call failed: {exc}"
+    if request_desc and logger.isEnabledFor(logging.DEBUG):
+        logger.debug("delete response for %s: %r", request_desc, response)
     return ""
 
 
@@ -1516,6 +1539,7 @@ def _confirm_deleted(
     attempts: int = 1,
     delay_seconds: float = 0.0,
     sleep: Callable[[float], None] = time.sleep,
+    raw_refetch: Callable[[], Any] | None = None,
 ) -> tuple[bool, str]:
     """True (with no note) if calling ``refetch`` now raises
     ``not_found_error`` -- i.e. the object is actually gone, not just that
@@ -1528,8 +1552,32 @@ def _confirm_deleted(
     a provider known to be immediately consistent (e.g. Jira) should leave
     this at the default of one attempt: retrying there would only mask a
     real cleanup failure behind a few seconds of pointless waiting.
+
+    ``raw_refetch``, when given, is called (and its result logged at DEBUG
+    level, including the raw ``status`` field and the full raw response) on
+    every attempt before ``refetch`` itself -- diagnostic-only, same
+    one-off purpose as _attempt_delete's ``request_desc`` above. Deliberately
+    a *second*, separate call rather than reusing refetch's own result: the
+    real client methods (get_event/get_task) parse the response into a
+    dataclass and never expose the raw body, and this needs to see exactly
+    what the provider returned -- specifically whether it's a 404
+    (not_found_error, what this function already treats as "gone") or a 200
+    with ``status: "cancelled"``/``deleted: true`` still in the body (which
+    the current check doesn't treat as "gone" at all, so a real object stuck
+    that way would retry every attempt and never be told apart from a
+    genuinely slow one). A raw_refetch failure is logged and swallowed --
+    never allowed to affect the actual pass/fail verdict below.
     """
     for attempt in range(attempts):
+        if raw_refetch is not None and logger.isEnabledFor(logging.DEBUG):
+            try:
+                raw = raw_refetch()
+                logger.debug(
+                    "confirm-deleted attempt %d/%d: raw status=%r, full response=%r",
+                    attempt + 1, attempts, raw.get("status") if isinstance(raw, dict) else None, raw,
+                )
+            except Exception as exc:  # noqa: BLE001 - diagnostic only, must never affect the verdict below
+                logger.debug("confirm-deleted attempt %d/%d: raw_refetch failed: %s", attempt + 1, attempts, exc)
         try:
             refetch()
         except not_found_error:
@@ -1576,7 +1624,8 @@ def lifecycle_calendar(manifest: dict[str, Any]) -> LifecycleResult:
     finally:
         if event_id:
             delete_note = _attempt_delete(
-                lambda: client._get_service().events().delete(calendarId=calendar_id, eventId=event_id).execute()
+                lambda: client._get_service().events().delete(calendarId=calendar_id, eventId=event_id).execute(),
+                request_desc=f"calendar_id={calendar_id!r}, event_id={event_id!r}",
             )
             if delete_note:
                 cleanup_ok, note = False, f"{note}; {delete_note}" if note else delete_note
@@ -1585,6 +1634,9 @@ def lifecycle_calendar(manifest: dict[str, Any]) -> LifecycleResult:
                     lambda: client.get_event(calendar_id, event_id), CalendarClientError,
                     attempts=_EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS,
                     delay_seconds=_EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS,
+                    raw_refetch=lambda: (
+                        client._get_service().events().get(calendarId=calendar_id, eventId=event_id).execute()
+                    ),
                 )
                 if confirm_note:
                     note = f"{note}; {confirm_note}" if note else confirm_note
@@ -1670,7 +1722,10 @@ def lifecycle_jira(manifest: dict[str, Any]) -> LifecycleResult:
         ok, note = False, str(exc)
     finally:
         if issue_key:
-            delete_note = _attempt_delete(lambda: client._request(client._client.delete_issue, issue_key))
+            delete_note = _attempt_delete(
+                lambda: client._request(client._client.delete_issue, issue_key),
+                request_desc=f"issue_key={issue_key!r}",
+            )
             if delete_note:
                 cleanup_ok, note = False, f"{note}; {delete_note}" if note else delete_note
             else:
@@ -1720,7 +1775,8 @@ def lifecycle_tasks(manifest: dict[str, Any]) -> LifecycleResult:
     finally:
         if task_id:
             delete_note = _attempt_delete(
-                lambda: client._get_service().tasks().delete(tasklist=task_list_id, task=task_id).execute()
+                lambda: client._get_service().tasks().delete(tasklist=task_list_id, task=task_id).execute(),
+                request_desc=f"task_list_id={task_list_id!r}, task_id={task_id!r}",
             )
             if delete_note:
                 cleanup_ok, note = False, f"{note}; {delete_note}" if note else delete_note
@@ -1729,6 +1785,9 @@ def lifecycle_tasks(manifest: dict[str, Any]) -> LifecycleResult:
                     lambda: client.get_task(task_list_id, task_id), TasksClientError,
                     attempts=_EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS,
                     delay_seconds=_EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS,
+                    raw_refetch=lambda: (
+                        client._get_service().tasks().get(tasklist=task_list_id, task=task_id).execute()
+                    ),
                 )
                 if confirm_note:
                     note = f"{note}; {confirm_note}" if note else confirm_note
@@ -1827,15 +1886,6 @@ def run_lifecycle(connectors: list[str], report_file: str | None) -> int:
 
 
 def main() -> int:
-    # Off by default in every *_client.py (each just calls logging.getLogger(__name__)
-    # and leaves configuration to the embedding app -- daemon_main.py sets this up for
-    # the real app, but this script never did). Without a handler, confluence_client.py/
-    # jira_client.py's own logger.info("... token refreshed")/logger.warning("... refresh
-    # failed: %s") calls -- the only signal this script has for whether a 401 was a stale
-    # token that got silently handled, one that failed to refresh, or neither -- go
-    # nowhere. Configured on stderr so it never lands in the markdown report on stdout.
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
-
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument("--check", action="store_true", help="Smoke-check only; never writes a fixture.")
@@ -1849,7 +1899,27 @@ def main() -> int:
         help="Connector name(s), e.g. confluence. Default: all implemented for the selected mode.",
     )
     parser.add_argument("--report-file", help="Also save the printed report to this path.")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="DEBUG-level logging, including this script's own diagnostic logging around "
+             "lifecycle_calendar/_tasks' eventually-consistent-delete retries (raw status/response "
+             "of the post-delete get, and the delete call's own request/response) -- see "
+             "_attempt_delete/_confirm_deleted's docstrings. Off by default.",
+    )
     args = parser.parse_args()
+
+    # Off by default in every *_client.py (each just calls logging.getLogger(__name__)
+    # and leaves configuration to the embedding app -- daemon_main.py sets this up for
+    # the real app, but this script never did). Without a handler, confluence_client.py/
+    # jira_client.py's own logger.info("... token refreshed")/logger.warning("... refresh
+    # failed: %s") calls -- the only signal this script has for whether a 401 was a stale
+    # token that got silently handled, one that failed to refresh, or neither -- go
+    # nowhere. Configured on stderr so it never lands in the markdown report on stdout.
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
 
     if args.lifecycle:
         return run_lifecycle(args.connectors, args.report_file)

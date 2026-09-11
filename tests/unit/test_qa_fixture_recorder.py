@@ -26,6 +26,7 @@ to be pointed at a real, already-authenticated account.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timezone
@@ -1432,6 +1433,84 @@ class _FakeCalendarClient:
             raise RuntimeError("simulated delete failure")
         if not self.delete_leaves_it:
             self.events.pop(event_id, None)
+
+
+class TestDeleteDiagnosticLogging:
+    """_attempt_delete's ``request_desc`` and _confirm_deleted's
+    ``raw_refetch`` -- one-off diagnostic logging added to root-cause
+    https://github.com/privacyfence/privacyfence/actions/runs/34632070157
+    ("cleanup call succeeded but the object still exists afterward" for
+    calendar/tasks) without touching _EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS
+    again. Gated behind DEBUG (only reachable via -v/--verbose, see
+    test_qa_fixture_recorder_verbose_flag below) so it's silent in ordinary
+    --check/--record/--lifecycle runs.
+    """
+
+    def test_silent_by_default_at_info_level(self, caplog):
+        caplog.set_level(logging.INFO, logger="qa_fixture_recorder")
+
+        delete_note = recorder._attempt_delete(
+            lambda: {"echo": "response body"}, request_desc="calendar_id='cal1', event_id='evt1'"
+        )
+
+        def _not_found():
+            raise recorder.CalendarClientError("gone")
+
+        ok, confirm_note = recorder._confirm_deleted(
+            _not_found, recorder.CalendarClientError, raw_refetch=lambda: {"status": "cancelled"},
+        )
+
+        assert delete_note == ""
+        assert ok and confirm_note == ""
+        assert caplog.text == ""  # no DEBUG handler configured -> nothing logged
+
+    def test_verbose_logs_delete_request_and_response(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="qa_fixture_recorder")
+
+        delete_note = recorder._attempt_delete(
+            lambda: {"echo": "response body"}, request_desc="calendar_id='cal1', event_id='evt1'"
+        )
+
+        assert delete_note == ""
+        assert "calendar_id='cal1', event_id='evt1'" in caplog.text
+        assert "response body" in caplog.text
+
+    def test_verbose_logs_raw_status_and_full_response_on_every_attempt(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="qa_fixture_recorder")
+        raw_responses = iter([
+            {"status": "cancelled", "id": "evt1"},
+            {"status": "cancelled", "id": "evt1"},
+        ])
+
+        def _still_there():
+            # Never raises -- simulates the actual bug under investigation:
+            # the object comes back with status "cancelled" instead of the
+            # refetch raising not_found_error.
+            return SimpleNamespace(id="evt1")
+
+        ok, note = recorder._confirm_deleted(
+            _still_there, recorder.CalendarClientError,
+            attempts=2, delay_seconds=0, sleep=lambda seconds: None,
+            raw_refetch=lambda: next(raw_responses),
+        )
+
+        assert not ok
+        assert "still exists" in note
+        assert caplog.text.count("raw status='cancelled'") == 2
+
+    def test_raw_refetch_failure_is_logged_and_never_affects_the_verdict(self, caplog):
+        caplog.set_level(logging.DEBUG, logger="qa_fixture_recorder")
+
+        def _boom():
+            raise RuntimeError("network blip")
+
+        def _not_found():
+            raise recorder.CalendarClientError("gone")
+
+        ok, note = recorder._confirm_deleted(_not_found, recorder.CalendarClientError, raw_refetch=_boom)
+
+        assert ok and note == ""  # the real (non-diagnostic) check still passed
+        assert "raw_refetch failed" in caplog.text
 
 
 class TestLifecycleCalendar:
