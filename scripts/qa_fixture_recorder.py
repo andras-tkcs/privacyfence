@@ -1602,7 +1602,6 @@ def lifecycle_confluence(manifest: dict[str, Any]) -> LifecycleResult:
     title = f"{LIFECYCLE_TAG} confluence page {suffix}"
     updated_title = f"{title} updated"
 
-    ok, note = False, ""
     try:
         created = client.create_page(
             space_key, title,
