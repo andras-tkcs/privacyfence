@@ -20,6 +20,10 @@ below for what shipped, what deviated from the original design, and the one item
 Script fixture coverage, blocked on a live QA Apps Script project to record against).
 [Phase 0](#phase-0--establish-the-test-taxonomy) is also now done — see that section's own status
 note. Phases 2–10 are unaffected by either merge and reflect this plan's original grounding pass.
+Phase 11 (update branch-protection required checks) is new in this revision — added once this plan
+was checked against `testing-policy.md`'s own "one job to merge" language and found not to close
+that gap anywhere — and Phase 12 is the renumbered "retire the platform-specific plan docs" phase
+(previously Phase 11), pushed one slot later so doc retirement stays the true last step.
 
 ## Relationship to existing planning docs
 
@@ -828,7 +832,67 @@ Most CI failures are diagnosable without local reproduction.
 
 ---
 
-## Phase 11 — Retire the platform-specific plan docs
+## Phase 11 — Update branch-protection required status checks
+
+### Objective
+
+Keep GitHub's required-status-checks list (Settings → Branches, the branch protection rule on
+`main`) in step with which jobs in `.github/workflows/tests.yml` actually run, and are actually
+trustworthy, on every PR — so a job this plan promotes to per-PR (Phase 2's `platform-windows`, its
+`platform-macos` sibling, `test-python-compat`, the new system/packaged/org-mode jobs from Phases 3,
+6, 7, 8) can't go red and still let a PR merge. This is a real, currently-open gap, not a
+hypothetical one: `testing-policy.md:141` already states plainly, "This `test` job is the one a PR
+needs to pass to merge" — singular — and nothing landed by Phase 2.1's promotion of
+`platform-windows` (or by any later phase) has updated that setting or that sentence to match.
+
+### Already in this repo
+
+- Only the `test` job (ubuntu-latest: pytest + coverage floor + `npm test` + `npm run typecheck`) is
+  a required status check today, per `testing-policy.md`'s §1 and its Quick-reference table (only
+  those four checks are marked "this is the merge gate" there).
+- `platform-windows` now runs on every PR (Phase 2.1, done) but is not required — a PR can merge
+  with it red.
+- `test-python-compat` and `static-analysis` (`ruff check .`, blocking; `mypy`/`bandit`, deliberately
+  `continue-on-error`, informational) also run on every PR and are also not required.
+- The branch protection rule itself is GitHub repo configuration, not a file this repo tracks — there
+  is no commit history or diff to inspect for it, which is exactly why it's easy for it to silently
+  fall behind the workflow file as new jobs get added. This phase exists to make that catch-up an
+  explicit, named step instead of an implied one.
+
+### Remaining work
+
+1. As each per-PR job lands and proves itself stable (i.e. no flaky-red history over a normal
+   run of PRs, not just one green run) — `platform-windows` now, `platform-macos` once Phase 2.2
+   lands, `test-python-compat`, the canonical system test once Phase 3 lands it on all three OSes,
+   the packaged-artifact jobs from Phase 6, the org-mode job from Phase 8 — add it to `main`'s
+   required-status-checks list. Do this incrementally, alongside the phase that introduces the job,
+   rather than batching every addition into this phase's own single PR: this phase's own scope is
+   the *policy* (require every blocking per-PR job) and the final consistency pass, not re-doing the
+   stability wait each earlier phase already did before its job was safe to gate on.
+2. If GitHub's required-check granularity turns out to be job-level rather than step-level, requiring
+   `static-analysis` would also require its still-informational `mypy`/`bandit` steps (they use
+   `continue-on-error`, which keeps the *job* green even when they fail — so requiring the job is
+   safe as-is). Confirm that behavior rather than assuming it; only split `static-analysis` into a
+   separate blocking-only job if `continue-on-error` turns out not to isolate them the way intended.
+3. Update `testing-policy.md`'s §1 "This `test` job is the one a PR needs to pass to merge" sentence
+   and its Quick-reference table (the "Runs in CI?" / "this is the merge gate" language) to name the
+   actual required set once it's more than one job, rather than leaving singular language that
+   predates Phase 2's promotion of `platform-windows`.
+4. After each addition, confirm enforcement rather than trusting the setting alone: push a scratch
+   branch with a deliberately failing test in the newly-required job and confirm GitHub actually
+   blocks that PR from merging.
+
+### Exit criteria
+
+Every job in `tests.yml` that runs on every PR and is meant to gate correctness (`test`,
+`platform-windows`, `platform-macos` once it exists, `test-python-compat`, `static-analysis`'s
+blocking `ruff` step) is a required status check on `main`'s branch protection rule; `testing-
+policy.md` names the real required set instead of "the `test` job"; a deliberately red job on one of
+those checks has been confirmed, not assumed, to block merge.
+
+---
+
+## Phase 12 — Retire the platform-specific plan docs
 
 ### Objective
 
@@ -897,14 +961,22 @@ Phase 9  Retire obsolete manual QA
    ↓
 Phase 10 Observability and maintenance polish
    ↓
-Phase 11 Retire the platform-specific plan docs                  (bookkeeping only, once Phases 2,
+Phase 11 Update branch-protection required checks                (incremental — starts as soon as
+   ↓                                                               platform-windows is stable, keeps
+   ↓                                                               picking up each phase's job as it
+   ↓                                                               lands; final consistency pass once
+   ↓                                                               Phases 2, 3, 6, 7, and 8 are done)
+Phase 12 Retire the platform-specific plan docs                  (bookkeeping only, once Phases 2,
                                                                     6, 7, and 9 above are actually
                                                                     done — last step in this plan)
 ```
 
 Phases 4 and 5 may proceed in parallel once Phase 3 is stable, as in the source strategy. Phase 7
-stays last for the same infrastructure-cost reason the source strategy gives. Phase 11 stays last
-of all: it only deletes docs once every phase above it has actually shipped.
+stays last for the same infrastructure-cost reason the source strategy gives. Phase 11 runs
+incrementally alongside whichever phase just promoted a job to per-PR (its own remaining-work item 1
+says so explicitly) rather than waiting for everything else to finish — only its final consistency
+pass (items 2-3) waits on the rest. Phase 12 stays last of all: it only deletes docs once every phase
+above it has actually shipped.
 
 ## Suggested PR boundaries
 
@@ -946,9 +1018,12 @@ plan's grounding pass found the work already done, and a note on which remain ge
 23. Org-mode system test audit/extension — likely small (Phase 8)
 24. Manual QA documentation reduction (Phase 9)
 25. CI diagnostic/observability polish (Phase 10)
-26. Retire `windows-support-plan.md`, `windows-linux-support-plan.md`,
+26. Update branch-protection required status checks (Phase 11) — not one PR but a small addition
+    riding alongside each of PRs 12, 17-18, 13, 23 above as their job proves stable, plus a final
+    documentation-consistency PR once every addition has landed
+27. Retire `windows-support-plan.md`, `windows-linux-support-plan.md`,
     `linux-local-deb-packaging-plan.md`, and `manual-pre-release-test-plan.md` once 12–24 above are
-    actually done (Phase 11) — last PR in this plan, bookkeeping only
+    actually done (Phase 12) — last PR in this plan, bookkeeping only
 
 Each PR should leave the repository green.
 
@@ -984,7 +1059,10 @@ combination.
 - Routine manual release validation takes minutes, not hours (Phase 9).
 - PrivacyFence can be confidently released without owning physical Windows, Linux, or macOS
   development machines.
+- GitHub's required-status-checks list on `main` names every blocking per-PR job, not just `test` —
+  a red `platform-windows`/`platform-macos`/`test-python-compat`/`static-analysis` run actually
+  blocks merge, confirmed rather than assumed (Phase 11).
 - `docs/` contains exactly one `*plan*.md` — this document — with `windows-support-plan.md`,
   `windows-linux-support-plan.md`, `linux-local-deb-packaging-plan.md`, and
   `manual-pre-release-test-plan.md` retired once the work they track has actually shipped
-  (Phase 11, last).
+  (Phase 12, last).
