@@ -217,6 +217,21 @@ testpaths = ["tests"]
 # A hung asyncio socket test (e.g. a fixture never closing a connection)
 # would otherwise block the whole suite indefinitely instead of failing.
 timeout = 30
+# docs/automated-test-strategy-plan.md Phase 0: the seven-layer taxonomy
+# testing-policy.md now describes. Registered here so `pytest -m <marker>`
+# and `pytest -m "not live"` work and so an unregistered-marker typo fails
+# loudly (pytest's default `--strict-markers`-independent warning) rather
+# than silently matching nothing. Applied to new test modules as later
+# phases add them -- see testing-policy.md's "Pytest markers" note for which
+# existing modules already carry one.
+markers = [
+    "unit: fast, fully offline",
+    "integration: real internal stack, no external network",
+    "system: full daemon/MCP/approval/audit scenario",
+    "browser: real Chromium via Playwright",
+    "packaged: runs against a built installer/artifact",
+    "live: touches a real third-party provider (self-hosted runner only)",
+]
 
 [tool.coverage.run]
 # TST-03 (docs/security-remediation-plan.md Phase 2.1): branch coverage, not

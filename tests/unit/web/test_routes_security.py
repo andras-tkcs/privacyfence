@@ -239,6 +239,9 @@ class TestDeleteCredential:
         assert len(wa.list_credentials(ALICE)) == 1
 
 
+# docs/automated-test-strategy-plan.md Phase 0: in-process ASGI TestClient,
+# no real socket -- unit per testing-policy.md's seven-layer taxonomy.
+@pytest.mark.unit
 class TestCrossPrincipalIsolation:
     """TST-10 (docs/security-remediation-plan.md Phase 3.12): every route
     here resolves ``principal`` from the request's own session
