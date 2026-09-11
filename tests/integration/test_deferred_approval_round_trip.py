@@ -45,7 +45,11 @@ from privacyfence.web.mcp_dispatch import McpDispatcher  # noqa: E402
 from privacyfence.web.server import WebServer  # noqa: E402
 from privacyfence.web_approval_ui import WebApprovalUI  # noqa: E402
 
-pytestmark = pytest.mark.timeout(30)
+# docs/automated-test-strategy-plan.md Phase 0: real internal stack (a real
+# socket-bound WebServer, the official mcp client, a real httpx POST), no
+# external network -- integration per testing-policy.md's seven-layer
+# taxonomy.
+pytestmark = [pytest.mark.timeout(30), pytest.mark.integration]
 
 
 class GatedTestConnector(Connector):

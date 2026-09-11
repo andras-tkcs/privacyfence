@@ -14,7 +14,8 @@ job) before describing new work, so the plan says only what's actually left to b
 [#284](https://github.com/privacyfence/privacyfence/pull/284)) between this plan's initial draft
 and this revision. See [Phase 1](#phase-1--complete-live-connector-ci-and-close-security-remediation-plan-312-—-done)
 below for what shipped, what deviated from the original design, and the one residual gap (Apps
-Script fixture coverage). Phases 0 and 2–10 are unaffected by that merge and reflect this plan's
+Script fixture coverage). [Phase 0](#phase-0--establish-the-test-taxonomy) is also now done — see
+that section's own status note. Phases 2–10 are unaffected by either merge and reflect this plan's
 original grounding pass.
 
 ## Relationship to existing planning docs
@@ -68,6 +69,35 @@ already implemented once checked against the current tree.
 Make the repository describe tests by what they prove, not by the historical "CI vs manual" split,
 so later phases don't duplicate checks `testing-policy.md`/`manual-pre-release-test-plan.md` still
 describe as needing a human.
+
+### Status: done
+
+`testing-policy.md` now opens with a "Test taxonomy: the seven layers" section (the table below,
+carried over verbatim except its "Runs" column was filled in with what's *actually* running today
+per-layer rather than left as a Phase-number placeholder — three layers, 3/6/(most of)7, are still
+partially or fully open, and the table says so inline instead of pointing only at a future phase),
+a "Test ownership: failure type → layer" table plus the governing rule stated verbatim, and a new
+"Checked against `manual-pre-release-test-plan.md`" cross-check mapping each of that document's five
+sections to a layer (item 4 below) — no item there turned out to map to zero layers, so no new phase
+gap was found beyond what Phases 1–8 already cover. `pyproject.toml` has the marker list registered
+verbatim. The five TST-08–13 modules got backfilled as planned — as class-level `@pytest.mark.unit`
+decorators for the two modules that only gained one new class each alongside pre-existing, differently-
+scoped classes (`test_qa_fixture_recorder.py`'s `TestFixturePresence`, `test_routes_security.py`'s
+`TestCrossPrincipalIsolation`), and as module-level `pytestmark` for the three modules dedicated
+wholly to their own TST item (`test_deferred_approval_round_trip.py` → `integration`,
+`test_parser_properties.py` and `test_systemic_gate_invariants.py` → `unit`) — rather than blanket-
+marking whole files that also contain unrelated pre-existing classes, since that would have overclaimed
+what the marker means for content this phase didn't itself audit. `pytest --collect-only` (5037 tests)
+and a targeted run of all five backfilled modules were both used to confirm no collection or behavior
+change; `ruff check` is clean on every touched file.
+
+One pre-existing inconsistency in this plan surfaced while implementing this phase, not introduced
+by it: Phase 2.3 below says to "Register the `platform` pytest marker from Phase 0," but this
+phase's own marker list (item 2 below), registered verbatim, has no `platform` entry — only `system`
+("full daemon/MCP/approval/audit scenario," Phase 3's canonical scenario, a different concept from
+Phase 2.3's OS-level `tests/platform/` suite). Left as-is rather than guessed at here: whoever
+implements Phase 2 should decide whether `platform` becomes an eighth registered marker or
+`tests/platform/` reuses `system`, and update `pyproject.toml` accordingly at that point.
 
 ### Already in this repo
 
@@ -124,11 +154,11 @@ describe as needing a human.
    signal that the layer needs a phase (it does — see Phases 1–8 below); don't remove the manual
    item until the corresponding phase actually lands automation for it.
 
-### Exit criteria
+### Exit criteria (met)
 
-- `testing-policy.md` describes the seven-layer target architecture and the test-ownership table.
-- `pyproject.toml` has the marker list registered (even if lightly used so far).
-- No existing test behavior changes.
+- ✅ `testing-policy.md` describes the seven-layer target architecture and the test-ownership table.
+- ✅ `pyproject.toml` has the marker list registered (even if lightly used so far).
+- ✅ No existing test behavior changes.
 
 ---
 
@@ -669,8 +699,9 @@ Most CI failures are diagnosable without local reproduction.
 ## Revised sequencing
 
 ```
-Phase 0  Taxonomy / doc foundation
-   ↓
+Phase 0  Taxonomy / doc foundation                               (DONE — testing-policy.md's
+   ↓                                                               seven-layer section + ownership
+   ↓                                                               table, pyproject.toml markers)
 Phase 1  Live connector CI + Security Remediation 3.12 closure   (DONE — PR #283/#278/#284;
    ↓                                                               Apps Script fixture + 1.8/1.9
    ↓                                                               remain as a small follow-up)
@@ -704,7 +735,7 @@ stays last for the same infrastructure-cost reason the source strategy gives.
 Kept close to the source strategy's 27-PR breakdown, with entries removed or shrunk where this
 plan's grounding pass found the work already done, and a note on which remain genuinely large:
 
-1. Test taxonomy + policy foundation (Phase 0)
+1. ~~Test taxonomy + policy foundation~~ — **done** (Phase 0)
 2. ~~Connector live workflow~~ — **done**, PR #283 (Phase 1.1)
 3. ~~TST-08 fixture completeness + coverage guard~~ — **done**, PR #278 (Phase 1.2); Apps Script
    fixture coverage itself is not, and is small enough to fold into PR 3 below rather than stay its

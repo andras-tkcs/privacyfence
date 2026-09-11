@@ -58,6 +58,10 @@ from privacyfence.connectors.slack import SlackConnector
 from privacyfence.connectors.tasks import TasksConnector
 from privacyfence.connectors.telegram import TelegramConnector
 
+# docs/automated-test-strategy-plan.md Phase 0: source-scanning assertions
+# over real code, no I/O -- unit per testing-policy.md's seven-layer taxonomy.
+pytestmark = pytest.mark.unit
+
 CONNECTOR_CLASSES = [
     GmailConnector, DriveConnector, SlackConnector, CalendarConnector,
     ContactsConnector, SalesforceConnector, JiraConnector, ConfluenceConnector,
