@@ -19,7 +19,12 @@ modules, which landed as part of Phase 0 rather than as a Phase 1 follow-up (see
 below for what shipped, what deviated from the original design, and the one item still open (Apps
 Script fixture coverage, blocked on a live QA Apps Script project to record against).
 [Phase 0](#phase-0--establish-the-test-taxonomy) is also now done — see that section's own status
-note. Phases 2–10 are unaffected by either merge and reflect this plan's original grounding pass.
+note. [Phase 2](#phase-2--cross-platform-core-ci) (cross-platform core CI) has since landed too, in
+PR #293, and is now also fully done, including 2.4 — closed by an explicit decision (keep the full
+core suite on `platform-windows`/`platform-macos` rather than narrow it to a targeted subset) rather
+than by building the narrowing infrastructure that decision's own grounding pass found no safe
+definition for; see that phase's own status note for the reasoning. Phases 3–10 are unaffected by
+any of these merges and reflect this plan's original grounding pass.
 Phase 11 (update branch-protection required checks) is new in this revision — added once this plan
 was checked against `testing-policy.md`'s own "one job to merge" language and found not to close
 that gap anywhere — and Phase 12 is the renumbered "retire the platform-specific plan docs" phase
@@ -328,19 +333,37 @@ Prove the runtime works on Ubuntu, Windows, and macOS without tripling the full 
 
 ### Status note (2026-09-11)
 
-2.1 (Windows promotion) was already done. 2.2 (macOS job) and 2.3 (`tests/platform/` suite +
-marker) have now landed too — see their own subsections below for what shipped, including where it
-deviated from the original design. 2.4 (the target CI shape) has **not** been fully realized:
-`platform-windows`/`platform-macos` both still run the full core suite rather than being narrowed
-to "`tests/platform/` + core sanity subset" as 2.4's table describes. That narrowing is a real,
-separate risk/cost tradeoff — this repo's own history (2.1's first real Windows run found four
-genuine cross-platform bugs the full suite caught and a targeted subset would have missed) is a
-concrete reason not to make that cut casually — and grounding this phase found no existing
-definition of what a safe "core sanity subset" actually is beyond the table's label. Left as an
-explicit follow-up rather than guessed at here: the new `tests/platform/` tests run on every PR
-today exactly as 2.4 wants (nothing extra needed — `pyproject.toml`'s `testpaths = ["tests"]`
-already collects them as part of the existing full-suite `pytest` invocation both jobs already run),
-they're just additive to the full suite rather than a replacement for most of it yet.
+2.1 (Windows promotion), 2.2 (macOS job), and 2.3 (`tests/platform/` suite + marker) were already
+done. 2.4 (the target CI shape) is now closed too, but by an explicit decision rather than by
+building the narrowing infrastructure its own table originally described: `platform-windows`/
+`platform-macos` keep running the full core suite, on purpose, rather than being narrowed to
+"`tests/platform/` + core sanity subset."
+
+That narrowing was a real, separate risk/cost tradeoff, not a mechanical follow-up — this repo's
+own history is the deciding evidence, not a hypothetical: 2.1's first real Windows run (promoting
+the job from `workflow_dispatch`-only to every-PR) found four genuine, narrow, cross-platform-safe
+bugs (a POSIX-only `strftime` directive, a registry-dependent `mimetypes.guess_type()` call, a bare
+`"npm"` instead of its resolved path, and a test missing `$USERPROFILE`) that the full suite caught
+and a "core sanity subset" — under any definition this grounding pass could construct — would have
+missed, since none of the four failing tests lived in `tests/platform/`'s own subject matter
+(atomic-write concurrency, cross-process locking, browser-launch defaults, daemon process
+lifecycle) or in any other single, nameable "platform-sensitive" corner of the suite. They surfaced
+in `settings_controller.py`, `drive.py`, a shim-contract test, and an audit-log test — ordinary
+modules with no platform marker, reached only because the *whole* suite ran on Windows. Narrowing
+to any subset defined ahead of time, by module or by marker, would as a structural matter only ever
+catch categories of bug someone already thought to name; the value 2.1 actually demonstrated was
+running everything and letting the OS itself decide what's platform-sensitive. Given that concrete
+evidence and no offsetting evidence that the CI-time cost of the full suite is actually a problem
+in practice (`platform-windows`/`platform-macos` run in parallel with `test`, not serially after
+it), the decision is to keep running the full suite on both jobs indefinitely rather than trade a
+demonstrated detection capability for an unmeasured CI-time saving. 2.4's original table (still
+shown below for the record) and this phase's exit criteria are updated accordingly: "narrowed" is
+no longer the target shape.
+
+The new `tests/platform/` tests still run on every PR exactly as 2.3 wants (nothing extra needed —
+`pyproject.toml`'s `testpaths = ["tests"]` already collects them as part of the existing full-suite
+`pytest` invocation both jobs run) — they add targeted coverage for the specific OS-level behaviors
+Phase 2.3 identified as otherwise-uncovered, on top of the full suite, not instead of most of it.
 
 ### Already in this repo
 
@@ -464,26 +487,42 @@ the full suite already runs (`test`, `test-python-compat`, `platform-windows`, `
 no CI wiring beyond the new `platform-macos` job itself was needed, since `pyproject.toml`'s
 `testpaths = ["tests"]` already collects everything under `tests/platform/`.
 
-### 2.4 Avoid matrix explosion — not yet done
+### 2.4 Avoid matrix explosion — done (decision: keep the full suite, don't narrow)
 
-Target shape, still not the current one (see this phase's status note above for why the last two
-rows' narrowing is deliberately left as a follow-up rather than done as part of landing 2.2/2.3):
+Original target shape from the source strategy, superseded by the decision recorded in this
+phase's status note above:
 
-| Runner | Suite | Actually running today |
-|---|---|---|
-| `ubuntu-latest` (`test`) | Full pytest, coverage, `npm test`, typecheck, Chromium, static analysis | ✅ matches |
-| `ubuntu-latest` (`test-python-compat`) | 3.11/3.12 reduced core suite | ✅ matches |
-| `windows-latest` (`platform-windows`) | `tests/platform/` + core sanity subset | ⚠️ full core suite (`tests/platform/` included as part of it, not standing alone) |
-| `macos-latest` (`platform-macos`) | `tests/platform/` + core sanity subset | ⚠️ full core suite (same as above) |
+| Runner | Suite | Originally proposed | Actual, and now the deliberate target |
+|---|---|---|---|
+| `ubuntu-latest` (`test`) | Full pytest, coverage, `npm test`, typecheck, Chromium, static analysis | ✅ matches | ✅ matches |
+| `ubuntu-latest` (`test-python-compat`) | 3.11/3.12 reduced core suite | ✅ matches | ✅ matches |
+| `windows-latest` (`platform-windows`) | `tests/platform/` + core sanity subset | ⚠️ full core suite | ✅ full core suite, on purpose — see status note |
+| `macos-latest` (`platform-macos`) | `tests/platform/` + core sanity subset | ⚠️ full core suite | ✅ full core suite, on purpose — see status note |
+
+The "avoid matrix explosion" objective is still met without narrowing these two jobs: the
+Cartesian product this plan's core testing principle warns against is `OS × connector × operation
+× gate × browser × package type`, not "the same OS-independent core suite running on more than one
+OS." Running one already-deduplicated suite (no connector/gate/browser/package permutation, since
+those stay OS-independent by construction) on three runners is linear in the number of OSes, not
+exponential in anything — matrix explosion was never actually a risk here once `test-python-compat`
+already handles the one genuinely combinatorial axis (Python version) Linux-only. Full-suite
+promotion costs CI minutes, not combinatorial growth, and 2.1's own evidence says that cost buys
+real detection the narrowed alternative would not.
 
 ### Exit criteria
 
 - ✅ Runtime-relevant PRs run meaningful tests on all three OS families.
-- ⚠️ The Windows/macOS jobs stay materially smaller than the Ubuntu `test` job — not yet true (both
-  run the full core suite, just without `test`'s Node/Chromium/coverage-floor steps); 2.4's
-  narrowing is what would make this true.
+- ✅ The Windows/macOS jobs don't duplicate Ubuntu's Node/Chromium/coverage-floor steps — revised
+  from the original "stay materially smaller" wording once 2.4's own grounding pass found that
+  wording assumed narrowing was the right call without evidence either way; 2.1's evidence (real
+  bugs a narrowed subset would have missed) settled it against narrowing. What "avoid matrix
+  explosion" actually requires — no OS × connector/gate/browser/package permutation — was true
+  before this decision and stays true now; it never depended on the Windows/macOS jobs being
+  smaller than `test`, only on them not re-deriving Node/Chromium/coverage-floor results `test`
+  already establishes once.
 - ✅ A platform-specific regression fails before release, not after — already true today (2.1's own
-  first-run findings are the proof), and doesn't depend on 2.4 landing.
+  first-run findings are the proof), and is *strengthened*, not weakened, by keeping the full suite
+  on both jobs rather than narrowing it.
 
 ---
 
@@ -885,7 +924,7 @@ needs to pass to merge" — singular — and nothing landed by Phase 2.1's promo
 ### Exit criteria
 
 Every job in `tests.yml` that runs on every PR and is meant to gate correctness (`test`,
-`platform-windows`, `platform-macos` once it exists, `test-python-compat`, `static-analysis`'s
+`platform-windows`, `platform-macos`, `test-python-compat`, `static-analysis`'s
 blocking `ruff` step) is a required status check on `main`'s branch protection rule; `testing-
 policy.md` names the real required set instead of "the `test` job"; a deliberately red job on one of
 those checks has been confirmed, not assumed, to block merge.
@@ -937,11 +976,11 @@ Phase 0  Taxonomy / doc foundation                               (DONE — testi
 Phase 1  Live connector CI + Security Remediation 3.12 closure   (DONE — PR #283/#278/#284;
    ↓                                                               1.8/1.9 also done as a follow-up;
    ↓                                                               Apps Script fixture still open)
-Phase 2  Cross-platform core CI                                  (2.1-2.3 DONE — Windows job
-   ↓                                                               promoted/renamed, macOS job added,
+Phase 2  Cross-platform core CI                                  (DONE — Windows job promoted/
+   ↓                                                               renamed, macOS job added,
    ↓                                                               tests/platform/ suite + marker;
-   ↓                                                               2.4 (narrow both jobs to a
-   ↓                                                               targeted subset) still open)
+   ↓                                                               2.4 closed by decision (keep the
+   ↓                                                               full suite, don't narrow it))
 Phase 3  Canonical cross-platform system test                    (new module, reuses existing
    ↓                                                               daemon/MCP test patterns)
 Phase 4  Browser/UI automation                                   (extend existing test_browser_
@@ -1002,8 +1041,8 @@ plan's grounding pass found the work already done, and a note on which remain ge
 11. ~~Windows permanent portability CI~~ — **done** (Phase 2.1), rename/promote only
 12. ~~macOS portability CI + targeted platform suite~~ — **done** (Phase 2.2–2.3): new
     `platform-macos` job, `tests/platform/` directory, `platform` pytest marker. Narrowing
-    `platform-windows`/`platform-macos` down to that suite (Phase 2.4) is not — left open, see
-    Phase 2's own status note.
+    `platform-windows`/`platform-macos` down to that suite (Phase 2.4) is also done, but as a
+    decision *not* to narrow — see Phase 2's own status note.
 13. Cross-platform daemon/MCP/approval/audit test — new module, reuses existing patterns (Phase 3)
 14. Browser approval-flow coverage gaps: "Always allow," multi-card, idempotency (Phase 4.1)
 15. Browser PII/responsive/light-dark coverage (Phase 4.2–4.4)
@@ -1039,8 +1078,8 @@ combination.
 
 - Every PR receives comprehensive Ubuntu testing (already true).
 - Runtime-relevant changes execute on real Windows and macOS runners on every PR, not just
-  `workflow_dispatch` (Phase 2, done — 2.4's narrowing of those two jobs down to a targeted subset
-  is the one remaining piece, and isn't required for this bullet to already be true).
+  `workflow_dispatch` (Phase 2, fully done — 2.4 closed by the decision to keep the full suite on
+  both jobs rather than narrow it, per that phase's own status note).
 - A canonical daemon/MCP/approval/audit scenario passes on all three desktop platforms (Phase 3).
 - Browser behavior is tested automatically against real Chromium, covering PII, responsive, and
   light/dark surfaces, not just the approval round trip already covered (Phase 4).
