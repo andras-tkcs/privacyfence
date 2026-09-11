@@ -158,16 +158,22 @@ def built_shim_entry() -> Path:
     reasoning (skip rather than fail when npm/node aren't fully set up, so
     this test degrades gracefully in environments that only have `node` on
     PATH for other reasons)."""
-    if shutil.which("npm") is None:
+    # Resolve to npm's actual path rather than passing the bare "npm" --
+    # on Windows npm is npm.cmd, and subprocess's CreateProcess (unlike
+    # cmd.exe) never consults PATHEXT itself, so a bare "npm" raises
+    # FileNotFoundError ([WinError 2]) even though shutil.which() (which
+    # does consult PATHEXT) just found it one line above.
+    npm = shutil.which("npm")
+    if npm is None:
         pytest.skip("npm not on PATH -- this fixture builds the shim via `npm install`/`npm run build`")
     try:
         subprocess.run(
-            ["npm", "install", "--silent"], cwd=SHIM_DIR, check=True, capture_output=True, timeout=180
+            [npm, "install", "--silent"], cwd=SHIM_DIR, check=True, capture_output=True, timeout=180
         )
         subprocess.run(
-            ["npm", "run", "build", "--silent"], cwd=SHIM_DIR, check=True, capture_output=True, timeout=60,
+            [npm, "run", "build", "--silent"], cwd=SHIM_DIR, check=True, capture_output=True, timeout=60,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         pytest.skip(f"could not build mcpb/shim/dist/shim.js: {exc}")
     if not SHIM_ENTRY.exists():
         pytest.skip(f"{SHIM_ENTRY} missing after build")
@@ -186,7 +192,12 @@ async def test_shim_proxies_a_real_initialize_and_tool_call_over_mcp(
     params = StdioServerParameters(
         command="node",
         args=[str(built_shim_entry)],
-        env={"HOME": str(shim_home)},
+        # protocol.ts resolves mcp_url/mcp_token via Node's os.homedir(),
+        # which reads $USERPROFILE on Windows and never consults $HOME at
+        # all there (unlike Python's os.path.expanduser(), which checks
+        # both) -- set both so the spawned shim agrees with shim_home
+        # regardless of which platform this runs on.
+        env={"HOME": str(shim_home), "USERPROFILE": str(shim_home)},
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:

@@ -7,7 +7,7 @@ This directory documents PrivacyFence as it works in the current source tree. Ru
 - [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md) — architecture, runtime, MCP transport, configuration, state, approvals, connectors, audit logging, and packaging.
 - [`security-and-compliance.md`](security-and-compliance.md) — security boundaries, authentication, authorization, privacy controls, audit integrity, and deployment considerations.
 - [`testing-policy.md`](testing-policy.md) — test layers, CI execution, live-provider checks, and what remains manual.
-- [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) — the only active implementation plan in `docs/`; tracks remaining test-automation work.
+- [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) — the active cross-platform test-automation plan; tracks remaining work and cross-references the platform-specific plans below.
 
 ## User and operator guides
 
@@ -15,8 +15,12 @@ This directory documents PrivacyFence as it works in the current source tree. Ru
 - [`org-mode-operational-readiness.md`](org-mode-operational-readiness.md) — backup, restore, upgrades, restart behavior, availability, and operations.
 - [`org-mode-download-delivery.md`](org-mode-download-delivery.md) — org-mode inline and staged file delivery.
 - [`platform-support.md`](platform-support.md) — macOS, Windows, and Linux packaging/support matrix.
+- [`windows-support-plan.md`](windows-support-plan.md) — remaining work to ship a signed Windows installer.
+- [`windows-linux-support-plan.md`](windows-linux-support-plan.md) — cross-platform portability tracking shared by the Windows and Linux plans.
+- [`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md) — remaining work on the Debian/Ubuntu local-mode `.deb`.
 - [`dev-vs-live-setup.md`](dev-vs-live-setup.md) — isolate source-development and packaged installations.
 - [`release-testing.md`](release-testing.md) — current release validation that still requires a human.
+- [`manual-pre-release-test-plan.md`](manual-pre-release-test-plan.md) — remaining manual pre-release checklist, being folded into automated coverage.
 
 ## Approval, policy, and data handling
 
@@ -60,6 +64,6 @@ CI and build behavior is defined in `.github/workflows/`, `pyproject.toml`, `tes
 
 Documentation in this directory is a standing reference, not a changelog. Describe what the current implementation does and the boundaries it currently has. Do not preserve completed implementation plans, migration narratives, phase names, or “before/after” history in standing docs.
 
-The one exception is [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md), which is intentionally a live plan while test automation work remains open. When that work is complete, remove or convert it rather than leaving a completed plan in `docs/`.
+The exceptions are the active implementation plans — [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md), [`windows-support-plan.md`](windows-support-plan.md), [`windows-linux-support-plan.md`](windows-linux-support-plan.md), [`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md), and [`manual-pre-release-test-plan.md`](manual-pre-release-test-plan.md) — each intentionally a live plan while its tracked work remains open. Remove or convert a plan once its work is complete rather than leaving it in `docs/`.
 
 When behavior changes, update the nearest standing reference in the same pull request. Prefer stable module, command, route, configuration-key, and workflow names over line numbers or historical pull-request identifiers.

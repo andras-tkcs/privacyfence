@@ -26,6 +26,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import sys
+
 import pytest
 from freezegun import freeze_time
 from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
@@ -185,6 +187,9 @@ class TestAuthorizeInteractive:
         with pytest.raises(SlackClientError, match="did not return a user access token"):
             authorize_interactive("cid", "csecret", str(tmp_path / "token.json"))
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_successful_flow_saves_token_with_restricted_permissions(self, monkeypatch, tmp_path):
         monkeypatch.setattr("privacyfence.slack_client.run_browser_oauth", _invoke_exchange)
         mock_client = MagicMock()
@@ -273,6 +278,9 @@ class TestHoistedFunctions:
             "access_token": "xoxp-abc", "user_id": "U1", "team_id": "T1", "team_name": "Acme", "email": "me@acme.com",
         }
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_save_token_record_writes_with_restricted_permissions(self, tmp_path):
         from privacyfence.slack_client import save_token_record
 

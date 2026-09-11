@@ -1569,7 +1569,13 @@ class SettingsController:
         org_installed_date = ""
         if org_installed:
             try:
-                org_installed_date = datetime.fromtimestamp(org_path.stat().st_mtime).strftime("%b %-d, %Y")
+                mtime = datetime.fromtimestamp(org_path.stat().st_mtime)
+                # Not strftime("%b %-d, %Y") -- %-d (no leading zero) is a
+                # glibc/macOS strftime extension; Windows' CRT raises
+                # ValueError: Invalid format string on it. Building the
+                # day ourselves keeps the same "Jan 5, 2026" rendering
+                # (no leading zero) identically across all three platforms.
+                org_installed_date = f"{mtime:%b} {mtime.day}, {mtime:%Y}"
             except OSError:
                 org_installed_date = ""
 

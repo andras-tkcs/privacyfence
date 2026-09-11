@@ -13,12 +13,17 @@ from __future__ import annotations
 import json
 import stat
 
+import sys
+
 import pytest
 
 from privacyfence import secure_files
 
 
 class TestSecureMkdir:
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_creates_missing_directory_at_0700(self, tmp_path):
         target = tmp_path / "a" / "b"
 
@@ -28,6 +33,9 @@ class TestSecureMkdir:
         assert target.is_dir()
         assert stat.S_IMODE(target.stat().st_mode) == 0o700
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_re_tightens_an_existing_directory(self, tmp_path):
         target = tmp_path / "existing"
         target.mkdir()
@@ -37,6 +45,9 @@ class TestSecureMkdir:
 
         assert stat.S_IMODE(target.stat().st_mode) == 0o700
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_custom_mode(self, tmp_path):
         target = tmp_path / "custom"
 
@@ -54,6 +65,9 @@ class TestSecureMkdir:
 
 
 class TestAtomicWriteBytes:
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_writes_content_and_default_permissions(self, tmp_path):
         target = tmp_path / "nested" / "file.bin"
 
@@ -62,6 +76,9 @@ class TestAtomicWriteBytes:
         assert target.read_bytes() == b"hello"
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_creates_parent_directory_at_0700(self, tmp_path):
         target = tmp_path / "nested" / "file.bin"
 
@@ -69,6 +86,9 @@ class TestAtomicWriteBytes:
 
         assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_custom_mode(self, tmp_path):
         target = tmp_path / "file.bin"
 
@@ -132,6 +152,9 @@ class TestAtomicWriteBytes:
 
 
 class TestAtomicWriteText:
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_writes_text_with_default_encoding(self, tmp_path):
         target = tmp_path / "file.txt"
 
@@ -142,6 +165,9 @@ class TestAtomicWriteText:
 
 
 class TestAtomicWriteJson:
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_writes_valid_json_round_tripping_the_input(self, tmp_path):
         target = tmp_path / "file.json"
         data = {"token": "abc", "nested": {"a": 1}}
@@ -161,6 +187,9 @@ class TestAtomicWriteJson:
 
 
 class TestAuditDirectoryPermissions:
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_no_problems_for_a_0700_directory(self, tmp_path):
         target = tmp_path / "secure"
         target.mkdir()
@@ -168,6 +197,9 @@ class TestAuditDirectoryPermissions:
 
         assert secure_files.audit_directory_permissions([target]) == []
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_stricter_than_0700_is_also_fine(self, tmp_path):
         target = tmp_path / "locked"
         target.mkdir()
@@ -176,6 +208,9 @@ class TestAuditDirectoryPermissions:
         assert secure_files.audit_directory_permissions([target]) == []
 
     @pytest.mark.parametrize("mode", [0o750, 0o705, 0o777, 0o755])
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_flags_group_or_other_access(self, tmp_path, mode):
         target = tmp_path / "loose"
         target.mkdir()
@@ -199,6 +234,9 @@ class TestAuditDirectoryPermissions:
 
         assert secure_files.audit_directory_permissions([target]) == []
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_checks_every_directory_given_independently(self, tmp_path):
         loose = tmp_path / "loose"
         loose.mkdir()

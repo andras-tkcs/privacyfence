@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import base64
 
+import sys
+
 import pytest
 
 pytest.importorskip("cryptography")
@@ -122,6 +124,9 @@ class TestVerifyAndMaybePin:
 
 
 class TestPinnedPublicKeyFile:
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_pin_file_is_written_with_restrictive_permissions(self, tmp_path):
         import stat
 
