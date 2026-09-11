@@ -6,8 +6,8 @@ serving real users — not "how do I install it" (that's
 upgrade it, or when it restarts at 3am." It exists because §14.3 of the 2026-09-04 technical review
 named this gap explicitly: org mode's support level was never stated in one place, and several
 operational questions (backup, restore, upgrade/rollback, restart behaviour, availability model) had
-no documented answer at all. See
-[`security-remediation-plan.md`](security-remediation-plan.md) item 3.13.
+no documented answer at all. See item 3.13 of the (now-removed, all phases landed)
+`security-remediation-plan.md`.
 
 Every claim below is checkable against the cited source file — this document favors being checkable
 over being reassuring, same posture as [`security-and-compliance.md`](security-and-compliance.md).
@@ -41,10 +41,15 @@ Two named gaps, tracked separately rather than left implicit:
 
 - **The Ubuntu systemd service path (`org-mode-setup-guide.md` Step 7) has not had a real
   confirmed end-to-end run against a live server as of this writing** — that guide's own callout at
-  the top says so, and the automated release-workflow smoke test that would close this gap
-  (`security-remediation-plan.md` item 3.11, TST-16) has not landed yet. Nothing about the code path
-  is known to be broken; it simply hasn't been exercised outside development and code review the way
-  the macOS `.dmg` path has (TST-15, item 3.10, same caveat).
+  the top says so. `tests/integration/test_org_ubuntu_release_smoke.py` (item 3.11, TST-16 of the
+  now-removed `security-remediation-plan.md`) has landed and drives `daemon_main.main()` as a real,
+  separate OS process — closing the "never exercised as a packaged install" part of this gap — but
+  it does so against a synthetic Ed25519-signed `org_config.json`, a loopback mocked IdP, and a
+  Host-header-simulated reverse proxy, never a real external IdP, real TLS certificate, or the actual
+  Caddy binary, so it does not by itself close the "live server" half of the gap the guide's callout
+  names. Nothing about the code path is known to be broken; it simply hasn't been exercised against
+  a real deployment outside development and code review the way the macOS `.dmg` path has (TST-15,
+  item 3.10, same caveat).
 - **`/settings` is not mounted in org mode at all** ([`security-and-compliance.md`
   §4](security-and-compliance.md#4-human-in-the-loop-control)) — org mode's per-principal
   `/approvals`/`/security` surface covers approvals and security settings (step-up enrollment,
@@ -379,6 +384,6 @@ What follows from that, concretely:
   privacy matrix, including the ungated (`auto`) tier's
   [own section](TECHNICAL_REFERENCE.md#the-auto-tier-across-all-connectors), added per this same
   §14.3 item.
-- [`security-remediation-plan.md`](security-remediation-plan.md) — item 3.13 is what this document
+- `security-remediation-plan.md` (now removed — all phases landed) — item 3.13 is what this document
   fulfills; Phase 1's org-mode hardening items are the security fixes this document's operational
   claims build on top of.

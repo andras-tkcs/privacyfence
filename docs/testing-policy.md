@@ -1,10 +1,28 @@
 # Testing Policy
 
-What runs where, and when. This repo has three tiers of testing, only the first of which runs in
-GitHub Actions — the other two need a real macOS machine, real screen, and/or real authenticated
-accounts, none of which CI has or should have. See
+What runs where, and when. This repo has three tiers of testing, plus one narrow scheduled
+exception (§0) that only ever runs on infrastructure this project owns. See
 [`coding-and-testing-guidelines.md`](coding-and-testing-guidelines.md) for how to *write* tests;
 this document is about which ones run automatically versus which ones a human has to run.
+
+## 0. Runner-local live tier (scheduled, not per-PR)
+
+`.github/workflows/connector-live-check.yml` runs `qa_fixture_recorder.py --check` (and, on
+drift, `--record`) against the four dedicated test accounts (Google, Slack, Atlassian,
+Salesforce) on a weekly schedule (plus `workflow_dispatch`) — never on `pull_request`, and never
+on a GitHub-hosted runner. It targets a self-hosted runner this project provisions and controls
+(label `privacyfence-test`), provisioned per
+[`connector-live-check-setup.md`](connector-live-check-setup.md) Phase B. The four OAuth
+token files and `org/org_config.json` live only as local files on that runner — they are never
+added as GitHub Actions secrets, and are never transmitted to GitHub at all. See
+[`connector-live-check-setup.md`](connector-live-check-setup.md) for the full account/runner setup
+and the reasoning behind isolating this tier from every GitHub-hosted job.
+
+On drift, the job re-records the affected fixtures and opens an ordinary PR
+(`chore/connector-live-fixture-drift`) with the redacted diff; a maintainer reviews it exactly as
+they would review a manually-run `--record` per §2.1 below. That PR then runs through §1's normal
+GitHub-hosted `tests.yml` merge gate like any other PR — the live-credential job and the
+credential-free merge gate never share a runner or a trigger.
 
 ## 1. Automated suite — every PR, in CI
 
@@ -18,8 +36,8 @@ python scripts/check_coverage_floor.py coverage.json
 ```
 
 on an `ubuntu-latest` runner. A 100% pass rate is required to merge, for both suites. Coverage
-itself is a ratchet, not a specific percentage a PR must hit (TST-03,
-`docs/security-remediation-plan.md` Phase 2.1): `scripts/check_coverage_floor.py` fails the build
+itself is a ratchet, not a specific percentage a PR must hit (TST-03, Phase 2.1 of the now-removed
+`docs/security-remediation-plan.md`): `scripts/check_coverage_floor.py` fails the build
 if overall branch+line coverage, or the coverage of any module on its security-critical list (the
 URL-scheme allowlist, identity-matching, audit-export, org-config/bundle-trust, session/token-
 lifetime, privacy-filter, secure-write, OIDC-discovery-trust, and MCP-error-taxonomy code paths —
@@ -79,7 +97,8 @@ manual steps. It includes:
   socket, same posture as the approval routes above. `TestAudienceSeparation` in
   `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
   approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
-- `tests/unit/web/test_mcp_tools.py` — added at security-remediation-plan.md phase 1.9 (TST-02):
+- `tests/unit/web/test_mcp_tools.py` — added at the now-removed security-remediation-plan.md's
+  phase 1.9 (TST-02):
   `mcp_tools.py`'s own `ToolSpec`-to-`Tool`/`CallToolResult` schema translation (untested by either
   file above, which exercise dispatch and wire framing, not this mapping layer), plus end-to-end
   coverage over the real `/mcp` transport for three narrow behaviors: an unattended session denying
@@ -139,13 +158,20 @@ removed, a response shape changed) while the mocked test suite stays green. `scr
 qa_fixture_recorder.py` closes that gap by calling the real, targeted read methods against a real,
 already-authenticated account.
 
-**Never run in CI.** It reuses the exact OAuth token files `privacyfence-app --<connector>-oauth`
-writes to the git-ignored `credentials/` directory, and only ever targets one specific,
-`[QATEST]`-tagged seed artifact per connector — set up once per environment via
-[`qa-environment-setup.md`](qa-environment-setup.md), resolved through the non-secret, git-ignored
-manifest `tests/fixtures/qa_environment.yaml` (see
+**Never run on a GitHub-hosted runner, or on any `pull_request`-triggered workflow.** It reuses the
+exact OAuth token files `privacyfence-app --<connector>-oauth` writes to the git-ignored
+`credentials/` directory, and only ever targets one specific, `[QATEST]`-tagged seed artifact per
+connector — set up once per environment via [`qa-environment-setup.md`](qa-environment-setup.md),
+resolved through the non-secret, git-ignored manifest `tests/fixtures/qa_environment.yaml` (see
 [`qa_environment.yaml.example`](../tests/fixtures/qa_environment.yaml.example) for the template). No
-credential is ever provisioned to GitHub Actions or any other cloud service to make this possible.
+credential is ever provisioned to a GitHub-hosted runner or any other shared cloud service to make
+this possible.
+
+The instructions below are for running this by hand, from your own machine, between scheduled
+runs — still valid and still the right thing to do for a PR that touches a `*_client.py` or
+`connectors/**` file. §0 above describes the one place this also now runs automatically: a
+project-owned self-hosted runner, on a schedule, per
+[`connector-live-check-setup.md`](connector-live-check-setup.md).
 
 Two modes:
 
@@ -227,10 +253,13 @@ full release-time checklist tying all three tiers together.
 | `check_coverage_floor.py` (coverage ratchet, TST-03) | Yes, every PR | Always — this is also a merge gate |
 | `npm test` (mcpb/shim/'s own suite) | Yes, every PR | Always — this is the merge gate |
 | `npm run typecheck` (mcpb/shim/) | Yes, every PR | Always — this is the merge gate |
-| `qa_fixture_recorder.py --check` | No | PR touches a `*_client.py`/`connectors/**` file |
+| `qa_fixture_recorder.py --check` / `--record` (`connector-live-check.yml`) | Yes, but only on a project-owned self-hosted runner, never GitHub-hosted, never on `pull_request` | Weekly schedule + manual dispatch |
+| `qa_fixture_recorder.py --check` (manual) | No | PR touches a `*_client.py`/`connectors/**` file, between scheduled runs |
 | `qa_web_smoke.py` | No | PR touches `web_shell.py`, `approval_list_html.py`, web routes' JS, `resources/sw.js`, or the CSP |
 | `connector-qa-testing.md`'s live Cowork pass | No | Before a release, or a broad gate/auto-accept change |
 
-None of the "No" rows require a credential or secret to ever be granted to GitHub Actions or any
-other cloud CI — they exist specifically because that's not something this project is willing to do,
-not as a stopgap until it is.
+None of the "No" rows require a credential or secret to ever be granted to a **GitHub-hosted**
+runner or any `pull_request`-triggered workflow — that part of the policy is unchanged and still
+absolute. The one "Yes" row above is a GitHub Actions workflow too, technically, but one that only
+ever executes on infrastructure this project itself owns and controls (§0) — not a GitHub-hosted
+runner, and not reachable from a fork PR or any untrusted trigger.

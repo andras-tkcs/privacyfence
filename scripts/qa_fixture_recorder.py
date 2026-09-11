@@ -1334,6 +1334,41 @@ CONNECTOR_CHECKS: dict[str, Callable[[bool, dict[str, Any]], list[CheckResult]]]
     "telegram": check_telegram,
 }
 
+# Static manifest of the tests/fixtures/live/<connector>/*.json file(s) each
+# CONNECTOR_CHECKS entry's own CheckResult(...) calls above are wired to
+# (re-)write in --record mode against the highest-risk read path(s) for
+# that connector (TST-08, docs/security-remediation-plan.md Phase 3.12).
+# Kept as a plain dict here, independent of ever actually calling a live
+# API, so tests/unit/test_qa_fixture_recorder.py's TestFixturePresence can
+# assert every entry's file(s) exist and are non-empty valid JSON on every
+# CI run -- the guard this manifest exists for. That test also asserts this
+# dict's keys equal CONNECTOR_CHECKS's, so a connector added to one without
+# the other -- fixtures recorded but never checked for CI regression, or a
+# checker added with no fixture ever committed -- fails loudly instead of
+# silently under-covering the new connector.
+EXPECTED_FIXTURES: dict[str, tuple[str, ...]] = {
+    "confluence": ("list_spaces.json", "get_page.json"),
+    "jira": ("list_projects.json", "get_issue.json"),
+    "salesforce": ("list_reports.json", "get_record.json"),
+    "gmail": ("get_message.json",),
+    "drive": ("get_file_metadata.json",),
+    "calendar": ("get_event.json",),
+    "contacts": ("get_contact.json",),
+    "tasks": ("get_task.json",),
+    "slack": ("get_thread_replies.json",),
+    "telegram": ("get_messages.json",),
+}
+
+# In-module consistency check, not just the deferred one in
+# tests/unit/test_qa_fixture_recorder.py's TestFixturePresence: fails at
+# import time (so a straight `python scripts/qa_fixture_recorder.py`, not
+# only `pytest`, catches it too) if a connector is ever added to one dict
+# without the other -- see EXPECTED_FIXTURES's own comment above.
+assert set(EXPECTED_FIXTURES) == set(CONNECTOR_CHECKS), (
+    f"EXPECTED_FIXTURES and CONNECTOR_CHECKS have drifted apart: "
+    f"{set(EXPECTED_FIXTURES) ^ set(CONNECTOR_CHECKS)}"
+)
+
 
 # ---------------------------------------------------------------------------- #
 # CLI

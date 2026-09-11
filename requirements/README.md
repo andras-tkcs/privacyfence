@@ -1,8 +1,8 @@
 # Hash-locked dependency sets
 
-Both files here are derived, `pip-compile`-generated output (SEC-19, Phase 2.4 in
-[`docs/security-remediation-plan.md`](../docs/security-remediation-plan.md)) — do not hand-edit
-either one; regenerate with [`scripts/update_dependency_locks.sh`](../scripts/update_dependency_locks.sh)
+Both files here are derived, `pip-compile`-generated output (SEC-19, Phase 2.4 of the now-removed
+`docs/security-remediation-plan.md`) — do not hand-edit either one; regenerate with
+[`scripts/update_dependency_locks.sh`](../scripts/update_dependency_locks.sh)
 (needs `python3.13 -m pip install pip-tools` — Python 3.13 specifically, see the script's own
 comments for why) after any `pyproject.toml` dependency change, and commit the result.
 `.github/workflows/dependency-audit.yml`'s `lockfile-freshness` job fails the build if a committed
