@@ -65,18 +65,31 @@ jobs:
           .venv/bin/pip install -e ".[test]"
 
       # The only step that touches this runner's permanent state.
-      # QA_SECRETS_DIR (org_config.json, credentials/,
-      # tests/fixtures/qa_environment.yaml) is deliberately kept outside
-      # any Actions workspace and copied in fresh each run -- see the
-      # module comment above and docs/connector-ci-integration-plan.md
-      # Phase B.3. paths.py's data_dir() resolves org/credential storage
-      # relative to wherever this checkout physically sits on disk, so
-      # the copy has to land at these exact paths for the script to see it.
+      # QA_SECRETS_DIR (org_config.json, credentials/) is deliberately
+      # kept outside any Actions workspace and copied in fresh each run --
+      # see the module comment above and
+      # docs/connector-ci-integration-plan.md Phase B.3. paths.py's
+      # data_dir() resolves credential storage relative to wherever this
+      # checkout physically sits on disk, so the copy has to land at
+      # these exact paths for the script to see it.
+      #
+      # tests/fixtures/qa_environment.yaml (the seed-artifact manifest,
+      # Phase A.5) is deliberately NOT copied in here: it isn't a
+      # credential, and this runner doesn't have a filled-in one yet --
+      # Phase A.5 ("cp tests/fixtures/qa_environment.yaml.example
+      # tests/fixtures/qa_environment.yaml and fill in real seed artifact
+      # IDs per docs/qa-environment-setup.md") hasn't been done. Left
+      # alone, the checkout only has the tracked .example, and
+      # qa_fixture_recorder.py's own load_manifest() already fails with a
+      # clear, actionable message pointing at exactly that gap -- no
+      # reason to duplicate that check here. Once a real manifest exists
+      # on this runner, add it to QA_SECRETS_DIR and copy it in the same
+      # way as credentials/org_config.json below.
       - name: Copy this runner's QA credentials into the checkout
         run: |
           set -euo pipefail
           secrets_dir="$(eval echo "${QA_SECRETS_DIR}")"
-          for required in credentials org/org_config.json tests/fixtures/qa_environment.yaml; do
+          for required in credentials org/org_config.json; do
             if [ ! -e "${secrets_dir}/${required}" ]; then
               echo "##[error] ${secrets_dir}/${required} not found." \
                    "See docs/connector-ci-integration-plan.md Phase B.3" \
@@ -84,10 +97,9 @@ jobs:
               exit 1
             fi
           done
-          mkdir -p org tests/fixtures
+          mkdir -p org
           cp -a "${secrets_dir}/credentials/." credentials/
           cp -a "${secrets_dir}/org/org_config.json" org/org_config.json
-          cp -a "${secrets_dir}/tests/fixtures/qa_environment.yaml" tests/fixtures/qa_environment.yaml
 
       - name: Run qa_fixture_recorder.py --check
         id: check
