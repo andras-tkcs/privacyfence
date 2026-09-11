@@ -1339,6 +1339,9 @@ class TestFixtureFreshnessLines:
 # and CI would stay green.
 # ---------------------------------------------------------------------------- #
 
+# docs/automated-test-strategy-plan.md Phase 0: static manifest cross-check,
+# no I/O -- unit per testing-policy.md's seven-layer taxonomy.
+@pytest.mark.unit
 class TestFixturePresence:
     def test_every_connector_check_has_a_fixture_manifest_entry(self):
         # Catches drift in either direction: a check_<connector>() added to
