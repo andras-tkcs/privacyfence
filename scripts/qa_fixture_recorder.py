@@ -55,6 +55,7 @@ import asyncio
 import copy
 import datetime
 import json
+import logging
 import os
 import shutil
 import sys
@@ -1808,6 +1809,15 @@ def run_lifecycle(connectors: list[str], report_file: str | None) -> int:
 
 
 def main() -> int:
+    # Off by default in every *_client.py (each just calls logging.getLogger(__name__)
+    # and leaves configuration to the embedding app -- daemon_main.py sets this up for
+    # the real app, but this script never did). Without a handler, confluence_client.py/
+    # jira_client.py's own logger.info("... token refreshed")/logger.warning("... refresh
+    # failed: %s") calls -- the only signal this script has for whether a 401 was a stale
+    # token that got silently handled, one that failed to refresh, or neither -- go
+    # nowhere. Configured on stderr so it never lands in the markdown report on stdout.
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument("--check", action="store_true", help="Smoke-check only; never writes a fixture.")
