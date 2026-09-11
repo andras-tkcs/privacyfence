@@ -1891,7 +1891,7 @@ class TestRunLifecycle:
         calendar_fake = _FakeCalendarClient()
         monkeypatch.setattr(
             recorder, "LIFECYCLE_CHECKS",
-            {"confluence": _boom, "calendar": lambda manifest: recorder.lifecycle_calendar(manifest)},
+            {"confluence": _boom, "calendar": recorder.lifecycle_calendar},
         )
         monkeypatch.setattr(recorder, "_build_calendar_client", lambda: calendar_fake)
 
