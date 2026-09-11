@@ -18,6 +18,8 @@ import subprocess
 import time
 from types import SimpleNamespace
 
+import sys
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -316,6 +318,9 @@ class TestOrgConfigUpload:
         assert r.json()["error"]
         assert not (sc.org_dir() / "org_config.json").exists()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_installed_file_is_0600(self, client, sessions):
         csrf = _authed(client, sessions)
         client.post(

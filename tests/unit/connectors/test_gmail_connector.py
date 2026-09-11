@@ -17,6 +17,7 @@ spawning a real approval popup. Two things matter most here:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -527,6 +528,14 @@ class TestDownloadAttachment:
             attachments=[Attachment(**defaults)],
         )
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="'Will save to' preview text embeds this test's '/tmp' destination_dir "
+        "verbatim via os.path.join(), which keeps the given POSIX-style root but appends "
+        "with a native (backslash) separator on Windows -- a genuine finding from "
+        "promoting this suite to Windows CI (docs/automated-test-strategy-plan.md "
+        "Phase 2.1), tracked in docs/windows-support-plan.md rather than guessed at here",
+    )
     async def test_preview_and_gate(self, gated_call_spy):
         # application/octet-stream -- a type _worth_prefetching() doesn't
         # recognize -- keeps this test's focus on the preview/gate fields

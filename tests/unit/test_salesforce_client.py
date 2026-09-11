@@ -20,6 +20,8 @@ import stat
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import sys
+
 import pytest
 import requests
 
@@ -154,6 +156,9 @@ class TestAuthorizeInteractive:
         assert captured["data"]["code_verifier"] == "code-verifier-abc"
         assert captured["data"]["redirect_uri"] == "http://localhost:53683/callback"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+    )
     def test_successful_flow_saves_token_with_restricted_permissions(self, monkeypatch, tmp_path):
         response = MagicMock()
         response.raise_for_status.return_value = None

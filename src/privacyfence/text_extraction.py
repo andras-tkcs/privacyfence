@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import io
 import logging
+import mimetypes
+import os
 import zipfile
 
 import defusedxml.ElementTree as ET
@@ -76,6 +78,34 @@ _MAX_ZIP_ENTRY_BYTES = 10 * 1024 * 1024  # 10 MiB
 
 # MIME types extract_text() can do something with, beyond the text/* prefix.
 EXTRACTABLE_MIME_TYPES = frozenset({"application/pdf", _DOCX_MIME, _PPTX_MIME, _XLSX_MIME, _ARCHIVE_MIME})
+
+# The OOXML/zip extensions above answered from a fixed table instead of
+# mimetypes.guess_type() -- see guess_mime_type()'s own docstring for why.
+_EXTENSION_OVERRIDES = {
+    ".docx": _DOCX_MIME,
+    ".pptx": _PPTX_MIME,
+    ".xlsx": _XLSX_MIME,
+    ".zip": _ARCHIVE_MIME,
+}
+
+
+def guess_mime_type(filename: str) -> str | None:
+    """``mimetypes.guess_type(filename)[0]``, except for the handful of
+    extensions this module's own ``EXTRACTABLE_MIME_TYPES``/
+    ``is_prefetch_worthy()`` care about, which are answered from a fixed
+    table instead. On Windows, ``mimetypes.guess_type()`` also consults
+    the registry (``HKEY_CLASSES_ROOT``), so its result for these
+    extensions can depend on what's installed on that particular machine
+    (e.g. whether an Office suite ever registered a content type for
+    ``.docx``) rather than being the one fixed answer this module always
+    treats them as. Everything else (images, plain text, anything
+    extract_text() doesn't special-case) still goes through
+    ``mimetypes.guess_type()`` unchanged.
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in _EXTENSION_OVERRIDES:
+        return _EXTENSION_OVERRIDES[ext]
+    return mimetypes.guess_type(filename)[0]
 
 
 def is_prefetch_worthy(mime_type: str) -> bool:
