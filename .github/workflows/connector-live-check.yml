@@ -2,7 +2,7 @@ name: Connector live check
 
 # Runs only on a schedule or by explicit maintainer trigger -- never on
 # pull_request, never on push from a branch a non-maintainer controls.
-# Targets the self-hosted runner provisioned in docs/connector-ci-integration-plan.md
+# Targets the self-hosted runner provisioned in docs/connector-live-check-setup.md
 # Phase B (label `privacyfence-test`), which is the only place these
 # connectors' live OAuth credentials ever exist. See docs/testing-policy.md's
 # "Runner-local live tier" section.
@@ -22,23 +22,92 @@ concurrency:
   cancel-in-progress: false   # never cancel a run mid-way through a live
                                # provider call sequence
 
+env:
+  # This runner's one persistent, hand-provisioned home for the QA
+  # credentials -- outside any Actions-managed workspace, never a GitHub
+  # Actions secret. Everything else about this job's checkout is
+  # ephemeral and rebuilt every run (see the two steps below): only this
+  # directory needs to survive between runs.
+  QA_SECRETS_DIR: ~/privacyfence
+  # Telegram's api_id/api_hash are NOT a per-account credential like the
+  # other four connectors' OAuth grants -- they're a single, shared app
+  # identity, the same for every user and every phone number, already
+  # baked into every distributed PrivacyFence release build (see
+  # app_credentials.py, docs/telegram-setup.md). This repo already
+  # stores them as the TELEGRAM_API_ID/TELEGRAM_API_HASH secrets
+  # build.yml uses on GitHub-hosted runners for exactly that -- reusing
+  # them here doesn't touch the "never provision a connector credential
+  # to GitHub Actions" policy at all, since that policy is specifically
+  # about the four real per-account OAuth grants. The actual per-account
+  # Telegram credential (the session file from --telegram-setup,
+  # credentials/telegram.session) still lives only in QA_SECRETS_DIR
+  # like the others -- this only supplies the app-level id/hash pair.
+  PRIVACYFENCE_TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+  PRIVACYFENCE_TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+
 jobs:
   live-check:
     runs-on: [self-hosted, privacyfence-test]
-    timeout-minutes: 20   # generous but bounded -- this should be a few
-                           # minutes of read calls, not an open-ended job
+    timeout-minutes: 20   # generous but bounded -- a few minutes of read
+                           # calls plus one venv build, not an open-ended job
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # clean: true (the default) is exactly what we want here: this
+          # checkout is fully ephemeral, rebuilt from scratch every run,
+          # and never holds anything worth preserving between runs --
+          # the one thing that does need to persist (QA_SECRETS_DIR) lives
+          # outside this workspace entirely and gets copied in below.
 
-      # No setup-python/setup-node steps here -- the self-hosted runner
-      # keeps its own persistent venv (Phase B), rebuilt manually when
-      # dependencies change, rather than a fresh install every run. A
-      # GitHub-hosted job would need setup-python; this one deliberately
-      # doesn't, since the point is minimal, auditable actions on a
-      # credential-holding machine.
+      # Built fresh every run rather than kept as a persistent runner-local
+      # venv: costs an extra ~1-2 minutes on this weekly/on-demand job, but
+      # means a pyproject.toml dependency change is picked up automatically
+      # instead of silently drifting from whatever this runner last had
+      # installed. No actions/setup-python -- plain `python3` (whatever
+      # this runner already has on PATH) is used rather than pinning an
+      # exact minor version: pyproject.toml only requires >=3.11, and
+      # that floor is all this job needs -- unlike
+      # scripts/update_dependency_locks.sh, this doesn't touch a lockfile,
+      # so there's no reproducibility reason to match tests.yml's 3.13
+      # exactly. The point of skipping setup-python here is keeping this
+      # credential-holding job's own steps minimal and auditable.
+      - name: Build this run's venv
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[test]"
+
+      # The only step that touches this runner's permanent state.
+      # QA_SECRETS_DIR (org_config.json, credentials/,
+      # tests/fixtures/qa_environment.yaml) is deliberately kept outside
+      # any Actions workspace and copied in fresh each run -- see the
+      # module comment above and docs/connector-live-check-setup.md
+      # Phase B.3. paths.py's data_dir() resolves credential storage
+      # relative to wherever this checkout physically sits on disk, so
+      # the copy has to land at these exact paths for the script to see
+      # it. qa_environment.yaml isn't a credential (it's non-secret
+      # seed-artifact ids), but it lives in the same place for the same
+      # reason: it's runner-local state that has to survive an ephemeral,
+      # every-run-wiped checkout.
+      - name: Copy this runner's QA credentials into the checkout
+        run: |
+          set -euo pipefail
+          secrets_dir="$(eval echo "${QA_SECRETS_DIR}")"
+          for required in credentials org/org_config.json tests/fixtures/qa_environment.yaml; do
+            if [ ! -e "${secrets_dir}/${required}" ]; then
+              echo "##[error] ${secrets_dir}/${required} not found." \
+                   "See docs/connector-live-check-setup.md Phase B.3" \
+                   "for how this runner's QA credentials are provisioned."
+              exit 1
+            fi
+          done
+          mkdir -p org tests/fixtures
+          cp -a "${secrets_dir}/credentials/." credentials/
+          cp -a "${secrets_dir}/org/org_config.json" org/org_config.json
+          cp -a "${secrets_dir}/tests/fixtures/qa_environment.yaml" tests/fixtures/qa_environment.yaml
+
       - name: Run qa_fixture_recorder.py --check
         id: check
         run: |

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (Phase 3, PR3.9 of `docs/security-remediation-plan.md`, ORP-02).
+Accepted (Phase 3, PR3.9 of the now-removed `docs/security-remediation-plan.md`, ORP-02).
 
 ## Context
 

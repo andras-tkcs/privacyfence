@@ -69,9 +69,9 @@ relative maturity as part of your own risk assessment — see
 packaging noted there as not yet battle-tested end to end),
 [`org-mode-operational-readiness.md`](org-mode-operational-readiness.md) for its explicit support
 level and the operational questions that follow deployment (backup/restore, upgrade/rollback,
-restart behaviour, the single-daemon availability model), and
-[`docs/security-remediation-plan.md`](security-remediation-plan.md)'s Phase 1 for the org-mode
-hardening work still in flight as of this writing.
+restart behaviour, the single-daemon availability model), and Phase 1 of the now-removed
+`security-remediation-plan.md` for the org-mode hardening work landed since this document's
+original rewrite (all phases have since shipped).
 
 ---
 
@@ -380,10 +380,9 @@ oversight measure**, sitting in front of the AI system rather than being one:
 
 **Local-mode token semantics — the post-SEC-06 bootstrap flow.** Two persistent secrets, each
 generated once and written 0600 to a file under `~/.privacyfence/`, still anchor local mode's whole
-authorization model — but since SEC-06 (Phase 1 item 1.2 in
-[`security-remediation-plan.md`](security-remediation-plan.md)) they no longer play the role an
-earlier version of this document described, and neither is ever carried in a URL or written to the
-log file:
+authorization model — but since SEC-06 (Phase 1 item 1.2 of the now-removed
+`security-remediation-plan.md`) they no longer play the role an earlier version of this document
+described, and neither is ever carried in a URL or written to the log file:
 
 - **`mcp_token`** is unaffected by SEC-06 and remains the whole authorization model for `/mcp`:
   possession of it, presented as an `Authorization: Bearer` header on every request (Claude Desktop's
@@ -418,8 +417,8 @@ filesystem or log access to that specific machine, and neither secret by itself 
 connected service (each connector still requires its own separate OAuth grant).
 
 **Storage format and permissions.** Every credential/token/config file is written through a shared
-helper (`secure_files.py`, SEC-09 in [`security-remediation-plan.md`](security-remediation-plan.md))
-that writes to a fresh
+helper (`secure_files.py`, SEC-09 of the now-removed `security-remediation-plan.md`) that writes to
+a fresh
 `O_CREAT|O_EXCL`-created temp file in the same directory — already at `0600` from the instant it
 exists, never created with the process's default umask even briefly — then `fsync`s and
 atomically `os.replace`s it into place. A reader can only ever see the old complete file or the new

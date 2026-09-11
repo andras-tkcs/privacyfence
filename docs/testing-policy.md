@@ -12,11 +12,11 @@ drift, `--record`) against the four dedicated test accounts (Google, Slack, Atla
 Salesforce) on a weekly schedule (plus `workflow_dispatch`) — never on `pull_request`, and never
 on a GitHub-hosted runner. It targets a self-hosted runner this project provisions and controls
 (label `privacyfence-test`), provisioned per
-[`connector-ci-integration-plan.md`](connector-ci-integration-plan.md) Phase B. The four OAuth
+[`connector-live-check-setup.md`](connector-live-check-setup.md) Phase B. The four OAuth
 token files and `org/org_config.json` live only as local files on that runner — they are never
-added as GitHub Actions secrets, and are never transmitted to GitHub at all. See that document's
-Phase A–D for the full account/runner setup and the reasoning behind isolating this tier from
-every GitHub-hosted job.
+added as GitHub Actions secrets, and are never transmitted to GitHub at all. See
+[`connector-live-check-setup.md`](connector-live-check-setup.md) for the full account/runner setup
+and the reasoning behind isolating this tier from every GitHub-hosted job.
 
 On drift, the job re-records the affected fixtures and opens an ordinary PR
 (`chore/connector-live-fixture-drift`) with the redacted diff; a maintainer reviews it exactly as
@@ -36,8 +36,8 @@ python scripts/check_coverage_floor.py coverage.json
 ```
 
 on an `ubuntu-latest` runner. A 100% pass rate is required to merge, for both suites. Coverage
-itself is a ratchet, not a specific percentage a PR must hit (TST-03,
-`docs/security-remediation-plan.md` Phase 2.1): `scripts/check_coverage_floor.py` fails the build
+itself is a ratchet, not a specific percentage a PR must hit (TST-03, Phase 2.1 of the now-removed
+`docs/security-remediation-plan.md`): `scripts/check_coverage_floor.py` fails the build
 if overall branch+line coverage, or the coverage of any module on its security-critical list (the
 URL-scheme allowlist, identity-matching, audit-export, org-config/bundle-trust, session/token-
 lifetime, privacy-filter, secure-write, OIDC-discovery-trust, and MCP-error-taxonomy code paths —
@@ -97,7 +97,8 @@ manual steps. It includes:
   socket, same posture as the approval routes above. `TestAudienceSeparation` in
   `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
   approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
-- `tests/unit/web/test_mcp_tools.py` — added at security-remediation-plan.md phase 1.9 (TST-02):
+- `tests/unit/web/test_mcp_tools.py` — added at the now-removed security-remediation-plan.md's
+  phase 1.9 (TST-02):
   `mcp_tools.py`'s own `ToolSpec`-to-`Tool`/`CallToolResult` schema translation (untested by either
   file above, which exercise dispatch and wire framing, not this mapping layer), plus end-to-end
   coverage over the real `/mcp` transport for three narrow behaviors: an unattended session denying
@@ -170,7 +171,7 @@ The instructions below are for running this by hand, from your own machine, betw
 runs — still valid and still the right thing to do for a PR that touches a `*_client.py` or
 `connectors/**` file. §0 above describes the one place this also now runs automatically: a
 project-owned self-hosted runner, on a schedule, per
-[`connector-ci-integration-plan.md`](connector-ci-integration-plan.md).
+[`connector-live-check-setup.md`](connector-live-check-setup.md).
 
 Two modes:
 
