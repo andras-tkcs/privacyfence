@@ -72,11 +72,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from privacyfence import daemon_main  # noqa: E402
 from privacyfence.app_credentials import telegram_app_credentials  # noqa: E402
-from privacyfence.confluence_client import (  # noqa: E402
-    _V2_PAGES_PATH,
-    ConfluenceClient,
-    ConfluenceClientError,
-)
+from privacyfence.confluence_client import ConfluenceClient, ConfluenceClientError  # noqa: E402
 from privacyfence.jira_client import JiraClient, JiraClientError  # noqa: E402
 from privacyfence.salesforce_client import SalesforceClient, SalesforceClientError  # noqa: E402
 from privacyfence.gmail_client import GmailClient, GmailClientError  # noqa: E402
@@ -1413,23 +1409,25 @@ assert set(EXPECTED_FIXTURES) == set(CONNECTOR_CHECKS), (
 # ---------------------------------------------------------------------------- #
 # Bounded lifecycle tests (1.8, docs/automated-test-strategy-plan.md Phase 1
 # residual work) -- create a fresh, uniquely-tagged QA object, read it back,
-# update it, read it back again, then delete it and confirm the deletion
-# actually took. Unlike CONNECTOR_CHECKS above (which only ever reads a
-# durable, hand-created seed artifact), this proves two things neither
-# --check nor --record can: that a real provider still accepts this
-# codebase's own create_*/update_* calls as written, and that this scheduled
-# job cleans up after itself instead of quietly accumulating QA-account
-# clutter, run after run, forever.
+# update it, read it back again, then (calendar/jira/tasks only -- see
+# lifecycle_confluence's own docstring for why Confluence is the exception)
+# delete it and confirm the deletion actually took. Unlike CONNECTOR_CHECKS
+# above (which only ever reads a durable, hand-created seed artifact), this
+# proves something neither --check nor --record can: that a real provider
+# still accepts this codebase's own create_*/update_* calls as written --
+# and, for calendar/jira/tasks, that this scheduled job cleans up after
+# itself instead of quietly accumulating QA-account clutter, run after run,
+# forever.
 #
 # Scoped to only the connectors whose PrivacyFence client exposes a full
-# create/get/update triple *and* a safe way to remove what gets created:
+# create/get/update triple:
 #   - calendar, confluence, jira, tasks
 # Deliberately excludes the rest of CONNECTOR_CHECKS's connectors, checked
 # against each *_client.py before writing this rather than assumed:
 #   - contacts -- ContactsClient.create_contact()'s own docstring says
-#     "Contact deletion is not supported." A lifecycle test that can't clean
-#     up after itself would permanently pollute the QA Google account, not
-#     just this one run -- worse than not testing it at all.
+#     "Contact deletion is not supported." Unlike Confluence below, there's
+#     no update step either to make a create-and-leave-it-behind check worth
+#     running on its own.
 #   - gmail -- create_draft() has no matching get_draft()/update_draft() in
 #     GmailClient, so there is no read/update step to exercise; creating and
 #     immediately deleting a draft is not the create/read/update/delete
@@ -1448,12 +1446,18 @@ assert set(EXPECTED_FIXTURES) == set(CONNECTOR_CHECKS), (
 # registers a delete tool for any provider -- a deliberate product-safety
 # choice that nothing MCP-reachable ever deletes a user's real data (see
 # docs/automated-test-strategy-plan.md's own note on this). Cleanup here
-# reaches past that boundary on purpose, the same way RawCapture/
-# RawCaptureExecute above reach into each client's internal request/service
-# choke point: this script already runs with real QA-account credentials
-# nothing else in this codebase is trusted with, and only ever touches the
-# one object it just created itself this run (a fresh uuid4 suffix every
-# time, never a stored/durable id).
+# reaches past that boundary on purpose for calendar/jira/tasks, the same
+# way RawCapture/RawCaptureExecute above reach into each client's internal
+# request/service choke point: this script already runs with real QA-account
+# credentials nothing else in this codebase is trusted with, and only ever
+# touches the one object it just created itself this run (a fresh uuid4
+# suffix every time, never a stored/durable id). Confluence is the one
+# exception: deleting a page needs its own OAuth scope
+# (delete:page:confluence) that atlassian_oauth.py deliberately never
+# requests, on the same org-wide app every real user authenticates through
+# -- broadening what that shared app can do just so this script can clean up
+# after itself was considered and rejected. lifecycle_confluence() verifies
+# create/get/update only and leaves the page behind; see its own docstring.
 # ---------------------------------------------------------------------------- #
 
 LIFECYCLE_TAG = "[QATEST-LIFECYCLE]"
@@ -1463,10 +1467,9 @@ LIFECYCLE_TAG = "[QATEST-LIFECYCLE]"
 # still returns the object for a few seconds. lifecycle_calendar/
 # lifecycle_tasks pass these to _confirm_deleted so a real (permanent) "not
 # actually removed" finding isn't confused with that ordinary propagation
-# delay. Jira and Confluence don't get this treatment: Jira has shown no such
-# delay here, and Confluence's own lifecycle failure mode seen so far
-# (missing delete:page:confluence scope -> 401 on the delete call itself,
-# never reaching _confirm_deleted) wouldn't be fixed by retrying anyway.
+# delay. Jira doesn't get this treatment -- it has shown no such delay here,
+# and retrying would only mask a real cleanup failure. Confluence never
+# calls _confirm_deleted at all; see lifecycle_confluence's own docstring.
 _EVENTUALLY_CONSISTENT_DELETE_ATTEMPTS = 4
 _EVENTUALLY_CONSISTENT_DELETE_DELAY_SECONDS = 1.0
 
@@ -1477,7 +1480,9 @@ class LifecycleResult:
         self.ok = ok
         self.note = note
         # None: nothing was ever created, so there was nothing to clean up
-        # (e.g. create_* itself failed, or the connector is unconfigured).
+        # (e.g. create_* itself failed, or the connector is unconfigured) --
+        # or, for confluence specifically, cleanup was never attempted at
+        # all by design (see lifecycle_confluence's docstring).
         self.cleanup_ok = cleanup_ok
 
 
@@ -1575,6 +1580,21 @@ def lifecycle_calendar(manifest: dict[str, Any]) -> LifecycleResult:
 
 
 def lifecycle_confluence(manifest: dict[str, Any]) -> LifecycleResult:
+    """Verifies create/get/update/get-after-update only -- deliberately never
+    deletes the page it creates, unlike lifecycle_calendar/_jira/_tasks.
+
+    Deleting a Confluence page needs its own OAuth scope
+    (delete:page:confluence), which atlassian_oauth.py's DEFAULT_SCOPES
+    deliberately never requests: that scope would apply to the same
+    org-wide OAuth app every real user authenticates through, and no
+    connectors/*.py tool ever deletes anything by product design (see
+    confluence_client.py's own module comment) -- broadening what that
+    shared app can do purely so this internal QA script can clean up after
+    itself was considered and rejected. So the page this creates is left
+    behind on purpose; `[QATEST-LIFECYCLE]`-tagged pages accumulate in the
+    QA space (PFQA) over time and need occasional manual cleanup there,
+    unlike calendar/Jira/tasks which self-clean every run.
+    """
     cfg = manifest.get("confluence") or {}
     space_key = cfg.get("space_key", "PFQA")
     client = _build_confluence_client()
@@ -1582,12 +1602,12 @@ def lifecycle_confluence(manifest: dict[str, Any]) -> LifecycleResult:
     title = f"{LIFECYCLE_TAG} confluence page {suffix}"
     updated_title = f"{title} updated"
 
-    page_id = ""
-    ok, note, cleanup_ok = False, "", None
+    ok, note = False, ""
     try:
         created = client.create_page(
             space_key, title,
-            body=f"<p>{LIFECYCLE_TAG} created by qa_fixture_recorder.py --lifecycle; safe to delete.</p>",
+            body=f"<p>{LIFECYCLE_TAG} created by qa_fixture_recorder.py --lifecycle; "
+                 f"left in place on purpose, not deleted -- see lifecycle_confluence's docstring.</p>",
         )
         page_id = created.id
         if not page_id:
@@ -1604,20 +1624,7 @@ def lifecycle_confluence(manifest: dict[str, Any]) -> LifecycleResult:
         ok, note = True, "create, get, update, get-after-update all verified"
     except Exception as exc:  # noqa: BLE001 - an unexpected failure here is the finding itself
         ok, note = False, str(exc)
-    finally:
-        if page_id:
-            delete_note = _attempt_delete(
-                lambda: client._request(client._client.delete, f"{_V2_PAGES_PATH}/{page_id}")
-            )
-            if delete_note:
-                cleanup_ok, note = False, f"{note}; {delete_note}" if note else delete_note
-            else:
-                cleanup_ok, confirm_note = _confirm_deleted(
-                    lambda: client.get_page(page_id), ConfluenceClientError,
-                )
-                if confirm_note:
-                    note = f"{note}; {confirm_note}" if note else confirm_note
-    return LifecycleResult("confluence", ok, note, cleanup_ok)
+    return LifecycleResult("confluence", ok, note, cleanup_ok=None)
 
 
 def lifecycle_jira(manifest: dict[str, Any]) -> LifecycleResult:

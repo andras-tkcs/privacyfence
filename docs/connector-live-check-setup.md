@@ -363,11 +363,13 @@ Real failure modes hit standing this up, in the order they tend to surface:
   the refresh token itself may have been revoked; re-run the Atlassian OAuth step and refresh
   `org_config.json` on the runner. Either way this is an account/credential issue, not something to
   fix in the workflow.
-- **`--lifecycle`'s Confluence row reports `cleanup call failed: Unauthorized (401)`** while create/
-  get/update all pass — the QA account's stored Atlassian token predates the `delete:page:confluence`
-  scope (`atlassian_oauth.DEFAULT_SCOPES`), added specifically so this cleanup step can remove the
-  page it just created. Re-run the Atlassian OAuth step for the QA account (Phase A.3/B.3) to pick up
-  a token that has it; see `docs/atlassian-setup.md`'s matching troubleshooting entry.
+- **`--lifecycle`'s Confluence row always shows `n/a` under Cleanup, never `✅ removed`.** This is
+  expected, not a regression: `delete:page:confluence` is deliberately never requested by this app's
+  OAuth scopes (`docs/atlassian-setup.md` §3) — the org-wide app every real user authenticates through
+  should never be *able* to delete Confluence content, and broadening that just for this QA script was
+  considered and rejected. `lifecycle_confluence()` verifies create/read/update only and leaves the
+  page behind; `[QATEST-LIFECYCLE]`-tagged pages accumulate in the QA Confluence space (`PFQA`) over
+  time and need occasional manual cleanup there, unlike calendar/Jira/tasks which self-clean every run.
 
 ---
 

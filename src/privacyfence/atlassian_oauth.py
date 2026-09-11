@@ -51,19 +51,17 @@ DEFAULT_SCOPES: list[str] = [
     # OAuth 3LO tokens regardless of scope; Atlassian's own supported
     # replacement is `rest/api/content/{id}/child/attachment/{id}/download`).
     "read:attachment:confluence",
-    # Deleting a page is its own granular scope too, separate from
-    # write:page:confluence (which only covers create/update) -- confirmed
-    # by qa_fixture_recorder.py's --lifecycle check, which creates a page
-    # with this app's own write scope and then 401s trying to delete it
-    # with the pre-existing scope list. No connectors/*.py registers a
+    # Deliberately no delete:page:confluence: no connectors/*.py registers a
     # delete tool for any provider (confluence_client.py's own module
-    # comment), so no end user's Confluence content is ever deleted through
-    # this scope in normal product use -- it exists only so the QA
-    # lifecycle check (which runs with real, dedicated QA-account
-    # credentials specifically to prove cleanup, see
-    # qa_fixture_recorder.py's LIFECYCLE_CHECKS docstring) can remove the
-    # page it just created instead of leaking QA-space clutter forever.
-    "delete:page:confluence",
+    # comment) -- this shared, org-wide OAuth app should never be able to
+    # delete a real user's Confluence content, even in principle. This is
+    # also why scripts/qa_fixture_recorder.py's --lifecycle mode doesn't
+    # attempt to delete the Confluence page it creates: broadening every
+    # real user's granted scope just so an internal QA script can clean up
+    # after itself was considered and rejected -- see that script's
+    # lifecycle_confluence() for the resulting, deliberately cleanup-less
+    # behavior (unlike lifecycle_calendar/_jira/_tasks, which all use scopes
+    # already granted for other reasons).
     "offline_access",
 ]
 
