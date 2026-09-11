@@ -154,15 +154,17 @@ one platform of the three with strictly weaker autostart behavior.
       `build_installer.ps1` and Phase 5's signing, uploading the signed installer `.exe` to the same
       GitHub Release the macOS (and, once shipped, Linux `.deb`) jobs attach to — one release, three
       platform assets.
-- [ ] **6.2** Add a one-time (not permanent, unless it proves cheap and worth keeping) `windows-latest`
-      run of `pytest -v --cov=src/privacyfence --cov-report=term-missing` right after Phase 1 lands,
-      as a real-Windows confirmation that nothing path-separator- or `Path`-handling-related breaks
-      that Linux CI's existing full-suite run (already proven platform-independent, per
-      `windows-linux-support-plan.md`) can't catch. If it passes cleanly, a decision to make then:
-      keep it as a permanent `tests.yml` leg (small ongoing CI cost, catches regressions early) or
-      drop back to relying on `build.yml`'s release-time Windows job alone (cheaper, but Windows-only
-      bugs would surface only at release-build time instead of on every PR) — not a blocker either
-      way, just note the choice made once it's made.
+- [x] **6.2** Added a `windows-latest` run of `pytest -v --cov=src/privacyfence
+      --cov-report=term-missing` (`tests.yml`'s `test-windows` job) right after Phase 1 landed, as a
+      real-Windows confirmation that nothing path-separator- or `Path`-handling-related breaks that
+      Linux CI's existing full-suite run (already proven platform-independent, per
+      `windows-linux-support-plan.md`) can't catch. It ran clean, gated to `workflow_dispatch` only
+      at first. The decision this item left open — keep it permanent, or drop back to relying on
+      `build.yml`'s release-time Windows job alone — is now made:
+      `docs/automated-test-strategy-plan.md` Phase 2.1 promoted it to a permanent per-PR leg (small
+      ongoing CI cost, catches regressions before release rather than only at tag-build time),
+      renamed `platform-windows` to match. Still the full core suite for now, not narrowed to a
+      targeted subset — that's Phase 2.3's job, once `tests/platform/` exists.
 
 ## Phase 7 — mcpb shim Windows support (B6)
 

@@ -20,7 +20,7 @@ this repo, present or planned, is exactly one of:
 |---|---|---|---|---|
 | 1 | Unit | Python logic in isolation, fully offline | §1 below — `tests/unit/`, every PR | `unit` |
 | 2 | Integration | Real internal stack (real sockets, servers, the real daemon process), no external network | §1 below — `tests/integration/`, every PR | `integration` |
-| 3 | Cross-platform system | OS path/process/locking/daemon behavior, identical on Linux/Windows/macOS | Not yet a distinct tier. `test_mcp_daemon_contract.py` (§1 below) already proves the daemon→MCP→approval→audit contract, but only on `ubuntu-latest`; `test-windows` exists but is `workflow_dispatch`-gated (no permanent per-PR Windows leg), and there is no macOS leg at all. `automated-test-strategy-plan.md` Phases 2–3 close this gap. | `system` (registered; not yet applied to any test) |
+| 3 | Cross-platform system | OS path/process/locking/daemon behavior, identical on Linux/Windows/macOS | Partially built. `test_mcp_daemon_contract.py` (§1 below) already proves the daemon→MCP→approval→audit contract, but only on `ubuntu-latest`; `platform-windows` (renamed from `test-windows` by `automated-test-strategy-plan.md` Phase 2.1) now runs the same full core suite on every PR, not just `workflow_dispatch`, but there is still no macOS leg and no dedicated `tests/platform/` subset. `automated-test-strategy-plan.md` Phase 2.2–2.3 (macOS job, targeted suite) and Phase 3 (canonical system scenario on all three OSes) close the rest of this gap. | `system` (registered; not yet applied to any test) |
 | 4 | Browser system | JS/CSP/rendering in a real browser | Partially built. `tests/integration/test_browser_smoke.py` (§1 below) already drives real Chromium via Playwright on every PR (login, approval decisions, PDF preview, CSP, org-mode WebAuthn UI); §2.2's `qa_web_smoke.py` covers what that file doesn't yet (script-order/DOM-timing bugs, light/dark and phone-width layout), but only runs by hand. `automated-test-strategy-plan.md` Phase 4 closes the remaining coverage gaps (not the layer itself, which already exists). | `browser` (registered; not yet applied — `test_browser_smoke.py` predates this marker work, see the note below) |
 | 5 | Live connector | Provider API drift | §0 below — `connector-live-check.yml`, self-hosted runner, scheduled. Done. | `live` (registered; nothing in the pytest suite carries it today, since this tier is a standalone script invocation, `qa_fixture_recorder.py --check`/`--record`, not a pytest-collected test — see §0/§2.1) |
 | 6 | Packaged-artifact | Installer/package correctness | Partially built. `test_macos_packaged_smoke.py` runs in `build.yml`'s tag-triggered release path; the Linux `.deb` install/remove/purge lifecycle is manually-verified-once (`linux-local-deb-packaging-plan.md` P7.1/P7.3), not a repeatable CI job; no Windows installer smoke exists yet. `automated-test-strategy-plan.md` Phase 6 closes these gaps. | `packaged` (registered; not yet applied) |
@@ -391,9 +391,9 @@ full release-time checklist tying all three tiers together.
 | `connector-qa-testing.md`'s live Cowork pass | 7 | No | Before a release, or a broad gate/auto-accept change |
 
 Layers 3 (cross-platform system) and 6 (packaged-artifact) don't have a settled row here yet — the
-existing `test-windows`/`build.yml` jobs cover pieces of them today (see the taxonomy table above),
-but not yet as a stable, named tier this table can point to; that's `automated-test-strategy-plan.md`
-Phases 2, 3, and 6.
+existing `platform-windows`/`build.yml` jobs cover pieces of them today (see the taxonomy table
+above), but not yet as a stable, named tier this table can point to; that's
+`automated-test-strategy-plan.md` Phases 2, 3, and 6.
 
 None of the "No" rows require a credential or secret to ever be granted to a **GitHub-hosted**
 runner or any `pull_request`-triggered workflow — that part of the policy is unchanged and still
