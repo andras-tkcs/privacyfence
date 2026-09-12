@@ -303,13 +303,14 @@ shipped, versus what was originally planned here:
 ### Residual work
 
 1. **Apps Script fixture coverage** — genuinely still open. Add `apps_script` to both
-   `CONNECTOR_CHECKS` and `EXPECTED_FIXTURES` in `scripts/qa_fixture_recorder.py`, record its first
-   fixture once a QA Apps Script project exists, and update `manual-pre-release-test-plan.md` §1's
-   connector count accordingly. Small, standalone follow-up — no dependency on anything else in
-   this plan. Blocked on a live QA Apps Script project existing to record against (both edits have
-   to land together — `EXPECTED_FIXTURES`/`CONNECTOR_CHECKS` self-check at import time, so adding
-   `apps_script` to one without a fixture already committed for the other fails every PR, not just
-   this connector's).
+   `CONNECTOR_CHECKS` and `EXPECTED_FIXTURES` in `scripts/qa_fixture_recorder.py` and record its
+   first fixture once a QA Apps Script project exists. Small, standalone follow-up — no dependency
+   on anything else in this plan. Blocked on a live QA Apps Script project existing to record
+   against (both edits have to land together — `EXPECTED_FIXTURES`/`CONNECTOR_CHECKS` self-check at
+   import time, so adding `apps_script` to one without a fixture already committed for the other
+   fails every PR, not just this connector's). Since Phase 9's rewrite of
+   `manual-pre-release-test-plan.md` no longer enumerates connectors by name or count, this item no
+   longer needs a matching doc edit there.
 2. **1.8 — bounded lifecycle tests for write-capable providers** (create/read/update/delete a
    uniquely-tagged QA object, verify cleanup) — done. `scripts/qa_fixture_recorder.py`'s
    `--lifecycle` mode (`LIFECYCLE_CHECKS`) covers `calendar`, `confluence`, `jira`, and `tasks` — the
@@ -1150,30 +1151,48 @@ remaining-work entry above.
 Treat org mode as its own deployment shape, provisioned and exercised from scratch, entirely in
 automated Linux infrastructure.
 
-### Already in this repo
+### Status: done
 
-`tests/integration/test_org_ubuntu_release_smoke.py` already does almost exactly what this phase
-describes, per its own docstring: `daemon_main.main()` end to end, a real synthetic Ed25519-signed
+`tests/integration/test_org_ubuntu_release_smoke.py` already did almost exactly what this phase
+described, per its own docstring: `daemon_main.main()` end to end, a real synthetic Ed25519-signed
 `org_config.json`, a real loopback mocked IdP (`tests/integration/mock_idp.py`), strict fail-closed
 startup on a malformed/unsigned/incomplete bundle, reverse-proxy Host-header handling, org-only
-route mounting, and per-principal session isolation. This is the single largest instance in this
-whole plan of a proposed deliverable already substantially built.
+route mounting, and per-principal session isolation — the single largest instance in this whole
+plan of a proposed deliverable already substantially built. This phase closed the three gaps its
+own "Remaining work" named:
 
-### Remaining work
+1. **The four-scenario check.** Unauthenticated request rejected and authenticated MCP request
+   resolving to the correct principal were already covered. Added: **app-level authz policy**
+   (`TestAppLevelAuthzPolicy`, its own daemon since `authz.allowed_domains` is fixed at startup) —
+   an allowed-domain principal signs in, one outside every allowed domain is turned away with no
+   session; **an approval exercised with audit-principal correctness**
+   (`test_an_approval_is_exercised_by_the_correct_principal_and_audited_there`) — a real MCP
+   `privacyfence_propose_auto_accept_rule_change` call blocks on a human confirmation the way a
+   gated tool's popup does, a different principal can't decide it, the right one can, and the
+   resulting audit entry lands under that principal's own per-principal log directory; and
+   **persisted state surviving a restart** (`test_persisted_state_survives_a_restart`) — a
+   confirmed rule and its audit trail (byte-identical up to that point, then longer) both outlive a
+   SIGTERM/restart cycle. Grounding these against the real subprocess (not an in-process shortcut)
+   surfaced two real, previously-uncaught bugs, both fixed as part of this phase:
+   `gate._run_in_popup_executor` ran its callable in a bare thread-pool thread with no `contextvars`
+   propagation, so a confirmation dialog registered with no pre-registered `PendingApproval`
+   (`show_rule_confirmation_popup`, `show_pii_confirmation_popup` — the main gated-call popup path
+   was unaffected, since it always pre-registers before this function is ever called) silently
+   attributed itself to the wrong principal and could never be decided by anyone; and neither
+   `McpDispatcher.propose_rule_change` nor `.list_rules` forced their principal's
+   `ConnectorRegistry` entry (and the `auto_accept.init_config_path()` side effect of building it)
+   to exist first, so either raised "auto_accept config path not initialized" if called as a
+   principal's very first MCP interaction. Both single-principal-only in-process tests could never
+   have caught, by construction.
+2. **CI promotion.** This test was dispatch/tag-only (`build.yml`'s `build-deb` job), the same gap
+   `test-windows` had before Phase 2.1 — promoted the same way, as its own permanent `org-mode-smoke`
+   job in `tests.yml`, on every PR (Ubuntu only; `build-deb` still runs it too, unchanged, at release
+   time).
+3. **Readiness doc.** `org-mode-operational-readiness.md`'s "Automated evidence" section now cites
+   this module by name for each claim it backs, instead of a generic pointer to "broader unit/
+   security tests."
 
-1. Read the rest of `test_org_ubuntu_release_smoke.py` (it was only partially read while grounding
-   this plan) and check it against the full scenario the source strategy lists: unauthenticated
-   request rejected, authenticated MCP request with identity/policy applied, an approval exercised
-   with audit principal correctness, daemon restart with state survival. Add whichever of those
-   isn't already present as a case in this file — extend it, don't fork a second org-mode system
-   test module.
-2. Confirm this test already runs as a permanent Ubuntu PR job (not dispatch-gated) — if it's
-   currently dispatch-only like `test-windows` was before Phase 2.1, promote it the same way.
-3. Update `org-mode-operational-readiness.md` to reference this test module as the automated
-   evidence for whatever readiness claims it makes, rather than leaving org-mode readiness resting
-   on a claim with no cited test.
-
-### Exit criteria
+### Exit criteria (met)
 
 Org mode can be provisioned and exercised from scratch entirely in automated Linux CI, with no real
 Google/Microsoft identity login required for routine coverage.
@@ -1187,28 +1206,39 @@ Google/Microsoft identity login required for routine coverage.
 Shrink manual release validation to minutes, now that Phases 0–8 have replaced most of what
 `manual-pre-release-test-plan.md` and `connector-qa-testing.md` currently ask a human to do by hand.
 
-### Remaining work
+### Status: done
 
-Do this only after Phases 1–8 actually ship — rewriting these documents first would leave them
-describing automation that doesn't exist yet.
+1. **`manual-pre-release-test-plan.md`**: rewritten from a five-section, half-day walkthrough into a
+   three-section, minutes-long checklist — §1 "Automated prerequisites" (confirm `tests.yml`'s
+   merge-gate jobs and `connector-live-check.yml`'s scheduled run are green/recent, no unresolved
+   `chore/connector-live-fixture-drift` PR, no open gate/auto-accept/approval-UI PR that skipped the
+   required full `connector-qa-testing.md` pass, nothing known-broken in `build.yml`'s
+   packaged-artifact path), §2 "Human QA" (visual UI sanity if the web surface changed, one real
+   MCP-client compatibility smoke — unconditional, since no automated test in this repo drives a
+   real third-party MCP client — OS-native UX smoke if packaging/autostart changed, a drift-PR
+   re-skim), and §3 "Tag and release" (unchanged release mechanics). The old §0's
+   `pre_release_check.py` step is gone outright, not just folded — that script's own docstring
+   already dropped its version-consistency check once `setuptools_scm` replaced the hand-bumped
+   scheme (see this repo's `CLAUDE.md`), so by this phase it reran nothing the merge gate hadn't
+   already run on the same commit; §1 points at confirming that merge gate directly instead. The old
+   §1 fixture-recording walkthrough folded into a single §1 bullet, since Phase 1's scheduled
+   recorder (`connector-live-check.yml`) already does this weekly. The old §3 live-Cowork prompt
+   folded away entirely — Phase 5 confirmed `test_gate.py` already proves gate-state coverage
+   deterministically, so re-proving it by hand added nothing; what survives from that section is
+   only the genuinely unautomatable part (a real MCP client's compatibility), generalized rather than
+   run as a connector-specific popup script.
+2. **`connector-qa-testing.md`**: reframed. Its title now parenthesizes "Extended Connector/Gate
+   Exploratory QA," and it opens with a "When to use this" section stating outright that routine
+   releases need none of it, naming the four cases that do (new connector, material connector/gate
+   change, unexplained regression, or the broad gate/auto-accept/approval-UI change
+   `testing-policy.md` §3 already required this for).
+3. **`testing-policy.md`**: consistency pass done. The "Checked against `manual-pre-release-test-plan.md`"
+   section (Phase 0) now maps each *old* section to where its coverage lives post-rewrite instead of
+   describing a still-pending rewrite; §3's closing paragraph and the Quick-reference table's
+   `connector-qa-testing.md` row both dropped their "before a release" framing in favor of the same
+   four trigger conditions as item 2 above.
 
-1. **`manual-pre-release-test-plan.md`**: reduce to an automated-prerequisites checklist (PR CI
-   green, cross-platform system CI green, connector live CI recent and green, packaged-artifact
-   tests green, no unresolved provider-drift PR) plus a short human-QA section (visual UI sanity if
-   UI changed, one real MCP-client compatibility smoke, OS-native UX smoke if packaging/autostart
-   changed, review of any provider/fixture drift). Its current §0 (`pre_release_check.py`) and the
-   fixture-recording section fold into the automated-prerequisites list once Phase 1 lands the
-   scheduled recorder; its live-Cowork sections fold away once Phase 5's gate matrix and Phase 1's
-   connector CI cover what they currently prove by hand.
-2. **`connector-qa-testing.md`**: reframe from a routine release checklist to "Extended
-   Connector/Gate Exploratory QA," used only for a new connector, a major gate/approval
-   architecture change, or an unexplained integration regression — its opening "When to use this"
-   section already gestures at this; make it explicit that routine releases no longer require it.
-3. **`testing-policy.md`**: by this point it should already describe all seven layers, both CI trust
-   tiers, and which checks are release-blocking versus manual (Phases 0, 1, 2–8 each touch it
-   incrementally) — this step is a final consistency pass, not new content.
-
-### Exit criteria
+### Exit criteria (met)
 
 Routine manual release validation takes minutes, not hours; both documents above accurately
 describe a *reduced*, not aspirational, manual surface.
@@ -1374,11 +1404,15 @@ Phase 6  Packaged-artifact lifecycle                              (DONE — macO
 Phase 7  Graphical-session/autostart                              (Done for both Linux (P7.2) and
    ↓                                                               Windows (8.2); macOS deliberately
    ↓                                                               not built.)
-Phase 8  Org-mode system CI                                       (mostly an audit/extend of
+Phase 8  Org-mode system CI                                       (DONE — audit/extend of
    ↓                                                               test_org_ubuntu_release_smoke.py,
-   ↓                                                               already largely built)
-Phase 9  Retire obsolete manual QA
-   ↓
+   ↓                                                               promoted to a permanent per-PR job)
+Phase 9  Retire obsolete manual QA                                (DONE — manual-pre-release-
+   ↓                                                                test-plan.md rewritten to a
+   ↓                                                                minutes-long checklist,
+   ↓                                                                connector-qa-testing.md reframed
+   ↓                                                                as exploratory-only, testing-
+   ↓                                                                policy.md consistency pass)
 Phase 10 Observability and maintenance polish
    ↓
 Phase 11 Update branch-protection required checks                (incremental — starts as soon as
@@ -1450,8 +1484,12 @@ plan's grounding pass found the work already done, and a note on which remain ge
 22. ~~Windows graphical-session/autostart CI~~ — **done** (Phase 7 item 2): closes
     `windows-support-plan.md` 8.2, `tests/integration/test_windows_graphical_session_autostart.py`,
     its own `.github/workflows/windows-graphical-session.yml`
-23. Org-mode system test audit/extension — likely small (Phase 8)
-24. Manual QA documentation reduction (Phase 9)
+23. ~~Org-mode system test audit/extension~~ — **done** (Phase 8): closed the four-scenario gap,
+    promoted `test_org_ubuntu_release_smoke.py` to a permanent `org-mode-smoke` per-PR job, and
+    updated `org-mode-operational-readiness.md`
+24. ~~Manual QA documentation reduction~~ — **done** (Phase 9): `manual-pre-release-test-plan.md`
+    rewritten to a three-section checklist, `connector-qa-testing.md` reframed as exploratory-only,
+    `testing-policy.md` consistency pass
 25. CI diagnostic/observability polish (Phase 10)
 26. Update branch-protection required status checks (Phase 11) — not one PR but a small addition
     riding alongside each of PRs 12, 17-18, 13, 23 above as their job proves stable, plus a final
@@ -1492,10 +1530,10 @@ combination.
 - Package upgrade tests prove user state survives, on all three platforms (Phase 6, done).
 - Local-mode autostart has automated platform-specific coverage (Phase 7, done for Linux and Windows;
   macOS deliberately not built).
-- Org mode executes an authenticated synthetic end-to-end request in CI (Phase 8, mostly already
-  true — confirm and close remaining gaps).
-- `connector-qa-testing.md` is exploratory, not mandatory, for routine releases (Phase 9).
-- Routine manual release validation takes minutes, not hours (Phase 9).
+- Org mode executes an authenticated synthetic end-to-end request in CI, on every PR (Phase 8,
+  done).
+- `connector-qa-testing.md` is exploratory, not mandatory, for routine releases (Phase 9, done).
+- Routine manual release validation takes minutes, not hours (Phase 9, done).
 - PrivacyFence can be confidently released without owning physical Windows, Linux, or macOS
   development machines.
 - GitHub's required-status-checks list on `main` names every blocking per-PR job, not just `test` —
