@@ -56,17 +56,33 @@ as possible to how a real user would.
    isolated ``%USERPROFILE%\\.privacyfence\\`` this test pointed the daemon
    at is untouched (``installer/privacyfence.iss``'s own ``[UninstallDelete]``
    comment: the installer never reaches into that directory at all).
+5. **Upgrade in place** (this plan's Phase 6 item 20 -- deliberately not built
+   in the same PR as items 1-4 above): install version N, use it to create
+   real on-disk state (an applied auto-accept rule, via the same MCP round
+   trip as step 3), install a synthetically-bumped version N+1 -- the
+   identical PyInstaller ``dist/PrivacyFenceApp`` onedir output, re-packaged
+   through a second, separate ``iscc.exe`` invocation with a bumped
+   ``/DAppVersion`` (same technique ``test_deb_packaged_lifecycle.py``'s
+   ``_synthetic_next_version_deb`` already uses for the ``.deb``: a second
+   genuine PyInstaller build just for a "real" N+1 would multiply this
+   module's already-heavy setup cost for no additional coverage of a claim
+   that doesn't depend on what changed *inside* the package) -- over it, at
+   the same install directory, and confirms the state survived and the
+   upgraded binary still starts and serves. ``installer/privacyfence.iss``'s
+   fixed ``AppId`` is what makes this a real in-place-upgrade install rather
+   than a side-by-side one, the same way a second real release's installer
+   would behave against a machine that already has PrivacyFence installed.
 
 Skipped entirely unless running on real Windows with a just-built
 ``dist/PrivacyFence-*-setup.exe`` on disk -- this only makes sense as a step
 in ``.github/workflows/build.yml``'s ``build-windows`` job, right after
 ``scripts/build_installer.ps1``, never as part of the ordinary ``pytest``
 invocation in ``tests.yml``'s per-PR jobs (same posture as the macOS/Linux
-packaged tests).
-
-Upgrade/state-preservation testing (installing version N+1 over N) is a
-deliberate follow-up, not this module -- see this plan's Phase 6 item 20:
-"don't build both in one PR."
+packaged tests). Step 5's upgrade test additionally needs ``iscc.exe`` on
+``PATH`` and ``dist/PrivacyFenceApp``/``build/privacyfence.ico`` on disk --
+both already there right after ``scripts/build_installer.ps1``'s own steps
+3/1, the same prerequisites the first ``iscc.exe`` invocation (step 7) used
+to build ``setup_exe`` in the first place.
 """
 from __future__ import annotations
 
@@ -76,6 +92,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import socket
 import subprocess
 import time
@@ -207,14 +224,26 @@ class RunningDaemon:
 
 
 def _prepare_home(home: Path, *, port: int) -> None:
-    """Pre-seeds an isolated per-user-profile's ``settings.yaml``: a real
-    free port (so repeated boots in this module never collide with each
-    other or anything else on the runner) and update checks disabled (this
-    tier makes no real outbound network calls)."""
+    """Pre-seeds (or re-seeds only the harness-convenience bits of) an
+    isolated per-user-profile's ``settings.yaml``: a real free port (so
+    repeated boots in this module never collide with each other or
+    anything else on the runner) and update checks disabled (this tier
+    makes no real outbound network calls). If ``settings.yaml`` already
+    exists -- a second boot against a profile a previous boot in this same
+    test already used -- its existing content (e.g. an auto-accept rule the
+    app itself applied) is loaded and only those two fields are
+    overwritten, never replaced wholesale: overwriting it every boot would
+    silently defeat the state-survival assertions
+    ``test_windows_upgrade_in_place_preserves_user_state`` exists to make
+    (same reasoning, same fix, as ``test_deb_packaged_lifecycle.py``'s
+    identically-named helper)."""
     config_dir = home / ".privacyfence" / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
     settings_path = config_dir / "settings.yaml"
-    settings = yaml.safe_load(SETTINGS_EXAMPLE.read_text(encoding="utf-8")) or {}
+    if settings_path.exists():
+        settings = yaml.safe_load(settings_path.read_text(encoding="utf-8")) or {}
+    else:
+        settings = yaml.safe_load(SETTINGS_EXAMPLE.read_text(encoding="utf-8")) or {}
     settings.setdefault("web", {})["port"] = port
     settings.setdefault("update_check", {})["enabled"] = False
     settings_path.write_text(yaml.safe_dump(settings), encoding="utf-8")
@@ -383,7 +412,7 @@ async def _run_daemon_mcp_approval_audit_scenario(daemon: RunningDaemon) -> None
 
 
 # --------------------------------------------------------------------------- #
-# The one test -- install / validate / start+scenario / uninstall
+# Test 1 -- install / validate / start+scenario / uninstall
 # --------------------------------------------------------------------------- #
 
 def _run_installer(*args: str, timeout: float = 120.0) -> subprocess.CompletedProcess:
@@ -457,3 +486,149 @@ async def test_windows_install_validate_scenario_uninstall_lifecycle(tmp_path):
     # installer never reaches into %USERPROFILE%\.privacyfence) ────────────
     assert settings_path.exists(), "uninstall must never touch %USERPROFILE%\\.privacyfence"
     assert "allowed.example.com" in settings_path.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Test 2 -- upgrade in place preserves user state (Phase 6 item 20)
+# --------------------------------------------------------------------------- #
+
+def _synthetic_next_version_installer(setup_exe: Path, output_dir: Path) -> tuple[Path, str]:
+    """Builds a second, standalone installer from the *same* already-built
+    ``dist/PrivacyFenceApp`` onedir output as ``setup_exe``, labeled with a
+    version string guaranteed different from the original -- a second
+    genuine ``iscc.exe`` invocation, not a repackaged copy of ``setup_exe``
+    itself, since Inno Setup's own compiler is what actually needs to run
+    twice to prove anything (unlike ``dpkg-deb --build``, there's no cheap
+    way to relabel an already-compiled ``.exe`` after the fact). This is the
+    same *inputs* as ``scripts/build_installer.ps1``'s own step 7, just
+    invoked a second time with a bumped ``/DAppVersion`` and a scratch
+    ``/DOutputDir`` -- deliberately not a real second PyInstaller build (see
+    this module's own docstring, step 5, for why that would only add cost,
+    not coverage, for what this test needs proven).
+
+    Unlike ``test_deb_packaged_lifecycle.py``'s ``_synthetic_next_version_deb``,
+    the version string here doesn't need to be *orderable* as "newer" --
+    Inno Setup's own upgrade-detection keys off ``AppId`` (fixed in
+    ``installer/privacyfence.iss``), not a version comparison, so any
+    different ``AppVersion`` string is enough to prove this is a distinct
+    reinstall rather than the identical bytes being re-applied.
+    """
+    iscc = shutil.which("iscc.exe") or shutil.which("iscc")
+    assert iscc, "iscc.exe not on PATH -- Inno Setup 6 not installed (see scripts/build_installer.ps1's own prerequisites)"
+
+    dist_onedir = REPO_ROOT / "dist" / "PrivacyFenceApp"
+    assert dist_onedir.is_dir(), f"{dist_onedir} missing -- was scripts/build_installer.ps1 actually run?"
+    mcpb_candidates = sorted(DIST_DIR.glob("PrivacyFence-*.mcpb"))
+    assert mcpb_candidates, f"no PrivacyFence-*.mcpb found in {DIST_DIR} -- was scripts/build_installer.ps1 actually run?"
+    mcpb_path = mcpb_candidates[-1]
+    icon_path = REPO_ROOT / "build" / "privacyfence.ico"
+    assert icon_path.is_file(), f"{icon_path} missing -- was scripts/build_installer.ps1 actually run?"
+
+    version_match = re.match(r"^PrivacyFence-(.+)-setup\.exe$", setup_exe.name)
+    assert version_match, f"unexpected installer filename shape: {setup_exe.name}"
+    new_version = f"{version_match.group(1)}+upgradetest1"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_base_name = "PrivacyFence-upgradetest-setup"
+    result = subprocess.run(
+        [
+            iscc,
+            f"/DAppVersion={new_version}",
+            f"/DDistDir={dist_onedir}",
+            f"/DMcpbPath={mcpb_path}",
+            f"/DIconPath={icon_path}",
+            f"/DOutputDir={output_dir}",
+            f"/DSetupBaseName={setup_base_name}",
+            str(REPO_ROOT / "installer" / "privacyfence.iss"),
+        ],
+        capture_output=True, text=True, timeout=180,
+    )
+    assert result.returncode == 0, f"iscc.exe (synthetic upgrade build) failed:\n{result.stdout}{result.stderr}"
+    new_setup = output_dir / f"{setup_base_name}.exe"
+    assert new_setup.is_file(), f"{new_setup} missing after iscc.exe"
+    return new_setup, new_version
+
+
+@pytest.mark.timeout(300)   # builds a second installer *and* boots the daemon twice -- the module's
+                             # default timeout=180 (sized for test 1's single install/boot/uninstall)
+                             # isn't enough headroom for both in one test.
+async def test_windows_upgrade_in_place_preserves_user_state(tmp_path):
+    setup_exe_n = _built_installers()[-1]
+    install_dir = tmp_path / "install"
+    home = tmp_path / "home"
+
+    # ── Install version N; create real on-disk state the app itself
+    # applied (an auto-accept rule confirmed through the real MCP/approval
+    # round trip -- not a hand-written settings.yaml) ────────────────────
+    install_result = _run_installer(
+        str(setup_exe_n),
+        "/VERYSILENT", "/SUPPRESSMSGBOXES", "/SP-", "/NORESTART",
+        f"/DIR={install_dir}",
+        f"/LOG={tmp_path / 'install-n.log'}",
+    )
+    assert install_result.returncode == 0, (
+        f"installer failed (exit {install_result.returncode}):\n{install_result.stdout}{install_result.stderr}"
+    )
+    alias_exe = install_dir / ALIAS_EXE_NAME
+
+    with _running_daemon(alias_exe, home) as daemon:
+        async with httpx.AsyncClient(base_url=daemon.base_url, follow_redirects=True) as web_client:
+            session_id = await _bootstrap_session(web_client, daemon.web_token)
+            propose_task = asyncio.create_task(
+                _propose_trusted_sender_rule(daemon.mcp_url, daemon.mcp_token, value=["preupgrade.example.com"])
+            )
+            await _resolve_pending_card(web_client, session_id, decision="confirm")
+            propose_result = await propose_task
+            assert propose_result.isError is not True, getattr(propose_result, "content", propose_result)
+            assert propose_result.structuredContent["changed"] is True
+
+            await _quit(web_client, session_id)
+        assert daemon.process.wait(timeout=15) == 0
+
+    settings_path = home / ".privacyfence" / "config" / "settings.yaml"
+    assert "preupgrade.example.com" in settings_path.read_text(encoding="utf-8")
+
+    # ── Build and silently install a synthetically-bumped version N+1 over
+    # it, at the same install directory (installer/privacyfence.iss's fixed
+    # AppId is what makes this an upgrade rather than a side-by-side
+    # install) ─────────────────────────────────────────────────────────────
+    setup_exe_n1, new_version = _synthetic_next_version_installer(setup_exe_n, tmp_path / "upgrade-build")
+    upgrade_result = _run_installer(
+        str(setup_exe_n1),
+        "/VERYSILENT", "/SUPPRESSMSGBOXES", "/SP-", "/NORESTART",
+        f"/DIR={install_dir}",
+        f"/LOG={tmp_path / 'install-n1.log'}",
+    )
+    assert upgrade_result.returncode == 0, (
+        f"upgrade install (version {new_version}) failed (exit {upgrade_result.returncode}):\n"
+        f"{upgrade_result.stdout}{upgrade_result.stderr}"
+    )
+    assert alias_exe.is_file(), f"{alias_exe} missing after upgrade install"
+
+    # ── The autostart task is still registered -- installer/privacyfence.iss's
+    # [Run] section re-registers it (with /f) on every install, upgrades
+    # included, not just a first install ──────────────────────────────────
+    assert _task_exists(), f"Task Scheduler task {TASK_NAME!r} should still be registered after an upgrade install"
+
+    # ── State survived the upgrade untouched (the same isolated
+    # %USERPROFILE% the installer itself never reaches into) ────────────────
+    assert "preupgrade.example.com" in settings_path.read_text(encoding="utf-8")
+
+    # ── The upgraded binary still starts and serves, without clobbering the
+    # state it just inherited ─────────────────────────────────────────────
+    with _running_daemon(alias_exe, home) as daemon:
+        async with httpx.AsyncClient(base_url=daemon.base_url, follow_redirects=True) as web_client:
+            session_id = await _bootstrap_session(web_client, daemon.web_token)
+            assert (await web_client.get("/settings")).status_code == 200
+            await _quit(web_client, session_id)
+        assert daemon.process.wait(timeout=15) == 0
+
+    assert "preupgrade.example.com" in settings_path.read_text(encoding="utf-8")
+
+    # ── Cleanup: silent uninstall, same as test 1 ────────────────────────
+    uninstaller = install_dir / "unins000.exe"
+    assert uninstaller.is_file(), f"{uninstaller} missing -- was the upgrade install actually silent/complete?"
+    uninstall_result = _run_installer(str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+    assert uninstall_result.returncode == 0, (
+        f"uninstall failed (exit {uninstall_result.returncode}):\n{uninstall_result.stdout}{uninstall_result.stderr}"
+    )
