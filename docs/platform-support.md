@@ -64,32 +64,46 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
 
 ## Known open items
 
-- **Windows Task Scheduler autostart — two real, independent bugs found and fixed via actual
-  `workflow_dispatch` runs, not by inspection alone.** The `PrivilegesRequired=lowest`/non-elevation
-  theory this bullet previously carried was wrong on both counts it tried to explain:
-  1. **Registration itself was failing.** `installer/privacyfence.iss`'s `schtasks /create` call
-     passed `/ri 1 /du 9999:59`, trying to get crash-restart behavior out of plain `schtasks.exe`
-     CLI flags. Both are documented by Microsoft as "not applicable" to an `ONLOGON` schedule (`/ri`
-     is valid only for MINUTE/HOURLY/DAILY/WEEKLY/MONTHLY/ONCE; `/du` only for MINUTE/HOURLY) —
-     `schtasks.exe` rejected the whole `/create` call outright, on every install, silently, since an
-     Inno `[Run]` entry's nonzero exit code doesn't abort Setup by default. Fixed by dropping the
-     invalid flags. **This does not restore crash-restart behavior** — the task is logon-triggered
-     only; real restart-on-failure needs the task's own `<RestartOnFailure>` XML settings, not
-     exposed through `schtasks.exe`'s plain flags at all, tracked as
-     [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13, not yet built.
-  2. **Once registration was fixed and re-validated, the trigger itself turned out to be scoped to
-     the wrong account.** The installer's `schtasks /create` call omitted `/RU` entirely, on the
-     assumption (also baked into `test_windows_graphical_session_autostart.py`'s own docstring) that
-     Microsoft's unqualified default for an `ONLOGON` trigger already meant "fires for any
-     interactive logon." It doesn't: per Microsoft's own documentation, omitting `/RU` scopes the
-     task to whichever account ran `schtasks /create` — i.e. the installing user only. The re-run
-     against a real Windows runner caught this directly: task registration succeeded, but a
-     different (throwaway) account's logon never fired the trigger within 30s. Fixed by adding
-     `/ru "BUILTIN\Users"` — the built-in group rather than one specific account, the standard
-     technique for "fire on any interactive logon, in that user's own session."
-  Fix 1 alone was re-run via `workflow_dispatch` and is what surfaced fix 2's bug; fix 2's own
-  `workflow_dispatch` re-run is what should confirm both together before this note calls the
-  mechanism proven — check `windows-graphical-session.yml`'s own run history for the actual result
+- **Windows Task Scheduler autostart registration and crash-restart — fixed, verified by real
+  `workflow_dispatch` runs; one different gap remains, in the CI test's own methodology, not the
+  installer.** This mechanism went through several real, independently-found-and-fixed bugs before
+  landing where it is now — see `installer/privacyfence-task.xml.tmpl`'s own header comment and
+  `installer/privacyfence.iss`'s `[Code]` section for the full detail — and the early ones are worth
+  naming here only because this bullet itself carried wrong theories about them at the time:
+  `PrivilegesRequired=lowest`/non-elevation was never the cause; nor, in the end, was the `/ri`/`/du`
+  and `/RU`-scoping pair of `schtasks /create` CLI-flag bugs this bullet previously described as the
+  fix — those flags were superseded entirely once the mechanism moved to a real Task Scheduler XML
+  task definition (`schtasks /create /xml`), which is what actually ships today.
+  **The real, final blocker in that XML approach** was an `encoding="UTF-8"` declaration in the XML
+  prolog: `schtasks.exe` hands the file to MSXML as a Unicode stream already, so a declaration
+  claiming UTF-8 contradicted the stream the parser was already on and MSXML rejected the whole
+  registration outright (`ERROR: The task XML is malformed. (1,40)::ERROR: unable to switch the
+  encoding`) — on every install, silently, until `[Code]` was changed to actually capture and log
+  `schtasks`'s own output. Fixed by dropping the encoding declaration entirely. Alongside it, the
+  task definition also regained three elements an earlier simplification pass had dropped and that
+  turned out to be load-bearing once registration itself started succeeding: `version="1.2"` on the
+  root `<Task>` element (the schema version `<RestartOnFailure>` and `<MultipleInstancesPolicy>`
+  actually need), `id` on `<Principal>`, and the matching `Context` on `<Actions>` — without that
+  id/Context pair, the registered `GroupId` principal is never actually bound to anything that runs.
+  **Real crash-restart-on-failure is now implemented, not just planned**: the task definition carries
+  `<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>`, closing
+  [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13's implementation (its
+  own exit criteria — an automated CI test proving a real restart — are not yet met; see below for
+  why).
+  **What's still open is the CI test's own substitution for "someone signs in," not the installer.**
+  `windows-graphical-session.yml`'s real-logon test now gets past installation and task registration
+  and fails at the actual question it exists to ask: `schtasks /query /v` reports the task
+  `Enabled`/`Ready`, scoped to the right group, pointing at the right exe, and simply never fired
+  (`Last Result: 267011` / `SCHED_S_TASK_HAS_NOT_RUN`). The reason is that the test signs the
+  throwaway account in via PowerShell's `Start-Process -Credential`
+  (`CreateProcessWithLogonW`), which creates a logon session but not the Terminal Services *session*
+  logon a `LogonTrigger` actually subscribes to — a hosted-runner limitation in the test's own
+  substitution, not a defect in the shipped task definition. Three ways to close this gap have been
+  proposed but none chosen yet: narrow the automated assertion to what CI can actually prove
+  (definition correctness plus `schtasks /run` confirming the action starts the daemon as the right
+  principal, leaving the trigger itself to manual QA), build a real session via RDP loopback, or
+  retire this workflow and let Phase 6.2's packaged-installer smoke test be the automated Windows
+  autostart gate. Check `windows-graphical-session.yml`'s own run history for the current result
   rather than trusting this note alone.
   None of this needed a dedicated bullet on its own here for the manual-QA/issue-closure part of it:
   that content now lives in [`release-testing.md`](release-testing.md)'s human-checks list
