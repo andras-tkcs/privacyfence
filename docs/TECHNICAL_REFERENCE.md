@@ -1007,23 +1007,29 @@ the installer runs without admin elevation — `PrivilegesRequired=lowest`), the
 alongside it, and a Start Menu entry pointing at the embedded web settings UI rather than at the
 daemon executable directly.
 
-Autostart is a Task Scheduler task (`PrivacyFence`), not a Startup-folder shortcut, registered by
-the installer's own `[Run]` section (`schtasks /create ... /sc onlogon /ru "BUILTIN\Users" /rl
-limited`) and removed by the uninstaller's `[UninstallRun]` section (`schtasks /delete`) — visible
-and removable through normal Windows install/uninstall UI, the same way the macOS LaunchAgent plist
-and the Linux `.deb`'s XDG autostart entry are. It fires on any interactive logon (`/ru
-"BUILTIN\Users"` targets the built-in group rather than one specific account — omitting `/RU`
-entirely does *not* get this: per Microsoft's own documentation the unqualified default scopes the
-task to whichever account ran the installer only, a real bug this mechanism shipped with briefly,
-caught by `windows-graphical-session.yml`'s own real-logon test and fixed), runs the packaged
-`privacyfence-app.exe` alias at a non-elevated run level, and starts the daemon once, at logon —
-there is currently no crash-restart behavior analogous to the
-macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` or the Linux `.deb`'s systemd restart policy;
-that needs the task's own `<RestartOnFailure>` XML settings (`schtasks /create /xml`, not exposed
-through `schtasks.exe`'s plain flags), tracked as
-[`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13. See
+Autostart is a Task Scheduler task (`PrivacyFence`), not a Startup-folder shortcut, registered from
+`installer/privacyfence.iss`'s `[Code]` section (`CurStepChanged(ssPostInstall)` calling
+`RegisterAutostartTask`) rather than a plain `[Run]` entry, and removed by the uninstaller's
+`[UninstallRun]` section (`schtasks /delete`) — visible and removable through normal Windows
+install/uninstall UI, the same way the macOS LaunchAgent plist and the Linux `.deb`'s XDG autostart
+entry are. Registration is a real Task Scheduler XML task definition
+(`installer/privacyfence-task.xml.tmpl`, extracted at install time, `__EXEC_PATH__` substituted for
+the real installed path, registered via `schtasks /create /xml`), not plain `schtasks /create` CLI
+flags — an earlier CLI-flag-only version of this mechanism shipped briefly with two real bugs
+(invalid `/ri`/`/du` flags for an `ONLOGON` schedule, then a trigger scoped to only the installing
+account), both superseded by this XML-based rewrite rather than patched in place; see that
+template's own header comment and `platform-support.md`'s "Known open items" for the full history.
+`<LogonTrigger>` with no `<UserId>` fires for any interactive logon, `<Principal>` uses `GroupId`
+(`Builtin\Users`) rather than a specific account so the task runs as whichever user just signed in,
+in their own session, at the non-elevated `LeastPrivilege` run level, and
+`<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>` gives it real
+crash-restart behavior — parity with the macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and
+the Linux `.deb`'s systemd restart policy, closing
+[`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13's implementation. See
 [`platform-support.md`](platform-support.md)'s "Known open items" for this mechanism's current
-verification status.
+verification status — the installer/task definition itself is confirmed working via
+`workflow_dispatch`, but the one dedicated end-to-end CI test for it still fails on a hosted runner
+for a reason specific to that test's own real-logon substitution, not to the shipped task.
 
 Per-user state (credentials, settings, the audit log) lives under `%USERPROFILE%\.privacyfence\`,
 created by the app on first run — the installer never touches it, and uninstalling removes only the
