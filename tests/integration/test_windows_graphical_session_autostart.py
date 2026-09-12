@@ -197,6 +197,31 @@ pytestmark = [
 # test_windows_packaged_smoke.py/test_deb_packaged_lifecycle.py).
 # --------------------------------------------------------------------------- #
 
+def _windows_powershell_env() -> dict[str, str]:
+    """Returns an environment for spawning Windows PowerShell (``powershell.exe``,
+    the 5.1 engine) that can actually autoload its own built-in modules.
+
+    This pytest process itself runs under a PowerShell *7* (``pwsh``) step in
+    CI (see this workflow's own ``shell:`` line), and pwsh sets ``$env:
+    PSModulePath`` to its own module search path -- one that doesn't include
+    Windows PowerShell 5.1's module directory. A nested ``powershell.exe``
+    process (spawned below) inherits that env var as plain process
+    environment and, unlike a real top-level 5.1 session, never recomputes
+    it -- so autoloading its own built-in cmdlets (``ConvertTo-SecureString``
+    from ``Microsoft.PowerShell.Security``, ``Get-CimInstance`` from
+    ``CimCmdlets``, etc.) fails with "the module could not be loaded", 100%
+    reproducibly, regardless of the throwaway account or password involved.
+    Prepending Windows PowerShell 5.1's own system module directory restores
+    the lookup those cmdlets need."""
+    env = dict(os.environ)
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    system_modules = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "Modules")
+    existing = env.get("PSModulePath", "")
+    if system_modules.lower() not in existing.lower():
+        env["PSModulePath"] = f"{system_modules};{existing}" if existing else system_modules
+    return env
+
+
 def _run_powershell(script: str, *, timeout: float = 60.0) -> subprocess.CompletedProcess:
     # -EncodedCommand (UTF-16LE, base64) sidesteps every bit of cmd/argv
     # quoting hazard a multi-line script with embedded single/double quotes
@@ -204,7 +229,7 @@ def _run_powershell(script: str, *, timeout: float = 60.0) -> subprocess.Complet
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     return subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, env=_windows_powershell_env(),
     )
 
 
