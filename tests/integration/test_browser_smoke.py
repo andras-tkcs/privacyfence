@@ -275,6 +275,34 @@ def org_server(pf_home, tmp_path, monkeypatch):
         server.stop()
 
 
+def _await_new_registration(web_ui: WebApprovalUI, already_pending: set[str], what: str) -> object:
+    """Block until an approval this caller's own thread registered shows up
+    in the registry, and return *that* one.
+
+    Never ``web_ui.current()``: that is "the newest pending approval", which
+    is already non-None whenever anything else is still pending, so a
+    ``while web_ui.current() is None`` wait returns immediately -- handing
+    back the *previous* card instead of the one the caller just started a
+    thread for. With two cards pending at once (this module's own
+    ``test_sse_refreshes_the_list_live_with_multiple_pending_cards``) that
+    made ``card_a`` and ``card_b`` the same object roughly half the time,
+    and the test then asserted against a row it had itself just resolved
+    away -- the real cause of that test's CI flakiness, reproducible
+    without a browser at all (the registry/threading half of it is plain
+    Python). Diffing against the ids that were pending *before* the thread
+    started is what makes this wait about this call's own card.
+    """
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        fresh = [a for a in web_ui.deferred_registry.list_pending() if a.id not in already_pending]
+        if fresh:
+            # At most one per call (each helper starts exactly one thread),
+            # so there is nothing to disambiguate between here.
+            return fresh[0]
+        time.sleep(0.01)
+    raise AssertionError(f"{what} never registered")
+
+
 def _register_card(web_ui: WebApprovalUI, **kwargs) -> tuple[threading.Thread, object]:
     """Starts a blocking show_read_popup()/show_popup() call on a
     background (daemon) thread and waits for its card to register -- same
@@ -292,13 +320,12 @@ def _register_card(web_ui: WebApprovalUI, **kwargs) -> tuple[threading.Thread, o
         )
         box["result"] = fn(*args, **kwargs)
 
+    # Snapshotted before the thread starts, so nothing it registers can
+    # land inside the "already pending" set -- see _await_new_registration.
+    already_pending = {a.id for a in web_ui.deferred_registry.list_pending()}
     t = threading.Thread(target=run, daemon=True)
     t.start()
-    deadline = time.monotonic() + 5
-    while web_ui.current() is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-    card = web_ui.current()
-    assert card is not None, "card never registered"
+    card = _await_new_registration(web_ui, already_pending, "card")
     # Stashed on the thread itself (rather than returned as a third tuple
     # element) so every existing two-value `thread, card = _register_card(...)`
     # call site keeps working unchanged -- only tests that actually care what
@@ -320,13 +347,10 @@ def _register_confirm(web_ui: WebApprovalUI, categories: list[str]) -> tuple[thr
     def run():
         box["result"] = web_ui.show_pii_confirmation_popup(categories)
 
+    already_pending = {a.id for a in web_ui.deferred_registry.list_pending()}
     t = threading.Thread(target=run, daemon=True)
     t.start()
-    deadline = time.monotonic() + 5
-    while web_ui.current() is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-    card = web_ui.current()
-    assert card is not None, "confirmation dialog never registered"
+    card = _await_new_registration(web_ui, already_pending, "confirmation dialog")
     t.result_box = box
     return t, card
 
@@ -645,6 +669,13 @@ class TestApprovalListBehavior:
         _sign_in_local(page, server)
         thread_a, card_a = _register_card(web_ui)
         thread_b, card_b = _register_card(web_ui)
+        # The whole test is meaningless if these are the same card, and
+        # that is exactly how it used to fail in CI (see
+        # _await_new_registration): every assertion below would then be
+        # about a single row, and resolving "card_a" would take "card_b"
+        # away with it. Fail here, naming the cause, rather than 25 lines
+        # down as an unexplained selector timeout.
+        assert card_a.id != card_b.id, "_register_card handed back the same card twice"
         try:
             page.goto(f"{server.base_url}/approvals")
             page.wait_for_selector(f'[data-approval-id="{card_a.id}"]')
@@ -656,15 +687,18 @@ class TestApprovalListBehavior:
             web_ui.resolve(card_a.id, "deny")
             thread_a.join(timeout=5)
             page.wait_for_selector(f'[data-approval-id="{card_a.id}"]', state="detached", timeout=5000)
-            # approval_list_html.py's render() does one atomic innerHTML swap per
-            # "approvals" SSE event using whatever rows snapshot the server just
-            # polled (state_stream.py's _APPROVALS_POLL_SECONDS) -- the snapshot
-            # that first drops card_a isn't guaranteed to be the same snapshot
-            # that still carries card_b, if two poll ticks land close together.
-            # Wait for card_b's row explicitly (same as card_a's own detached
-            # wait above) instead of asserting immediately, so a transient
-            # empty-then-repopulated render doesn't read as a real assertion
-            # failure.
+            # NB: this wait is belt-and-braces, not the fix for this test's
+            # former flakiness -- an earlier pass at that misread the cause
+            # as a two-poll-ticks-land-together render race and added the
+            # wait for it, which changed the symptom (an instant `0 == 1`
+            # became a 5s timeout here) without fixing anything, because
+            # card_b *was* card_a. The real cause was _register_card's own
+            # readiness check handing back the same card twice; see
+            # _await_new_registration above. approval_list_html.py's
+            # render() does one atomic innerHTML swap per "approvals" SSE
+            # event, so card_a's row leaving and card_b's row staying are
+            # the same swap and the count below cannot race -- this just
+            # keeps the assertion honest if that ever stops being true.
             page.wait_for_selector(f'[data-approval-id="{card_b.id}"]', timeout=5000)
             assert page.locator(f'[data-approval-id="{card_b.id}"]').count() == 1
 
