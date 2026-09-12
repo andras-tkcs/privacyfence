@@ -161,27 +161,61 @@ var
   RawContent: AnsiString;
   ResultCode: Integer;
 begin
-  ExtractTemporaryFile('privacyfence-task.xml.tmpl');
-  TemplateFile := ExpandConstant('{tmp}\privacyfence-task.xml.tmpl');
-  { LoadStringFromFile's own "var S" output parameter is typed AnsiString,
-    not String -- passed as RawContent here and converted (a plain
-    assignment allows the AnsiString/String conversion that a var
-    parameter, like StringChangeEx's own first argument below, does not)
-    rather than declared as the var parameter's own type throughout, so
-    every other call in this function can use the ordinary String type. }
-  Result := LoadStringFromFile(TemplateFile, RawContent);
-  if not Result then
-    Exit;
-  XmlContent := RawContent;
-  ExecPath := ExpandConstant('{app}\{#AliasExeName}');
-  StringChangeEx(XmlContent, '__EXEC_PATH__', ExecPath, False);
-  XmlFile := ExpandConstant('{tmp}\privacyfence-task.xml');
-  Result := SaveStringToFile(XmlFile, XmlContent, False);
-  if not Result then
-    Exit;
-  Result := Exec(ExpandConstant('{sys}\schtasks.exe'),
-    '/create /tn "{#TaskName}" /xml "' + XmlFile + '" /f',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  { A real run against this function's previous version (no logging, no
+    exception handling) showed Setup's own install log recording
+    ExtractTemporaryFile's extraction and then nothing else at all from
+    this function -- not even the separate [Run] "launch now" entry that
+    normally runs after CurStepChanged(ssPostInstall) returns. The most
+    likely explanation is an unhandled Pascal Script runtime exception
+    partway through this function silently aborting the rest of Setup's
+    post-install processing under /SUPPRESSMSGBOXES, with the overall
+    install still reporting success. Wrapped in try/except with an
+    explicit Log() call at every step and on any exception, so the next
+    real run's own install log actually says where and why, instead of
+    this comment's own guess. }
+  Result := False;
+  try
+    Log('RegisterAutostartTask: starting');
+    ExtractTemporaryFile('privacyfence-task.xml.tmpl');
+    TemplateFile := ExpandConstant('{tmp}\privacyfence-task.xml.tmpl');
+    Log('RegisterAutostartTask: template path = ' + TemplateFile);
+    { LoadStringFromFile's own "var S" output parameter is typed
+      AnsiString, not String -- passed as RawContent here and converted
+      (a plain assignment allows the AnsiString/String conversion that a
+      var parameter, like StringChangeEx's own first argument below,
+      does not) rather than declared as the var parameter's own type
+      throughout, so every other call in this function can use the
+      ordinary String type. }
+    if not LoadStringFromFile(TemplateFile, RawContent) then
+    begin
+      Log('RegisterAutostartTask: LoadStringFromFile returned False');
+      Exit;
+    end;
+    Log('RegisterAutostartTask: loaded template, ' + IntToStr(Length(RawContent)) + ' bytes');
+    XmlContent := RawContent;
+    ExecPath := ExpandConstant('{app}\{#AliasExeName}');
+    Log('RegisterAutostartTask: exec path = ' + ExecPath);
+    StringChangeEx(XmlContent, '__EXEC_PATH__', ExecPath, False);
+    XmlFile := ExpandConstant('{tmp}\privacyfence-task.xml');
+    if not SaveStringToFile(XmlFile, XmlContent, False) then
+    begin
+      Log('RegisterAutostartTask: SaveStringToFile returned False');
+      Exit;
+    end;
+    Log('RegisterAutostartTask: wrote ' + XmlFile + ', ' + IntToStr(Length(XmlContent)) + ' bytes, running schtasks');
+    if not Exec(ExpandConstant('{sys}\schtasks.exe'),
+        '/create /tn "{#TaskName}" /xml "' + XmlFile + '" /f',
+        '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      Log('RegisterAutostartTask: Exec itself failed to launch schtasks.exe');
+      Exit;
+    end;
+    Log('RegisterAutostartTask: schtasks exit code = ' + IntToStr(ResultCode));
+    Result := ResultCode = 0;
+  except
+    Log('RegisterAutostartTask: exception: ' + GetExceptionMessage);
+    Result := False;
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
