@@ -1,0 +1,74 @@
+name: Linux graphical-session autostart
+
+# docs/automated-test-strategy-plan.md Phase 7 item 1 (docs/linux-local-deb-
+# packaging-plan.md P7.2): a real systemd --user login-equivalent session
+# actually starting the packaged daemon via XDG autostart, plus (where
+# practical) the real OAuth loopback browser-opening flow under a real
+# Xvfb $DISPLAY -- see tests/integration/test_linux_graphical_session_
+# autostart.py's own docstring for exactly what each of its two tests
+# proves and the one deliberate substitution it makes (no real display
+# manager in CI).
+#
+# Deliberately its own workflow, not a step added to build.yml's build-deb
+# job or tests.yml's per-PR jobs: this is the flakiest, most expensive tier
+# in this repo's whole test taxonomy by design (Phase 7's own objective), so
+# a flaky run here must never block an actual release the way a failure in
+# build.yml's own packaged .deb lifecycle test (Phase 6.3) correctly does,
+# and it's too heavy to run on every PR. Scheduled instead on
+# packaging-related `main` changes, a weekly cadence (same reasoning as
+# connector-live-check.yml's own schedule -- matched to how often this
+# actually needs re-proving, not to PR cadence), and by explicit maintainer
+# trigger.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'debian/**'
+      - 'resources/linux/**'
+      - 'scripts/build_deb.sh'
+      - 'scripts/pyinstaller_common.py'
+      - 'PrivacyFenceApp.linux.spec'
+      - 'tests/integration/test_linux_graphical_session_autostart.py'
+      - '.github/workflows/linux-graphical-session.yml'
+  schedule:
+    - cron: '0 7 * * 1'   # weekly, Monday 07:00 UTC -- an hour after
+                           # connector-live-check.yml's own Monday 06:00 UTC
+                           # slot so the two heavier scheduled jobs don't
+                           # contend for the same runner pool
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  graphical-session:
+    # A real VM (systemd as PID 1), not a container -- required by this
+    # test module's own skip conditions (see its docstring).
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # xvfb: the module's second test needs a real $DISPLAY. dpkg-dev/
+      # desktop-file-utils: same as build.yml's build-deb job -- needed to
+      # build and validate the .deb this job installs.
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq dpkg-dev desktop-file-utils xvfb
+
+      - name: Install Python dependencies
+        run: pip install -e ".[dev,test]" pyinstaller
+
+      - name: Build .deb
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: bash scripts/build_deb.sh
+
+      - name: Run Linux graphical-session/autostart test (Phase 7, P7.2)
+        run: pytest tests/integration/test_linux_graphical_session_autostart.py -v
