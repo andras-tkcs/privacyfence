@@ -1,11 +1,10 @@
 """Tests for web/routes_approvals.py -- the approval list/card/decide
 routes, exercised against an in-process ASGI test client (no real socket).
-See docs/https-connector-refactor-plan.md §13: "routes tested against an
-in-process ASGI/HTTP test client... Auth middleware, CSRF, Host/Origin
-policy... each get explicit negative tests."
+Auth middleware, CSRF, and Host/Origin policy each get explicit negative
+tests here.
 
-SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2): this module's
-own create_app() no longer takes a shared ``token`` -- it authenticates
+SEC-06: this module's own create_app() no longer takes a shared ``token``
+-- it authenticates
 against a web/session_auth.py ``LocalSessionStore`` instead (the one-time
 ``?bootstrap=`` exchange that actually mints a session lives one layer up,
 in web/server.py's ``_BootstrapMiddleware`` -- see test_server.py for that).
@@ -261,8 +260,7 @@ class TestApprovalsStream:
     even under ``with client.stream(...)``) can't drive without hanging --
     a real streaming HTTP client is what this endpoint actually needs to be
     exercised end-to-end, which is what P0/P1's own manual Chromium checks
-    (§11 of docs/https-connector-refactor-plan.md) already cover the
-    pattern for, not this test client."""
+    already cover the pattern for, not this test client."""
 
     def test_requires_auth(self, client):
         r = client.get("/api/approvals/stream")

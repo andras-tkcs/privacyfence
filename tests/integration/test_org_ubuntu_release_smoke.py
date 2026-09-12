@@ -1,7 +1,6 @@
-"""Release-workflow smoke test for the Ubuntu org-mode service (TST-16,
-docs/security-remediation-plan.md Phase 3 item 3.11; extended by
-docs/automated-test-strategy-plan.md Phase 8 -- see its "Remaining work"
-for exactly what that phase added below and why).
+"""Release-workflow smoke test for the Ubuntu org-mode service (TST-16;
+extended by docs/automated-test-strategy-plan.md Phase 8 -- see its
+"Remaining work" for exactly what that phase added below and why).
 
 Every other org-mode test in this repo (tests/unit/web/test_server_org_
 mode.py, test_org_mcp_e2e.py, test_org_session.py, ...) drives web/

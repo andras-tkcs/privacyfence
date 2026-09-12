@@ -184,7 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     atlassian.add_argument("--atlassian-client-secret")
 
     mode = parser.add_argument_group(
-        "Deployment mode (P7, docs/https-connector-refactor-plan.md §4/§9.4/§10.2)",
+        "Deployment mode (P7)",
     )
     mode.add_argument(
         "--mode", choices=["local", "org"], default=None,
@@ -246,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     authz = parser.add_argument_group(
-        "App-level authorization policy (SEC-22, docs/security-remediation-plan.md, Phase 3 item 3.7)",
+        "App-level authorization policy (SEC-22)",
     )
     authz.add_argument(
         "--authz-allowed-domain", action="append", default=[], metavar="DOMAIN", dest="authz_allowed_domains",
@@ -268,7 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     step_up = parser.add_argument_group(
-        "WebAuthn step-up (P9, docs/https-connector-refactor-plan.md §10.6/§15 D7)",
+        "WebAuthn step-up (P9, D7)",
     )
     step_up_toggle = step_up.add_mutually_exclusive_group()
     step_up_toggle.add_argument(
@@ -315,7 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     downloads = parser.add_argument_group(
-        "Download delivery (org mode, docs/org-mode-download-delivery-plan.md)",
+        "Download delivery (org mode)",
     )
     downloads.add_argument(
         "--downloads-inline-max-bytes", type=int, metavar="BYTES", default=None,

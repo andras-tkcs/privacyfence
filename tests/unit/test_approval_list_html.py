@@ -1,6 +1,5 @@
 """approval_list_html.py -- the /approvals list page (docs/approval-list-
-ui-ux.md §2, the P1-compatible slice; docs/https-connector-refactor-plan.md
-§16's W7)."""
+ui-ux.md §2, the P1-compatible slice)."""
 from __future__ import annotations
 
 import time

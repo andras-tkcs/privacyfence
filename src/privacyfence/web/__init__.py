@@ -1,5 +1,4 @@
-"""Embedded HTTP(S) server package -- see docs/https-connector-refactor-plan.md
-§3 for the full target module layout. P1 landed ``server.py`` (lifecycle,
+"""Embedded HTTP(S) server package. P1 landed ``server.py`` (lifecycle,
 bind policy, security headers) and ``routes_approvals.py`` (the approval
 surface WebApprovalUI blocks on). P2 adds ``routes_mcp.py`` (the Streamable
 HTTP MCP endpoint), ``mcp_dispatch.py`` (its connector-call dispatch --

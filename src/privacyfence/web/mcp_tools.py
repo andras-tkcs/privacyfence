@@ -3,7 +3,7 @@
 Ports bridge/src/tools.ts's schema mapping (``paramSchema``/
 ``buildInputShape``/``UNIFORM_READ_ONLY_ANNOTATIONS``/``toCallToolResult``)
 from zod/TypeScript into JSON Schema/Python -- a translation of an existing,
-shipped mapping, not a redesign (docs/https-connector-refactor-plan.md §8.1).
+shipped mapping, not a redesign.
 ``ToolSpec.to_dict()`` (connector.py) stays the single source of truth for
 what a tool *is*; this module only decides how that shape is presented to an
 MCP client.

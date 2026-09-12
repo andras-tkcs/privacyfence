@@ -1503,9 +1503,8 @@ def migrate_telegram_search_operation_key(cfg: dict[str, Any]) -> tuple[dict[str
 # Everything below used to be five bare module globals (_config_path,
 # _write_lock, _INSTANCE, _rules_changed_listeners, _rules_changed_listener)
 # -- one AutoAcceptEvaluator, one settings.yaml path, one write lock and one
-# set of hot-reload listeners per *process*. P6 (docs/
-# https-connector-refactor-plan.md §9.2) makes each of those per *principal*
-# instead, bundled into _AutoAcceptState so the registry has exactly one
+# set of hot-reload listeners per *process*. P6 makes each of those per
+# *principal* instead, bundled into _AutoAcceptState so the registry has exactly one
 # thing to key on. Every accessor function below keeps its exact name and
 # signature -- callers (gate.py, settings_controller.py, daemon_main.py)
 # don't change at all; they just now transparently see the current

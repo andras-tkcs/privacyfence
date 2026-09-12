@@ -17,8 +17,7 @@ postures, chosen per call by whether the active ApprovalUI exposes a
   identically, *if a human decides within ``registry.hold_window`` seconds*
   (default 30s -- D3). If not, it returns a structured
   ``{"status": "approval_pending", "approval_id", "url", ...}`` result
-  instead of continuing to block, per
-  docs/https-connector-refactor-plan.md §5. The human interaction keeps
+  instead of continuing to block. The human interaction keeps
   running in the background; when it concludes, the outcome lands in
   approvals.py's decision ledger, keyed by ``(connector, tool,
   canonical(args))``. Claude re-issuing the identical tool call finds that
@@ -34,7 +33,7 @@ postures, chosen per call by whether the active ApprovalUI exposes a
 time, and the "was this already covered by a rule created while queued?"
 re-check that ran under it) is gone. Job 1 -- one screen, one dialog -- is
 simply obsolete for the web surface, whose whole point is several
-approvals pending at once (docs/https-connector-refactor-plan.md §6); the
+approvals pending at once; the
 native approval surface that used to keep its own, separate serialization
 lock was retired at P10 (§12, D6), so there is no longer a second dialog
 host to reconcile this module's own concurrency model against. Job 2
@@ -199,9 +198,8 @@ class GateDeniedError(RuntimeError):
     each raise site below): unlike the bare ``RuntimeError(str(exc))`` every
     connector's own ``_fetch``-style helper raises to wrap a ``*ClientError``
     (gmail_client.py and friends -- see that pattern in connectors/*.py),
-    this type never carries a third party's own exception text. SEC-10
-    (docs/security-remediation-plan.md Phase 1.7): safe_errors.py's
-    public_message() relies on exactly this distinction -- a bare
+    this type never carries a third party's own exception text. SEC-10:
+    safe_errors.py's public_message() relies on exactly this distinction -- a bare
     ``RuntimeError`` is *not* trusted to reach an MCP client verbatim, but a
     named subclass (this one, plus approvals.TooManyPendingApprovalsError
     and connector_registry.TooManyPrincipalsError, both reviewed the same
@@ -300,15 +298,13 @@ _TOOL_LAYOUT: dict[str, str] = {
 # calls -- Slack's rate-limit retry sleeping out a Retry-After window is the
 # one this was written for -- can occupy every worker in that shared pool,
 # so giving popups their own dedicated lane connector I/O can never fill
-# still matters regardless of worker count. See
-# docs/slack-performance-review.md's R6.
+# still matters regardless of worker count.
 #
 # max_workers used to be 1, because gate.py's own _popup_lock (removed at
 # P3 -- see module docstring) already serialized every dialog to one at a
 # time, so a second worker would have sat idle. It's several now because
 # that's no longer true for the web surface: several approvals showing at
-# once is P3's whole point (docs/https-connector-refactor-plan.md §6, "New
-# coalescing case" / "Job 1... obsolete").
+# once is P3's whole point ("New coalescing case" / "Job 1... obsolete").
 _popup_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="pf-popup")
 
 
@@ -439,7 +435,7 @@ async def _drive_interaction(registry: PendingApprovalRegistry, approval: Pendin
     Keeps running -- and this function keeps its promise to eventually call
     finalize() -- even after the original gated_call() invocation has long
     since returned an "approval_pending" result to Claude; that's the whole
-    point (docs/https-connector-refactor-plan.md §5.2 point 4-5)."""
+    point."""
     try:
         decision, rule_name = await interact(approval)
     except Exception:
@@ -450,7 +446,7 @@ async def _drive_interaction(registry: PendingApprovalRegistry, approval: Pendin
 
 def _pending_result(registry: PendingApprovalRegistry, approval: PendingApproval) -> dict[str, Any]:
     """The structured result gated_call() returns to Claude instead of
-    blocking further -- docs/https-connector-refactor-plan.md §5.2 point 4."""
+    blocking further."""
     return {
         "status": "approval_pending",
         "approval_id": approval.id,
@@ -718,8 +714,7 @@ async def gated_call(
     # full details/pii_scan_text synchronously, which measured ~80ms per
     # 1000 messages -- fine for one call, but run inline this used to block
     # every OTHER concurrently-dispatched request on the IPC server's
-    # single event loop for that whole duration (see
-    # docs/slack-performance-review.md's R9).
+    # single event loop for that whole duration.
     if gate == "review":
         pii_scan_source = details if pii_scan_text is None else pii_scan_text
         pii_categories = await asyncio.to_thread(detect_pii_categories, pii_scan_source)
@@ -866,7 +861,7 @@ async def gated_call(
                 # nobody's here to answer a popup. Fail this one step now,
                 # synchronously, before any deferred-protocol registration:
                 # an unattended session must never receive a pending result
-                # either (docs/https-connector-refactor-plan.md §5.4).
+                # either.
                 _deny_unattended(audit, connector, tool, pii_categories=pii_forces_confirmation)
 
             async def _interact(approval: PendingApproval | None) -> tuple[str, str]:
@@ -1191,7 +1186,7 @@ async def propose_rule_change(
             changed = True
         # "..._via_bridge_proposal" is legacy vocabulary kept for audit-log
         # continuity, not a live bridge -- see audit_log.py's AuditEntry.decision
-        # field comment (docs/security-remediation-plan.md Phase 3 PR3.9, ORP-06).
+        # field comment.
         applied_decision = "rule_removed_via_bridge_proposal" if operation == "remove" else "rule_changed_via_bridge_proposal"
         applied_rule_name = rule_name
     else:
@@ -1327,7 +1322,7 @@ def _audit(
             # genuinely pending. Empty for the ordinary decided-inline case,
             # where "when the human decided" and "when this entry was
             # written" are the same instant and a second timestamp would say
-            # nothing new. See docs/https-connector-refactor-plan.md §5.4.
+            # nothing new.
             decided_at=(
                 datetime.fromtimestamp(decided_at, tz=timezone.utc).isoformat() if decided_at else ""
             ),

@@ -18,3 +18,10 @@ privacyfence: dir-or-file-in-opt *
 # point) means in practice: these libraries travel with the bundle instead of being declared as
 # system dependencies.
 privacyfence: embedded-library *
+
+# CPython builds _statistics as a pure math helper: it calls into libm and nothing else, so the
+# linker records libm.so.6 as its only prerequisite and lintian reports the missing libc link.
+# That is upstream CPython's own build, reproduced byte for byte by PyInstaller when it copies
+# the interpreter's extension modules into the bundle -- there is nothing in this package to fix,
+# and re-linking a vendored CPython module would be a far bigger change than the tag warrants.
+privacyfence: library-not-linked-against-libc *

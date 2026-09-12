@@ -93,8 +93,7 @@ def org_dir() -> Path:
 
 
 def user_dir(principal: "Principal | None" = None) -> Path:
-    """Per-principal storage root (P6, docs/https-connector-refactor-plan.md
-    §9.2's storage layout table): ``config/settings.yaml``,
+    """Per-principal storage root (P6): ``config/settings.yaml``,
     ``credentials/*``, ``logs/audit/*`` and the various per-connector cache
     files all live under here.
 
@@ -122,9 +121,9 @@ def user_dir(principal: "Principal | None" = None) -> Path:
 
 
 def downloads_dir(principal: "Principal | None" = None) -> Path:
-    """Per-principal staging area for org-mode download delivery (docs/
-    org-mode-download-delivery-plan.md, Phase 1): ``user_dir(principal) /
-    "downloads"``, created on demand exactly like ``org_dir()``. Holds only
+    """Per-principal staging area for org-mode download delivery:
+    ``user_dir(principal) / "downloads"``, created on demand exactly like
+    ``org_dir()``. Holds only
     AES-256-GCM-encrypted ciphertext (download_staging.py's own
     ``DownloadStagingStore`` never derives or stores the decryption key
     anywhere on disk -- see that module's docstring), so this directory's

@@ -21,26 +21,28 @@ in CI):
 1. **A throwaway local account stands in for "someone signs in", instead of
    the CI runner's own already-logged-on account.** This test has no way to
    learn that account's password (nor should it), so it can't make it log on
-   a *second* time -- and ``installer/privacyfence.iss``'s own ``schtasks
-   /create`` call (see ``[Run]``) passes ``/ru "BUILTIN\\Users"``, the
-   built-in group rather than one specific account, so the trigger fires for
-   *any* interactive logon, not just the installing user's. (An earlier
-   version of this line omitted ``/RU`` entirely on the assumption that the
-   unqualified default already meant "any user" -- it doesn't: per
-   Microsoft's own documentation, omitting ``/RU`` scopes the task to
-   whichever account ran ``schtasks /create``, i.e. the installing user
-   only. This module's own first real run against a real Windows runner is
-   what caught that -- registration succeeded, but the throwaway account's
-   logon never fired the trigger -- fixed by the explicit
-   ``/ru "BUILTIN\\Users"`` above.) That's the same "whichever account is at
-   the keyboard" scope the macOS LaunchAgent (keyed off the current console
+   a *second* time -- and the task ``installer/privacyfence.iss`` registers
+   (from ``[Code]``'s ``RegisterAutostartTask``, out of the real Task
+   Scheduler XML definition in ``installer/privacyfence-task.xml.tmpl``)
+   names ``Builtin\\Users`` as its principal's ``GroupId``, the built-in
+   group rather than one specific account, so its ``LogonTrigger`` fires for
+   *any* interactive logon, not just the installing user's. Two earlier
+   CLI-flag attempts at the same thing were each caught by a real run of
+   this very workflow -- first ``schtasks /create`` with no ``/RU`` at all
+   (which scopes the task to whichever account ran it, i.e. the installing
+   user only: registration succeeded, but the throwaway account's logon
+   never fired the trigger), then ``/ru "BUILTIN\\Users"``, which fixed the
+   scope but had no way to express the restart-on-failure behavior this
+   task also needs. See that template's own header comment for the full
+   history. That group scope is the same "whichever account is at the
+   keyboard" one the macOS LaunchAgent (keyed off the current console
    uid) and the Linux ``.deb``'s XDG autostart (keyed off the current
    desktop session) already have -- so a brand-new throwaway account, whose
    password this test mints and knows, is a valid stand-in for "a user
    signs in", not a special case the real trigger wouldn't also fire for.
 2. **The throwaway account is a local Administrator**, even though the
-   daemon it ends up running still runs at ``/rl limited`` (the scheduled
-   task's own execution-level setting, independent of the account's own
+   daemon it ends up running still runs at ``LeastPrivilege`` (the
+   scheduled task's own ``RunLevel``, independent of the account's own
    group membership -- this is exactly what's being verified: the task
    still requests the non-elevated token). This is *not* needed for
    anything this test is trying to prove; it works around a Windows Server
@@ -153,6 +155,38 @@ def _graphical_diagnostics(request):
     )
     (dest / "logs").mkdir(parents=True, exist_ok=True)
     (dest / "logs" / "schtasks-query.txt").write_text(task_info.stdout + task_info.stderr, encoding="utf-8")
+
+
+def _task_state_summary() -> str:
+    """The registered task's own view of what happened, as ``schtasks
+    /query /v`` reports it.
+
+    Registration succeeding and the trigger actually firing are two
+    different things, and the assertion below can only observe the second
+    one indirectly (no daemon process turned up). Task Scheduler knows
+    which of them failed: "Last Run Time" and "Last Result" say whether it
+    ever tried to run the action at all, and "Scheduled Task State" /
+    "Status" say whether the task is even enabled and ready. Putting those
+    lines straight into the failure message is the same move that turned
+    the registration failure underneath this one from eight opaque runs
+    into a single readable error -- the schtasks output was always there,
+    it just was not anywhere a failing run could show it.
+    """
+    result = subprocess.run(
+        ["schtasks", "/query", "/tn", TASK_NAME, "/v", "/fo", "list"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        return f"(schtasks /query failed, exit {result.returncode}): {result.stdout}{result.stderr}"
+    wanted = (
+        "Status:", "Last Run Time:", "Last Result:", "Next Run Time:",
+        "Scheduled Task State:", "Run As User:", "Task To Run:",
+    )
+    lines = [
+        line.strip() for line in result.stdout.splitlines()
+        if line.strip().startswith(wanted)
+    ]
+    return "\n".join(lines) if lines else result.stdout
 
 
 def _install_log_tail(log_path: Path, *, max_chars: int = 8000) -> str:
@@ -470,7 +504,8 @@ async def test_installer_autostart_activates_daemon_via_real_logon_session(
         time.sleep(0.5)
     assert found, (
         f"{alias_exe_path} never appeared as a running process within 30s of {username}'s logon -- "
-        f"the ONLOGON task trigger never fired"
+        f"the ONLOGON task trigger never fired\n"
+        f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}"
     )
     pid, owner = found
     assert username.lower() in owner.lower(), (

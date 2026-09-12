@@ -1,17 +1,16 @@
 """Content-Security-Policy building blocks shared by every part of the web
-app -- SEC-08 (docs/security-remediation-plan.md, Phase 3.1). Deliberately
-tiny and dependency-free (imports nothing from this package) so both
+app. Deliberately tiny and dependency-free (imports nothing from this package) so both
 web/server.py's ``_SecurityHeadersMiddleware`` (which owns actually
 emitting the header) and every route/HTML module that renders an inline
 ``<style>``/``<script>`` tag (which need the *same* nonce value baked into
 their own markup) can import it with no risk of a circular import -- most
 of those route modules are themselves imported *by* server.py.
 
-**Why a nonce, not a blanket ``'unsafe-inline'``.** The review this plan
-implements flagged ``script-src 'unsafe-inline'; style-src 'unsafe-inline'``
-as meaning any HTML-injection bug anywhere in this app's string-built
-templates (a missed escape, a future regression) becomes script execution
-for free, with no second defense in the way. A per-response nonce closes
+**Why a nonce, not a blanket ``'unsafe-inline'``.** ``script-src
+'unsafe-inline'; style-src 'unsafe-inline'`` means any HTML-injection bug
+anywhere in this app's string-built templates (a missed escape, a future
+regression) becomes script execution for free, with no second defense in
+the way. A per-response nonce closes
 that: only ``<style>``/``<script>`` elements carrying the exact nonce this
 response's own ``Content-Security-Policy`` header names are honored, and an
 attacker injecting markup into the response body has no way to know that

@@ -1,6 +1,5 @@
-"""Adversarial (SEC-10, docs/security-remediation-plan.md Phase 1.7)
-coverage for the /mcp endpoint's tool-call error path (web/routes_mcp.py's
-``handle_call_tool``).
+"""Adversarial coverage for the /mcp endpoint's tool-call error path
+(web/routes_mcp.py's ``handle_call_tool``).
 
 The invariant under test: whatever a connector raises while handling a
 tool call, the fake secret it's carrying never reaches the

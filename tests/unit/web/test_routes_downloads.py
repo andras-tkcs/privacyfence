@@ -1,5 +1,5 @@
 """Tests for web/routes_downloads.py: the GET /downloads/{token} claim
-route (docs/org-mode-download-delivery-plan.md, Phase 1)."""
+route."""
 from __future__ import annotations
 
 import base64
@@ -159,9 +159,9 @@ class TestClaimFailures:
         assert r.status_code == 403
 
     def test_404_and_403_responses_are_no_store(self):
-        # SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): a
-        # per-token path is low caching risk either way, but this route
-        # never sent Cache-Control at all on its error branches before.
+        # SEC-18: a per-token path is low caching risk either way, but
+        # this route never sent Cache-Control at all on its error branches
+        # before.
         app, sessions, store = _app()
         token = store.stage(ALICE, b"data", "f.txt", "text/plain")
         client = _client(app)

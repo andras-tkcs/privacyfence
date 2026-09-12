@@ -1,5 +1,4 @@
-"""Shared Google OAuth 2.0 helper for org mode's server-redirect flow (P8,
-docs/https-connector-refactor-plan.md §9.3).
+"""Shared Google OAuth 2.0 helper for org mode's server-redirect flow (P8).
 
 Local mode keeps using ``google-auth-oauthlib``'s own ``InstalledAppFlow``
 loopback implementation directly -- each of gmail_client.py/drive_client.py/

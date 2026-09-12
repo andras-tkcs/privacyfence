@@ -172,9 +172,9 @@ class TestBuildChoiceHtml:
 
 
 class TestCspNonce:
-    """SEC-08 (docs/security-remediation-plan.md Phase 3.1) -- both shapes
-    share approval_window_html.py's own document-shell/extraction
-    conventions (see that module's own docstring on the CSP nonce)."""
+    """Both shapes share approval_window_html.py's own document-shell/
+    extraction conventions (see that module's own docstring on the CSP
+    nonce)."""
 
     def test_confirmation_html_style_and_script_share_a_random_nonce(self):
         html = build_confirmation_html(title="T", message_lines=["m"], cancel_label="Cancel", confirm_label="OK")

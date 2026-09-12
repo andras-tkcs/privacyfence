@@ -1,13 +1,13 @@
 name: Dependency audit
 
-# SEC-19 (docs/security-remediation-plan.md, Phase 2.4): catches known
+# Catches known
 # vulnerabilities in this repo's resolved dependencies, and catches a
 # requirements/*.lock.txt file that's drifted out of sync with
 # pyproject.toml. Runs on every push/PR that touches a dependency manifest,
 # and once a week regardless of code changes -- a dependency already merged
 # and unchanged here can still grow a newly disclosed CVE.
 #
-# Severity policy (the "defined severity policy" the plan calls for):
+# Severity policy:
 #   - Python runtime dependencies (requirements/runtime.lock.txt -- what
 #     `pip install privacyfence` actually installs, and what PyInstaller
 #     bundles into the .app) are audited with pip-audit and BLOCK the job on

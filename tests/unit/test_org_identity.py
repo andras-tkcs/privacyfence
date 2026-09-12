@@ -394,7 +394,7 @@ class TestPrincipalFromClaims:
 
 
 class TestCheckAuthzPolicy:
-    """SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7)."""
+    """Allowed-domain and required-group authorization policy enforcement."""
 
     def _principal(self, **overrides) -> Principal:
         defaults = dict(id="alice-id", email="alice@acme.com", display_name="Alice")

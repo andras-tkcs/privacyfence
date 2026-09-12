@@ -1,6 +1,5 @@
 """Small, always-on Playwright suite driving the real web approval surface
-in a real headless browser (docs/security-remediation-plan.md, Phase 2 item
-2.5, TST-06).
+in a real headless browser (TST-06).
 
 Every other test of this surface (tests/unit/web/) drives it through either
 ``starlette.testclient.TestClient`` (an in-process ASGI transport, no real
@@ -24,17 +23,16 @@ Node binary -- this suite is "always-on" in the sense that CI always has
 both (see .github/workflows/tests.yml's ``Install Playwright browsers``
 step), not that it forces every contributor's machine to.
 
-Both checks the plan's own TST-06 row lists (a no-inline-script CSP check
+Both checks TST-06 lists (a no-inline-script CSP check
 and "PDF preview actually renders") now assert real pass/fail outcomes --
 see ``TestSecurityHeadersCsp``/``TestPdfPreview`` below. Both were
 previously written as a skip/an ``xfail`` respectively, against the
-pre-SEC-08 policy (docs/security-remediation-plan.md Phase 3.1):
-``script-src``/``style-src`` were a blanket ``'unsafe-inline'`` with no
-``object-src`` exception, which both left the "no-inline-script" check with
-nothing real to assert against and left the card's own PDF ``<embed>``
-blocked by the implicit ``default-src 'none'`` fallback (the "currently
-likely broken -- no test catches this" bug the plan's Phase 3 table named
-3.1 to fix). web/csp.py's ``build_csp()`` is what closed both.
+pre-SEC-08 policy: ``script-src``/``style-src`` were a blanket
+``'unsafe-inline'`` with no ``object-src`` exception, which both left the
+"no-inline-script" check with nothing real to assert against and left the
+card's own PDF ``<embed>`` blocked by the implicit ``default-src 'none'``
+fallback (the "currently likely broken -- no test catches this" bug
+SEC-08 fixed). web/csp.py's ``build_csp()`` is what closed both.
 """
 from __future__ import annotations
 

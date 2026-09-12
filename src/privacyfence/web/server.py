@@ -11,7 +11,7 @@ server.py``).
 stays a secure context for whatever this surface needs (WebAuthn, P9)
 without anyone having to move the bind address. Auth is deliberately the
 simplest thing that's still a real control, not sessions/OIDC -- but since
-SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2) it is no
+SEC-06 it is no
 longer "possession of one never-expiring, URL-carried token is the
 authority" the way it was through v4.0.0a12 (the same posture
 ``~/.privacyfence/ipc_token`` had for the bridge, before P5 retired both --
@@ -28,7 +28,7 @@ random session id (web/session_auth.py's ``LocalSessionStore``) carrying
 its own idle and absolute expiry -- web/routes_approvals.py's own docstring
 covers the CSRF double-submit that session id also backs.
 
-**Org mode** (P7, docs/https-connector-refactor-plan.md §10.2): a
+**Org mode** (P7): a
 configurable bind host/port, optional TLS termination, optional
 ``X-Forwarded-*`` trust for a small explicit set of reverse-proxy
 addresses (never by default), and ``/mcp`` authenticated by
@@ -122,16 +122,16 @@ TOKEN_VERSION_FILE_NAME = "web_token_version"
 MCP_URL_FILE_NAME = "mcp_url"
 
 # Content-Security-Policy: see web/csp.py's own module docstring for the
-# full policy and the reasoning behind each directive (SEC-08, docs/
-# security-remediation-plan.md Phase 3.1 -- this replaced a blanket
-# 'unsafe-inline' grant on both script-src and style-src, which is what
+# full policy and the reasoning behind each directive (SEC-08 -- this
+# replaced a blanket 'unsafe-inline' grant on both script-src and
+# style-src, which is what
 # this comment described through v4.0.0a12; that description had grown
 # actively inaccurate, since the code below it granted exactly the
 # "blanket 'unsafe-inline'" the comment said this policy avoided). Built
 # per-response, from that request's own nonce (_SecurityHeadersMiddleware
 # below), not a fixed module-level constant any more.
 
-# SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): every
+# SEC-18: every
 # browser feature this app never uses, denied outright -- the same "narrow,
 # explicit exceptions for exactly what these pages actually use" posture
 # web/csp.py's build_csp() already takes. ``publickey-credentials-get``/
@@ -192,12 +192,11 @@ def load_or_create_token() -> str:
 def _write_mcp_url_file(url: str) -> None:
     """The direct successor of ipc.py's PORT_FILE for a client that talks to
     /mcp instead of the old IPC socket -- see mcpb/shim/src/protocol.ts's
-    module docstring, which reads this same file (D11 in
-    docs/https-connector-refactor-plan.md §12: "WebServer.start() writes
-    ~/.privacyfence/mcp_url when it binds, and clears it on shutdown -- the
-    only new daemon-side surface P4b needs."). 0600 for the same reason
-    web_token/mcp_token are: not a secret itself, but written alongside them
-    under the same directory."""
+    module docstring, which reads this same file (D11): "WebServer.start()
+    writes ~/.privacyfence/mcp_url when it binds, and clears it on
+    shutdown -- the only new daemon-side surface P4b needs." 0600 for the
+    same reason web_token/mcp_token are: not a secret itself, but written
+    alongside them under the same directory."""
     path = paths.data_dir() / MCP_URL_FILE_NAME
     atomic_write_text(path, url)
 
@@ -213,10 +212,9 @@ def _clear_mcp_url_file() -> None:
 class _SecurityHeadersMiddleware:
     """Plain ASGI middleware (not starlette.middleware.base.
     BaseHTTPMiddleware, which buffers the whole response) adding the fixed
-    header set every response from this app needs -- see
-    docs/https-connector-refactor-plan.md §10.5 and, for the three added by
-    SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5), the
-    module-level ``_PERMISSIONS_POLICY``/``_HSTS`` constants' own comments.
+    header set every response from this app needs -- see, for the three
+    added by SEC-18, the module-level ``_PERMISSIONS_POLICY``/``_HSTS``
+    constants' own comments.
     Cache-Control: no-store is also set per-route (web/routes_approvals.py
     and friends) for the routes that actually carry sensitive content,
     since a static blanket no-store here would be redundant with, not a
@@ -308,7 +306,7 @@ class OrgAuth:
     sessions: OrgSessionStore
     idp: IdpConfig
     issuer_url: str
-    # P8 (docs/https-connector-refactor-plan.md §9.3): per-user service
+    # P8: per-user service
     # authorization (Google/Slack/Salesforce/Atlassian/Telegram) and the
     # /connect page that drives it. Both default to None/{} so every
     # existing caller of OrgAuth (this module's own tests included) keeps
@@ -347,10 +345,10 @@ def _org_principal_resolver(sessions: OrgSessionStore) -> Callable[[Request], Pr
 
 
 class _PrincipalScopeMiddleware:
-    """The browser surface's principal_scope() entry point (P6, docs/
-    https-connector-refactor-plan.md §9.1: "entered once per HTTP request,
-    in exactly one place per surface") -- the MCP endpoint's own entry point
-    is routes_mcp.py's handle_call_tool. Every per-principal registry
+    """The browser surface's principal_scope() entry point (P6: "entered
+    once per HTTP request, in exactly one place per surface") -- the MCP
+    endpoint's own entry point is routes_mcp.py's handle_call_tool. Every
+    per-principal registry
     downstream (auto_accept.py, audit_log.py, pii_detector.py,
     privacy_filter.py, resource_names.py) resolves against whatever
     ``resolve`` returns for the rest of the request.
@@ -377,8 +375,7 @@ class _PrincipalScopeMiddleware:
 
 
 def _parse_host_header(raw: str) -> str | None:
-    """Standards-aware ``Host`` header -> bare hostname (SEC-17,
-    docs/security-remediation-plan.md Phase 3 item 3.4). The manual
+    """Standards-aware ``Host`` header -> bare hostname (SEC-17). The manual
     ``split(":", 1)[0]`` this replaced assumed the first colon always
     separates host from port, which is only true for a bare name or IPv4
     address -- an IPv6 literal has colons *in* the host itself
@@ -412,8 +409,7 @@ def _parse_host_header(raw: str) -> str | None:
 
 
 class _HostAllowlistMiddleware:
-    """DNS-rebinding defense (docs/https-connector-refactor-plan.md §10.5,
-    §9.4): reject any request whose Host header isn't in the configured
+    """DNS-rebinding defense: reject any request whose Host header isn't in the configured
     allowlist, *before* it reaches any route -- a page served from a
     malicious domain that gets a victim's browser to send a request to
     ``http://localhost:PORT`` with a forged Host header is exactly what
@@ -438,7 +434,7 @@ class _HostAllowlistMiddleware:
 
 
 class _BootstrapMiddleware:
-    """SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2): the
+    """SEC-06: the
     single place a ``?bootstrap=<code>`` query string is ever honored,
     ahead of every route in the local-mode app. A live, unexpired code is
     consumed (so it can never be replayed -- successful exchange or not)
@@ -539,8 +535,7 @@ async def _state_stream_loop_lifespan(ready_event: threading.Event | None = None
     WebServer's own ``wait_until_ready`` is what a synchronous caller on
     another thread (daemon_main.py's run_app(), the direct successor of the
     old IPCServerThread's own ``_ready`` Event) blocks on to learn this
-    loop, the one every connector call now actually runs on (P5,
-    docs/https-connector-refactor-plan.md §12)."""
+    loop, the one every connector call now actually runs on (P5)."""
     loop = asyncio.get_running_loop()
     _state_stream.set_loop(loop)
     if ready_event is not None:
@@ -574,7 +569,7 @@ def build_app(
     alone (no wrapping) is what tests reach for when they want to exercise
     the routes without also exercising this middleware stack.
 
-    ``org`` (P7, §9.4) switches this into org mode: ``token``/``sessions``/
+    ``org`` (P7) switches this into org mode: ``token``/``sessions``/
     ``bootstrap``/``mcp_token``/``controller``/``state_stream`` are all
     ignored (org mode doesn't mount the local-session-authenticated
     approval/settings surface at all -- see this module's own docstring for
@@ -588,11 +583,11 @@ def build_app(
     pass an explicit one only to prove per-principal isolation over real
     HTTP in a test.
 
-    ``mcp_dispatcher`` (P2, docs/https-connector-refactor-plan.md §8) folds
+    ``mcp_dispatcher`` (P2) folds
     the ``/mcp`` Streamable HTTP endpoint into this same app. In local
     mode it's authenticated by its own ``mcp_token`` -- a secret
     independent of ``sessions`` (the approval surface's own session/CSRF
-    store, SEC-06), which is what makes §10.3's audience separation ("the
+    store, SEC-06), which is what makes the audience separation ("the
     MCP access token must never be accepted on approval-decision endpoints,
     and the browser session cookie must never be accepted on /mcp") hold
     structurally rather than by convention. In org mode the same
@@ -694,13 +689,12 @@ def _build_org_app(
         lifespans.append(mcp_lifespan(session_manager))
 
     extra_routes.extend(mount_org_oauth(org.provider, issuer_url=org.issuer_url))
-    # docs/org-mode-download-delivery-plan.md, Phase 1: mounted
-    # unconditionally here (every _build_org_app call is already org mode)
-    # -- needs nothing from org.connector_registry, only org.sessions,
-    # same reasoning /approvals'/security's own unconditional mount below
-    # gives for needing only web_ui/org.org_config.
+    # Mounted unconditionally here (every _build_org_app call is already
+    # org mode) -- needs nothing from org.connector_registry, only
+    # org.sessions, same reasoning /approvals'/security's own unconditional
+    # mount below gives for needing only web_ui/org.org_config.
     extra_routes.extend(routes_downloads.build_routes(sessions=org.sessions))
-    # P8 (docs/https-connector-refactor-plan.md §9.3): only mounted once a
+    # P8: only mounted once a
     # real ConnectorRegistry exists to evict on a successful authorization
     # -- see OrgAuth's own docstring. daemon_main.py's real org-mode boot
     # path always supplies one; a hand-built OrgAuth in a test that only
