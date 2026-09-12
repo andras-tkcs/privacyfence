@@ -1356,56 +1356,70 @@ Most CI failures are diagnosable without local reproduction.
 Keep GitHub's required-status-checks list (Settings → Branches, the branch protection rule on
 `main`) in step with which jobs in `.github/workflows/tests.yml` actually run, and are actually
 trustworthy, on every PR — so a job this plan promotes to per-PR (Phase 2's `platform-windows`, its
-`platform-macos` sibling, `test-python-compat`, the new system/packaged/org-mode jobs from Phases 3,
-6, 7, 8) can't go red and still let a PR merge. This is a real, currently-open gap, not a
-hypothetical one: `testing-policy.md:141` already states plainly, "This `test` job is the one a PR
-needs to pass to merge" — singular — and nothing landed by Phase 2.1's promotion of
-`platform-windows` (or by any later phase) has updated that setting or that sentence to match.
+`platform-macos` sibling, `test-python-compat`, the org-mode job from Phase 8) can't go red and
+still let a PR merge. This was a real, open gap: `testing-policy.md` stated plainly, "This `test`
+job is the one a PR needs to pass to merge" — singular — and nothing landed by Phase 2.1's
+promotion of `platform-windows` (or by any later phase) had updated that setting or that sentence
+to match.
+
+### Status note (2026-09-12)
+
+The *policy* — the target required-check set, made explicit and reviewable — and the
+*documentation* consistency pass (remaining-work items 2 and 3 below) are done. Actually flipping
+the GitHub Settings → Branches toggle (item 1) and then confirming enforcement with a deliberately
+red scratch branch (item 4) are not: this plan's own automation has no GitHub credential scoped to
+branch-protection administration (that's a repo-admin action on GitHub itself, not something a
+commit or a PR merge can carry out), so those two steps are the explicit hand-off to a maintainer
+described below, not skipped work.
 
 ### Already in this repo
 
-- Only the `test` job (ubuntu-latest: pytest + coverage floor + `npm test` + `npm run typecheck`) is
-  a required status check today, per `testing-policy.md`'s §1 and its Quick-reference table (only
-  those four checks are marked "this is the merge gate" there).
-- `platform-windows` now runs on every PR (Phase 2.1, done) but is not required — a PR can merge
-  with it red.
-- `test-python-compat` and `static-analysis` (`ruff check .`, blocking; `mypy`/`bandit`, deliberately
-  `continue-on-error`, informational) also run on every PR and are also not required.
-- The branch protection rule itself is GitHub repo configuration, not a file this repo tracks — there
-  is no commit history or diff to inspect for it, which is exactly why it's easy for it to silently
-  fall behind the workflow file as new jobs get added. This phase exists to make that catch-up an
-  explicit, named step instead of an implied one.
+- `scripts/update_branch_protection.py` is the reviewable, applied-the-same-way-every-time record
+  of the target required-status-checks set — `REQUIRED_STATUS_CHECKS` names exactly `test`,
+  `platform-windows`, `platform-macos`, both `test-python-compat` matrix legs ("Test (Python 3.11,
+  core suite)" / "Test (Python 3.12, core suite)"), `static-analysis`, and `org-mode-smoke`, with
+  its own comment explaining why the Phase 6/7 packaged-artifact and graphical-session jobs are
+  deliberately excluded (they run in `build.yml` / their own scheduled workflows, never on
+  `pull_request`, so they can never be a per-PR required check). `show` prints the live diff against
+  a repo's actual setting; `apply` (optionally `--dry-run` first) sets it. This is the mechanism
+  remaining-work item 1 below hands to a maintainer, and the same file to edit, in the PR that adds
+  or renames a job, the next time this list needs to change.
+- `testing-policy.md`'s §1 names the full six-job required set (with the `test-python-compat`
+  matrix and `static-analysis`'s blocking-`ruff`-only nature called out explicitly) instead of the
+  old singular "`test` job" sentence, and its Quick-reference table has rows for
+  `test-python-compat` and `static-analysis` (splitting `ruff check .`, which gates, from
+  `mypy`/`bandit`, which don't).
+- Confirms remaining-work item 2 below by inspection rather than a live GitHub trial: reading
+  `.github/workflows/tests.yml`'s `static-analysis` job shows `mypy`/`bandit` each carry their own
+  `continue-on-error: true`, which is GitHub Actions' documented mechanism for letting a step fail
+  without changing the job's own conclusion — and a job's conclusion, not any individual step, is
+  what a required status check evaluates (Actions reports one check run per job to the Checks API).
+  Requiring the `static-analysis` job is therefore already exactly "require `ruff check .`," with no
+  need to split it into a separate blocking-only job.
+- Confirmed, while doing this audit, that `testing-policy.md` had never documented
+  `test-python-compat` or `static-analysis` at all (not just under-scoped required-check language) —
+  both are now covered in §1's prose and the Quick-reference table alongside the required-check fix.
 
 ### Remaining work
 
-1. As each per-PR job lands and proves itself stable (i.e. no flaky-red history over a normal
-   run of PRs, not just one green run) — `platform-windows` now, `platform-macos` once Phase 2.2
-   lands, `test-python-compat`, the canonical system test once Phase 3 lands it on all three OSes,
-   the packaged-artifact jobs from Phase 6, the org-mode job from Phase 8 — add it to `main`'s
-   required-status-checks list. Do this incrementally, alongside the phase that introduces the job,
-   rather than batching every addition into this phase's own single PR: this phase's own scope is
-   the *policy* (require every blocking per-PR job) and the final consistency pass, not re-doing the
-   stability wait each earlier phase already did before its job was safe to gate on.
-2. If GitHub's required-check granularity turns out to be job-level rather than step-level, requiring
-   `static-analysis` would also require its still-informational `mypy`/`bandit` steps (they use
-   `continue-on-error`, which keeps the *job* green even when they fail — so requiring the job is
-   safe as-is). Confirm that behavior rather than assuming it; only split `static-analysis` into a
-   separate blocking-only job if `continue-on-error` turns out not to isolate them the way intended.
-3. Update `testing-policy.md`'s §1 "This `test` job is the one a PR needs to pass to merge" sentence
-   and its Quick-reference table (the "Runs in CI?" / "this is the merge gate" language) to name the
-   actual required set once it's more than one job, rather than leaving singular language that
-   predates Phase 2's promotion of `platform-windows`.
-4. After each addition, confirm enforcement rather than trusting the setting alone: push a scratch
-   branch with a deliberately failing test in the newly-required job and confirm GitHub actually
-   blocks that PR from merging.
+1. A repo admin runs `python scripts/update_branch_protection.py show` against the live repo to see
+   the current vs. target diff, then `apply` (a `GITHUB_TOKEN` with branch-protection admin rights
+   is required; see the script's own docstring) to actually update `main`'s branch protection rule
+   to the target set above. This is the one step here that has to happen outside of a commit/PR.
+2. ~~Confirm required-check granularity~~ — done above, by inspection.
+3. ~~Update `testing-policy.md`~~ — done above.
+4. After item 1 is applied, confirm enforcement rather than trusting the setting alone: push a
+   scratch branch with a deliberately failing test in one of the newly-required jobs and confirm
+   GitHub actually blocks that PR from merging.
 
 ### Exit criteria
 
 Every job in `tests.yml` that runs on every PR and is meant to gate correctness (`test`,
-`platform-windows`, `platform-macos`, `test-python-compat`, `static-analysis`'s
-blocking `ruff` step) is a required status check on `main`'s branch protection rule; `testing-
-policy.md` names the real required set instead of "the `test` job"; a deliberately red job on one of
-those checks has been confirmed, not assumed, to block merge.
+`platform-windows`, `platform-macos`, both `test-python-compat` matrix legs, `org-mode-smoke`,
+`static-analysis`'s blocking `ruff` step) is a required status check on `main`'s branch protection
+rule (pending remaining-work item 1); `testing-policy.md` names the real required set instead of
+"the `test` job" (done); a deliberately red job on one of those checks has been confirmed, not
+assumed, to block merge (pending remaining-work item 4, which depends on item 1).
 
 ---
 
@@ -1493,22 +1507,21 @@ Phase 9  Retire obsolete manual QA                                (DONE — manu
 Phase 10 Observability and maintenance polish                    (DONE — tests/diagnostics.py's
    ↓                                                               generic per-tmp_path capture, wired
    ↓                                                               into every packaged/system CI job)
-Phase 11 Update branch-protection required checks                (incremental — starts as soon as
-   ↓                                                               platform-windows is stable, keeps
-   ↓                                                               picking up each phase's job as it
-   ↓                                                               lands; final consistency pass once
-   ↓                                                               Phases 2, 3, 6, 7, and 8 are done)
+Phase 11 Update branch-protection required checks                (policy/script/docs DONE — the
+   ↓                                                               live GitHub setting itself is a
+   ↓                                                               repo-admin hand-off, see Phase
+   ↓                                                               11's own status note)
 Phase 12 Retire the platform-specific plan docs                  (bookkeeping only, once Phases 2,
                                                                     6, 7, and 9 above are actually
                                                                     done — last step in this plan)
 ```
 
 Phases 4 and 5 may proceed in parallel once Phase 3 is stable, as in the source strategy. Phase 7
-stays last for the same infrastructure-cost reason the source strategy gives. Phase 11 runs
-incrementally alongside whichever phase just promoted a job to per-PR (its own remaining-work item 1
-says so explicitly) rather than waiting for everything else to finish — only its final consistency
-pass (items 2-3) waits on the rest. Phase 12 stays last of all: it only deletes docs once every phase
-above it has actually shipped.
+stays last for the same infrastructure-cost reason the source strategy gives. Phase 11 landed once
+Phases 2, 3, 6, 7, and 8 (the jobs its target required-check set names) were all done — its own
+status note explains why the GitHub-side toggle itself is a separate repo-admin hand-off rather
+than something this PR's own merge can complete. Phase 12 stays last of all: it only deletes docs
+once every phase above it has actually shipped.
 
 ## Suggested PR boundaries
 
@@ -1572,9 +1585,11 @@ plan's grounding pass found the work already done, and a note on which remain ge
     per-`tmp_path` failure capture, wired in via `tests/conftest.py`, plus the three modules
     (`test_deb_packaged_lifecycle.py`, both graphical-session-autostart modules) that needed their
     own explicit capture call for real installed/runtime state no `tmp_path` isolates
-26. Update branch-protection required status checks (Phase 11) — not one PR but a small addition
-    riding alongside each of PRs 12, 17-18, 13, 23 above as their job proves stable, plus a final
-    documentation-consistency PR once every addition has landed
+26. ~~Update branch-protection required status checks~~ — **done** (Phase 11):
+    `scripts/update_branch_protection.py` names and applies the target required-check set,
+    `testing-policy.md` names the real required set instead of "the `test` job." Actually running
+    `apply` against the live repo, and the enforcement check that follows it, are a repo-admin
+    hand-off outside of what a PR merge can do — see Phase 11's own status note.
 27. Retire `windows-support-plan.md`, `windows-linux-support-plan.md`,
     `linux-local-deb-packaging-plan.md`, and `manual-pre-release-test-plan.md` once 12–24 above are
     actually done (Phase 12) — last PR in this plan, bookkeeping only
@@ -1621,8 +1636,10 @@ combination.
 - PrivacyFence can be confidently released without owning physical Windows, Linux, or macOS
   development machines.
 - GitHub's required-status-checks list on `main` names every blocking per-PR job, not just `test` —
-  a red `platform-windows`/`platform-macos`/`test-python-compat`/`static-analysis` run actually
-  blocks merge, confirmed rather than assumed (Phase 11).
+  a red `platform-windows`/`platform-macos`/`test-python-compat`/`org-mode-smoke`/`static-analysis`
+  run actually blocks merge, confirmed rather than assumed (Phase 11's target set is defined and
+  scripted; applying it live and confirming enforcement is the repo-admin hand-off its status note
+  describes).
 - `docs/` contains exactly one `*plan*.md` — this document — with `windows-support-plan.md`,
   `windows-linux-support-plan.md`, `linux-local-deb-packaging-plan.md`, and
   `manual-pre-release-test-plan.md` retired once the work they track has actually shipped
