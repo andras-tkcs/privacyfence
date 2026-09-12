@@ -151,6 +151,80 @@ class TestAtomicWriteBytes:
             secure_files.atomic_write_bytes(target, b"new content")
 
 
+class TestReplaceWithRetries:
+    """os.replace() itself, on Windows only, transiently raises
+    PermissionError when the destination is momentarily held open by
+    another process/thread (a concurrent reader, a racing second writer, or
+    AV/indexer scanning) -- see tests/platform/test_atomic_write_concurrency.py
+    for the real cross-process reproduction. These tests exercise the retry
+    purely via monkeypatched os.name/os.replace/time.sleep so they run (and
+    mean something) on every CI platform, not just Windows.
+    """
+
+    def test_windows_retries_a_transient_permission_error_then_succeeds(self, tmp_path, monkeypatch):
+        target = tmp_path / "file.bin"
+        tmp = tmp_path / "file.bin.tmp"
+        tmp.write_bytes(b"new")
+        monkeypatch.setattr(secure_files.os, "name", "nt")
+        sleeps: list[float] = []
+        monkeypatch.setattr(secure_files.time, "sleep", sleeps.append)
+        calls = {"n": 0}
+        real_replace = secure_files.os.replace
+
+        def flaky_replace(src, dst):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError("WinError 5: Access is denied")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(secure_files.os, "replace", flaky_replace)
+
+        secure_files._replace_with_retries(tmp, target)
+
+        assert calls["n"] == 3
+        assert target.read_bytes() == b"new"
+        assert len(sleeps) == 2  # one sleep between each failed attempt and the next
+
+    def test_windows_gives_up_after_exhausting_retries(self, tmp_path, monkeypatch):
+        target = tmp_path / "file.bin"
+        tmp = tmp_path / "file.bin.tmp"
+        tmp.write_bytes(b"new")
+        monkeypatch.setattr(secure_files.os, "name", "nt")
+        monkeypatch.setattr(secure_files.time, "sleep", lambda *a, **kw: None)
+
+        def always_denied(*a, **kw):
+            raise PermissionError("WinError 5")
+
+        monkeypatch.setattr(secure_files.os, "replace", always_denied)
+
+        with pytest.raises(PermissionError):
+            secure_files._replace_with_retries(tmp, target)
+
+    def test_non_windows_does_not_retry(self, tmp_path, monkeypatch):
+        """On POSIX, rename() doesn't fail this way -- a PermissionError
+        here means something else is genuinely wrong, so it must surface
+        immediately rather than being retried and delayed."""
+        target = tmp_path / "file.bin"
+        tmp = tmp_path / "file.bin.tmp"
+        tmp.write_bytes(b"new")
+        monkeypatch.setattr(secure_files.os, "name", "posix")
+        monkeypatch.setattr(
+            secure_files.time, "sleep", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not sleep")),
+        )
+        calls = {"n": 0}
+
+        def always_denied(*a, **kw):
+            calls["n"] += 1
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(secure_files.os, "replace", always_denied)
+
+        with pytest.raises(PermissionError):
+            secure_files._replace_with_retries(tmp, target)
+
+        assert calls["n"] == 1
+
+
 class TestAtomicWriteText:
     @pytest.mark.skipif(
         sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, the now-removed windows-linux-support-plan.md's Track B3)",
