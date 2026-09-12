@@ -9,6 +9,25 @@ be exercised deterministically, without spawning a real approval surface.
 The one invariant that matters more than
 any individual branch: gated_call must never return raw_data when
 filtered_data differs from it -- that's the actual privacy boundary.
+
+`automated-test-strategy-plan.md` Phase 5 cross-checked this module against the
+full gate/policy matrix (auto->allowed, review->Allow/Deny, review+PII->Proceed/
+Cancel, popup/write->Allow/Deny, "Always allow"->proposed rule, matching/non-
+matching rule/grant, unattended allowed/forbidden) and found it already covered
+nearly all of it -- see that phase's own status note for what the audit added.
+One matrix item is deliberately *not* asserted anywhere in this file: "policy
+denial happens before connector execution." gated_call() itself never holds a
+reference to a connector's provider client -- for a popup-gated write, the
+calling connector method (e.g. GmailConnector._create_draft) always structures
+its own code as ``await gated_call(...)`` followed by the real provider call,
+so a raised denial (this file's own ``test_deny_raises_and_audits_rejected``
+cases) already prevents that second line from ever running, by ordinary
+Python control flow -- there is no separate flag or callback for this module
+to intercept. The connector-side half of that proof (the provider client mock
+asserted ``.assert_not_called()`` after a denial) lives in
+``tests/unit/connectors/*.py`` instead, one assertion per write tool, since
+that's the only layer that actually holds a reference to the client to make
+the assertion against.
 """
 from __future__ import annotations
 
@@ -180,6 +199,37 @@ class TestReviewGateDecisions:
         result = await gate.gated_call(**base_kwargs(gate="review"))
 
         assert result is FILTERED
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+        assert entries[0]["auto_accept_rule"] == ""
+
+    async def test_no_matching_grant_or_rule_falls_through_to_popup_with_evaluator_consulted(
+        self, monkeypatch, audit_dir,
+    ):
+        # The mismatch counterpart to TestAutoAcceptPath's match case above.
+        # Every other test in this class reaches the popup under the same
+        # FakeEvaluator() default (False, "") -- proving that's correct
+        # behavior, not just a fixture default nothing checks, needs its own
+        # case: the evaluator must actually be consulted (not skipped) and
+        # its "no match" must be the real reason the popup ran, not an
+        # accident of gated_call's control flow.
+        evaluator = FakeEvaluator((False, ""))
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
+        monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
+        popup_calls = []
+        monkeypatch.setattr(
+            gate, "show_read_popup", lambda *a, **k: (popup_calls.append(1) or "accept", None),
+        )
+
+        result = await gate.gated_call(**base_kwargs(gate="review"))
+
+        assert result is FILTERED
+        # gated_call re-checks once more right before showing the popup (the
+        # concurrent-approval coalescing race -- see TestCoalescing), so this
+        # is >=1, not ==1; every call must still report the configured
+        # mismatch, not get silently skipped.
+        assert len(evaluator.calls) >= 1
+        assert popup_calls == [1]  # ...and its "no match" is why the popup ran
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "approved"
         assert entries[0]["auto_accept_rule"] == ""
@@ -925,6 +975,30 @@ class TestPopupGateWrites:
         assert popup_calls == []
         entries = read_audit_entries(audit_dir)
         assert entries[0]["decision"] == "auto_accepted"
+
+    async def test_no_matching_rule_falls_through_to_popup_with_evaluator_consulted(
+        self, monkeypatch, audit_dir,
+    ):
+        # The mismatch counterpart to test_matching_rule_auto_accepts_
+        # without_a_popup above -- proves the popup is reached because the
+        # evaluator was genuinely consulted and found no match, the same
+        # property TestReviewGateDecisions asserts for the read side.
+        evaluator = FakeEvaluator((False, ""))
+        monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: evaluator)
+        popup_calls = []
+        monkeypatch.setattr(
+            gate, "show_popup", lambda *a, **k: (popup_calls.append(1) or "accept", None),
+        )
+
+        result = await gate.gated_call(**base_kwargs(gate="popup", tool="gmail_create_draft"))
+
+        assert result is FILTERED
+        # Same coalescing re-check as the review branch's counterpart above.
+        assert len(evaluator.calls) >= 1
+        assert popup_calls == [1]
+        entries = read_audit_entries(audit_dir)
+        assert entries[0]["decision"] == "approved"
+        assert entries[0]["auto_accept_rule"] == ""
 
     async def test_write_gate_never_triggers_the_pii_confirmation_gate(self, monkeypatch, audit_dir):
         # Unlike the review (read) gate -- see TestPIIGate -- writes are

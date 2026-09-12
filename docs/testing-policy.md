@@ -83,7 +83,7 @@ work, not a reason to remove the manual step yet:
 | §0 Before you start (`pre_release_check.py`, environment/fixture sanity) | 1–2 (it reruns the CI suite) | Yes, for the parts it reruns; the human confirmation steps (account, fixture file present) aren't a "test" in the layer sense |
 | §1 Fixture recording/refresh check | 5. Live connector | Yes — the `--check`/`--record` pass itself (§0 above, weekly), plus freshness/age reporting (`< 60`/`60–90`/`> 90` days) in that same report, and the `--lifecycle` create/read/update/delete pass (`automated-test-strategy-plan.md` Phase 1's residual items 1.8/1.9, both done) |
 | §2 QA web smoke test | 4. Browser system, with a layer-7 sliver | The 5-scenario `qa_web_smoke.py` run: the structural ground it used to be the only coverage for (PII, responsive layout, light/dark wiring) is now also covered by `test_browser_smoke.py` in CI (Phase 4, done); what's left here, deliberately not folded into CI because it can't be, is the genuinely layer-7 sliver — light/dark contrast and phone-width visual judgment ("does this look right") |
-| §3 "QA prompt" manual test (live popups via Cowork/Desktop) | 2. Integration + 5. Live connector, with a layer-7 sliver | The deterministic gate-state assertions this exercises by hand (gate selected, popup vs. silent, audit entry) are exactly `test_gate.py`'s job — Phase 5 is auditing that coverage so this stops being the way gate correctness gets proven. The live-account, live-popup, human-clicking-the-button part is layer 5 already for connector-CI purposes but stays layer 7 for "did the popup actually render for a human" regardless of Phase 4's own (now done) PII/approval-flow browser coverage |
+| §3 "QA prompt" manual test (live popups via Cowork/Desktop) | 2. Integration + 5. Live connector, with a layer-7 sliver | The deterministic gate-state assertions this exercises by hand (gate selected, popup vs. silent, audit entry) are exactly `test_gate.py`'s job — Phase 5 audited that coverage and confirmed it (see that phase's own status note), so this is no longer the way gate correctness gets proven. The live-account, live-popup, human-clicking-the-button part is layer 5 already for connector-CI purposes but stays layer 7 for "did the popup actually render for a human" regardless of Phase 4's own (now done) PII/approval-flow browser coverage |
 | §4 Dev vs. live mode switching (build, install, exercise, uninstall) | 6. Packaged-artifact, with a layer-7 sliver | macOS: partially — `test_macos_packaged_smoke.py` already covers most of this in `build.yml`, just not yet cited from this checklist. Linux: manually-verified-once, not CI (Phase 6.3). Windows: no automation yet (Phase 6.2). Gatekeeper/SmartScreen/UAC presentation itself stays layer 7 per "What deliberately remains manual" in `automated-test-strategy-plan.md` |
 | §5 Tag and release | none — this is release mechanics (see `CLAUDE.md`'s "Releasing" section), not a test | N/A |
 
@@ -380,16 +380,21 @@ under a `## Web smoke check` heading, same convention as §2.1.
 ## 3. Full manual QA pass — before a release, not per-PR
 
 *Layer 7 (manual exploratory/UX) in the taxonomy above — this is the one tier the governing rule
-says should stay manual, though not for its entire current scope forever: `automated-test-strategy-
-plan.md` Phase 5 is auditing how much of what this tier proves today is actually deterministic gate
-behavior that belongs in `test_gate.py` instead (layer 2), leaving this tier to shrink to the parts
-that genuinely need a human watching a real popup render against real account data.*
+says should stay manual. `automated-test-strategy-plan.md` Phase 5 cross-checked how much of what
+this tier used to be the only proof for is actually deterministic gate behavior that belongs in
+`test_gate.py` (layer 2) instead, and confirmed `test_gate.py` already covers nearly all of it —
+this tier has shrunk accordingly, to the parts that genuinely need a human watching a real popup
+render against real account data (or a live provider's own tool-to-gate-metadata mapping, which
+`test_gate.py` deliberately doesn't duplicate per connector).*
 
 [`connector-qa-testing.md`](connector-qa-testing.md) drives every tool through a live Claude
 Cowork/Desktop session connected to the real `privacyfence` daemon, against real accounts, watching
-what actually prompts. This is the only thing that exercises the gate, the popup UI, and the audit
-log end to end — none of tiers 1 or 2 do. Run it before a release, or after any change to
-`gate.py`/`auto_accept.py`/`resource_grants.py`/the web approval UI broadly, not on every PR.
+what actually prompts. It is no longer the primary proof for gate-state correctness — that's
+`test_gate.py`'s job now, confirmed exhaustive by Phase 5 — but it's still the only thing that
+exercises the gate, the popup UI, and the audit log against a live provider end to end, and it stays
+the route to catch a connector's tool wired to the wrong gate/metadata in the first place. Run it
+before a release, or after any change to `gate.py`/`auto_accept.py`/`resource_grants.py`/the web
+approval UI broadly, not on every PR.
 
 Before a release specifically, run tiers 1 and 2 across every connector too, not just the ones a
 recent PR touched — see [manual-pre-release-test-plan.md](manual-pre-release-test-plan.md) for the

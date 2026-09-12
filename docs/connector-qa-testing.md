@@ -46,16 +46,26 @@ For each operation verify:
 
 ## 3. Gate behavior
 
-For representative tools verify the gate metadata and resulting behavior match the implementation contract:
+`tests/unit/test_gate.py` is the primary, deterministic proof for gate-state coverage —
+`automated-test-strategy-plan.md` Phase 5 cross-checked it against the full gate/policy matrix
+(auto→allowed, review→Allow/Deny, review+PII→Proceed/Cancel, popup/write→Allow/Deny, "Always
+allow"→proposed rule, matching/non-matching rule or resource grant, unattended allowed/forbidden)
+and confirmed it's already exhaustive. This tier is **no longer required as routine release proof
+for gate-state coverage itself** — don't re-verify the generic auto/review/popup/PII/unattended
+state machine here.
 
-- auto-allowed operations execute without an unexpected approval;
-- review-gated reads do not release protected result content before approval;
-- write/sensitive operations require confirmation unless a matching standing rule permits them;
-- Deny/Cancel prevents connector execution or protected release as appropriate;
-- PII-sensitive results trigger the configured privacy/confirmation behavior;
+What this tier is still required for: **connector-specific tool-to-gate-metadata mapping** — that a
+given tool is actually wired to the gate/metadata its own implementation intends (e.g. a review-gated
+read really does carry `pii_scan_text`, a write really does offer the sandbox-folder suggestion it's
+supposed to) against a live provider response, not a synthetic one. `test_systemic_gate_invariants.py`
+(TST-13) already proves the source-level wiring for the invariants it scans for; this tier is the one
+that catches a live response shape defeating that wiring in practice. For representative tools verify:
+
+- the tool's gate (auto/review/popup) and metadata match its documented contract against real
+  provider data — this, not the generic Allow/Deny/rule-creation state machine, is this tier's job;
+- Deny/Cancel prevents connector execution or protected release, against the real provider;
+- PII-sensitive live results trigger the configured privacy/confirmation behavior;
 - audit entries record the correct connector/tool/decision/principal context.
-
-Do not treat this exploratory run as the primary proof for every gate state; deterministic gate coverage belongs in the automated suite.
 
 ## 4. Approval UI
 

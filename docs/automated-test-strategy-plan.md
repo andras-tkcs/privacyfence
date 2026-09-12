@@ -34,8 +34,15 @@ two PRs (#298 for item 4.1, a follow-up for items 4.2–4.5) — see that phase'
 what shipped, including a real responsive-layout bug the new checks found and fixed
 (`dialog_window_html.py`'s confirmation/choice dialogs overflowing a phone-width viewport) and the
 new failure-artifact-capture infrastructure item 4.5 asked for, which didn't exist anywhere in this
-repo before. Phases 5–10 are unaffected by any of these merges and reflect this plan's original
-grounding pass.
+repo before.
+[Phase 5](#phase-5--exhaustive-gatepolicy-system-tests) (exhaustive gate/policy system tests) is
+also now done — the audit this phase asked for (rather than a from-scratch build, since
+`test_gate.py` already covered most of the matrix) found and closed two narrow gaps (an explicit
+resource-grant/rule-mismatch case on both the review and popup gate branches) and confirmed one
+matrix item that architecturally belongs to `tests/unit/connectors/*.py` instead of this file; see
+that phase's own status note for the detail and the resulting `testing-policy.md`/
+`connector-qa-testing.md` framing updates. Phases 6–10 are unaffected by any of these merges and
+reflect this plan's original grounding pass.
 Phase 11 (update branch-protection required checks) is new in this revision — added once this plan
 was checked against `testing-policy.md`'s own "one job to merge" language and found not to close
 that gap anywhere — and Phase 12 is the renumbered "retire the platform-specific plan docs" phase
@@ -689,40 +696,77 @@ above has a passing automated assertion.
 
 Retire the giant live-connector QA flow as the normal way to prove gate behavior.
 
-### Already in this repo
+### Status: done
 
-`tests/unit/test_gate.py` is already a 2,600+-line parameterized suite covering, by class name
-alone: auto-accept, review-gate decisions, delivery-audit fields, "Accept all" (single and multiple
-choices, writes), propose-rule-change, popup-gate writes, the PII upload gate, request
-fingerprinting, write-content flags, temp-accept, the PII review gate broadly (categories/match
-details in the audit log, "already reviewed," `pii_scan_text` itself), concurrent approvals,
-coalescing, the deferred-approval protocol, "approved object types never pop up," request IDs,
-audit-gap safety, unattended mode, Claude's stated reason, default details, and cancellation. This
-is already most of the matrix the source strategy asks for (`auto→allowed`, `review→Allow/Deny`,
-`review+PII→Proceed/Cancel`, `popup/write→Allow/Deny`, "Always allow"→proposed rule,
-matching/non-matching rule, unattended allowed/forbidden) — this phase is **audit and close gaps**,
-not build from scratch.
+`tests/unit/test_gate.py` was already, per its own class list, most of the matrix the source
+strategy asks for (`auto→allowed`, `review→Allow/Deny`, `review+PII→Proceed/Cancel`,
+`popup/write→Allow/Deny`, "Always allow"→proposed rule, matching/non-matching rule,
+unattended allowed/forbidden) — this phase's own framing said to audit and close gaps, not build
+from scratch, and that's what the audit found once carried out: two narrow, genuinely missing cases,
+plus one matrix item that turns out to belong to a different test file entirely by this codebase's
+own architecture, not a gap in this one.
 
-### Remaining work
+- **Resource-grant match/mismatch** — already exercised end to end at the evaluator level
+  (`tests/unit/test_resource_grants.py`, `tests/unit/test_auto_accept.py`'s grant-backed rule
+  classes, e.g. `TestDriveRules`/`TestSheetsFolderScopedRules`), since a grant compiles into an
+  ordinary rule-shaped entry before `AutoAcceptEvaluator.should_auto_accept()` ever sees it
+  (`settings_controller.py`'s own comment: "a compiled entry... not hand-authored") — `gate.py`
+  itself, and therefore `test_gate.py`'s `FakeEvaluator`, is architecturally agnostic to whether a
+  match came from a plain rule or a grant. What `test_gate.py` itself was missing was the
+  *gate-level* half of that binary: every existing review/popup-gate test already reached the popup
+  under `FakeEvaluator()`'s default no-match result, but none of them asserted that reaching the
+  popup was actually *caused* by the evaluator being consulted and returning no match, as opposed to
+  an accident of the fixture default. Added `TestReviewGateDecisions::
+  test_no_matching_grant_or_rule_falls_through_to_popup_with_evaluator_consulted` and
+  `TestPopupGateWrites::test_no_matching_rule_falls_through_to_popup_with_evaluator_consulted`,
+  each asserting the evaluator's `calls` list is non-empty (gated_call re-checks it a second time
+  right before showing the popup, for the documented concurrent-approval coalescing race — see
+  `TestCoalescing` — so this is `>= 1`, not `== 1`) and that the popup only ran because of that
+  no-match result, alongside the pre-existing full-tuple assertions (result, audit decision,
+  `auto_accept_rule`).
+- **"Policy denial before connector execution"** — confirmed already proven, but not inside
+  `test_gate.py`, because it structurally can't be: `gated_call()` never holds a reference to a
+  connector's provider client at all. For every popup-gated write, the calling connector method
+  (e.g. `GmailConnector._create_draft`) is written as `await gated_call(...)` followed by the real
+  provider call on the next line — a raised denial (this file's own
+  `test_deny_raises_and_audits_rejected` cases, both gate branches) already prevents that second
+  line from running by ordinary Python control flow, with no separate flag for this module to
+  intercept. The actual "provider client mock asserted not called" proof already exists, one
+  assertion per write tool, in `tests/unit/connectors/*.py` (10 connector test modules, e.g.
+  `test_gmail_connector.py`'s `client.create_draft.assert_not_called()` /
+  `client.create_label.assert_not_called()`) — the only layer that actually holds a reference to the
+  client to assert against. Documented this explicitly in `test_gate.py`'s own module docstring
+  rather than adding a test that can't exist in this file, so the next person auditing this matrix
+  doesn't rediscover the same architectural fact from scratch.
+- **Full-tuple assertions** — spot-checked broadly (every class in the file, plus a script checking
+  every `test_*` function for a missing `audit_dir`/audit-entry assertion): of the 144 cases now in
+  the file, the only 8 with no audit assertion are pre-validation `ValueError` cases in
+  `TestProposeRuleChange` that raise before any audit-worthy event exists to record, and
+  `TestRunInPopupExecutor`'s four executor-mechanism cases, which aren't gate-decision cases at all.
+  Every actual gate-decision case already asserts the meaningful subset of the tuple for its own
+  branch (gate selection is implicit in which popup function is stubbed and asserted
+  called/not-called; connector call state is out of scope per the point above; result, audit
+  decision, and rule/grant side effect are asserted directly) — no case found checking only a
+  subset that should be extended.
+- **`testing-policy.md`/`connector-qa-testing.md` framing** — both updated. `testing-policy.md`'s
+  §3 intro and its `manual-pre-release-test-plan.md` cross-check table (§3 row) now say Phase 5
+  confirmed `test_gate.py`'s coverage rather than "is auditing" it.
+  `connector-qa-testing.md`'s §3 ("Gate behavior") now states outright that `test_gate.py` is the
+  primary, deterministic proof for gate-state coverage and this tier is no longer required to
+  re-verify it — narrowing §3's checklist to what it's still needed for: a live provider response
+  proving a given tool is actually wired to the gate/metadata its implementation intends, which
+  `test_gate.py`'s synthetic contexts and `test_systemic_gate_invariants.py`'s source-level scan
+  don't reach.
 
-1. Cross-check the existing `test_gate.py` classes against the full matrix in the source strategy
-   (resource-grant match/mismatch, "policy denial before connector execution" specifically —
-   confirm the connector mock is asserted *not called* in the denial path, not just that the result
-   is an error). Add any genuinely missing case as a new parameterized case in the matching
-   existing class, not a new file — this suite's own organization is already the right shape.
-2. Confirm every case asserts the full tuple the strategy calls for: gate selected, connector
-   called/not called, result/error, approval state, audit decision, rule/grant side effect. Where an
-   existing case only checks a subset, extend it rather than adding a near-duplicate test.
-3. Once this audit is done, update `testing-policy.md` and `connector-qa-testing.md`'s own framing
-   (this document's Phase 9 covers the actual rewrite) to state that `connector-qa-testing.md` is no
-   longer required as routine release proof for gate-state coverage specifically — it remains
-   required for connector-specific tool-to-gate-metadata mapping, which this phase deliberately does
-   not duplicate per connector.
+`pytest --collect-only` reports 5120 tests collected (up from Phase 0's 5037, consistent with what
+landed in Phases 1–4 since); `tests/unit/test_gate.py` alone runs its 144 cases (142 pre-existing +
+2 new) in ~2 seconds. `ruff check` is clean on the touched file.
 
-### Exit criteria
+### Exit criteria (met)
 
-Every gate-state transition in the matrix has confirmed, deterministic automated coverage, with no
-gap found in step 1 above left unaddressed.
+- ✅ Every gate-state transition in the matrix has confirmed, deterministic automated coverage — the
+  two gaps this audit found are closed; the one matrix item that doesn't apply to this file is
+  documented as such, not left silently unaddressed.
 
 ---
 
@@ -1040,8 +1084,11 @@ Phase 4  Browser/UI automation                                   (DONE — exten
    ↓                                                               new file; found/fixed a real
    ↓                                                               phone-viewport overflow bug;
    ↓                                                               new failure-artifact capture)
-Phase 5  Gate/policy matrix                                      (mostly an audit of the existing
-   ↓                                                               2,600-line test_gate.py)
+Phase 5  Gate/policy matrix                                       (DONE — audit of the existing
+   ↓                                                               2,600-line test_gate.py found and
+   ↓                                                               closed two narrow gaps; one matrix
+   ↓                                                               item confirmed to live in the
+   ↓                                                               connector tests instead)
 Phase 6  Packaged-artifact lifecycle                              (macOS: close small gaps.
    ↓                                                               Linux: automate an already-
    ↓                                                               manually-proven lifecycle.
@@ -1106,8 +1153,8 @@ plan's grounding pass found the work already done, and a note on which remain ge
 15. ~~Browser PII/responsive/light-dark coverage + failure-artifact capture~~ — **done** (Phase
     4.2–4.5): found and fixed a real phone-viewport overflow bug in the process (see Phase 4's own
     status note)
-16. Gate matrix audit + close any real gap found (Phase 5) — likely small, since the matrix is
-    mostly already there
+16. ~~Gate matrix audit + close any real gap found~~ — **done** (Phase 5): two narrow gaps closed
+    in `test_gate.py`; the matrix was already mostly there, as expected
 17. Linux packaged lifecycle — automate the already-manually-proven P7.1/P7.3 (Phase 6.3)
 18. Windows packaged lifecycle — new work (Phase 6.2)
 19. macOS packaged additions — close small gaps only (Phase 6.1)
