@@ -60,6 +60,10 @@ coverage.json
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# tests/integration/test_browser_smoke.py's own failure-artifact capture
+# (screenshot/DOM/console/daemon log) -- written lazily, only on a failing
+# run, never something to commit.
+test-results/
 
 # Logs
 *.log

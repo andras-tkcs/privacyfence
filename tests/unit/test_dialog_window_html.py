@@ -96,7 +96,13 @@ class TestBuildConfirmationHtml:
         html = build_confirmation_html(
             title="T", message_lines=["m"], cancel_label="Cancel", confirm_label="Confirm",
         )
-        assert f"width: {CONFIRM_WIDTH}px" in html
+        # min(...,100%), not a bare fixed width -- see _document's own
+        # docstring/comment: a bare `width: {CONFIRM_WIDTH}px` overflows any
+        # viewport narrower than that (this document renders inside an
+        # ordinary browser tab, not only a native window frame sized to
+        # exactly this width) -- caught by
+        # tests/integration/test_browser_smoke.py's TestResponsiveLayout.
+        assert f"width: min({CONFIRM_WIDTH}px, 100%)" in html
 
     def test_bridge_script_is_present(self):
         html = build_confirmation_html(
@@ -155,7 +161,9 @@ class TestBuildChoiceHtml:
 
     def test_uses_the_picker_width(self):
         html = build_choice_html(title="T", prompt="p", options=["a"])
-        assert f"width: {PICKER_WIDTH}px" in html
+        # See TestBuildConfirmationHtml.test_uses_the_confirm_width's own
+        # comment -- same min(...,100%) responsive shape, same reason.
+        assert f"width: min({PICKER_WIDTH}px, 100%)" in html
 
     def test_buttons_start_disabled_in_markup(self):
         html = build_choice_html(title="T", prompt="p", options=["a", "b"])

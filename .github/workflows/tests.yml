@@ -131,6 +131,25 @@ jobs:
             htmlcov/
           retention-days: 30
 
+      # tests/integration/test_browser_smoke.py's own _capture_failure_
+      # artifacts fixture (docs/automated-test-strategy-plan.md Phase 4 item
+      # 4.5) writes a screenshot/DOM/console/daemon-log bundle per failing
+      # test under test-results/browser-smoke/, but only ever locally to the
+      # runner's own disk -- upload it so a CI failure in that suite is
+      # diagnosable from the Actions run itself, not just the traceback.
+      # `failure()`, not `always()`: a passing (or never-reached) run leaves
+      # the directory empty or missing, and if-no-files-found: ignore keeps
+      # that the common, unremarkable case rather than a warning on every
+      # green run.
+      - name: Upload browser-smoke failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-smoke-failure-artifacts
+          path: test-results/browser-smoke/
+          if-no-files-found: ignore
+          retention-days: 30
+
   # TST-05 (docs/security-remediation-plan.md, phase 2.2): prove the
   # package actually works on every Python version pyproject.toml's
   # `requires-python = ">=3.11"` claims to support, not just the 3.13 the

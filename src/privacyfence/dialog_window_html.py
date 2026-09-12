@@ -187,9 +187,28 @@ def _document(*, width: int, body_html: str) -> str:
 html {{ height: 100%; }}
 html, body {{ overflow-y: auto; }}
 body {{
-  box-sizing: border-box; width: {width}px; height: 100vh;
+  /* min(...,100%) + margin:0 auto -- same fix approval_window_html.py's
+     own build_card_stack_html applies to its <body>, for the same reason
+     (see that function's docstring): this document also renders inside an
+     ordinary browser tab, at a phone viewport, not only inside a native
+     host's window frame sized to exactly {width}px. A bare `width:
+     {width}px` (this document's own shape before that reasoning was
+     applied here too) overflows any viewport narrower than {width}px --
+     found by an actual headless-browser layout check
+     (tests/integration/test_browser_smoke.py's TestResponsiveLayout), the
+     same way TestPdfPreview/TestSecurityHeadersCsp's own real-browser
+     checks caught their bugs. */
+  box-sizing: border-box; width: min({width}px, 100%); height: 100vh;
+  margin: 0 auto;
   padding: 24px 28px;
   display: flex; flex-direction: column;
+}}
+/* Same breakpoint/reasoning as approval_window_html.py's own: below this
+   width the document is assumed to be embedded somewhere that isn't a
+   fixed-height native window frame, so it scrolls like an ordinary page
+   instead of clipping to a viewport-height frame. */
+@media (max-width: 700px) {{
+  body {{ height: auto; min-height: 100vh; }}
 }}
 h2 {{ font-size: 19px; margin-bottom: 12px; }}
 .pf-choice-list {{
