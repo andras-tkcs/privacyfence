@@ -87,23 +87,17 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
      different (throwaway) account's logon never fired the trigger within 30s. Fixed by adding
      `/ru "BUILTIN\Users"` — the built-in group rather than one specific account, the standard
      technique for "fire on any interactive logon, in that user's own session."
-  Both fixes are validated via a real `workflow_dispatch` run of `windows-graphical-session.yml`
-  before merging — see that workflow's run history for the result, rather than trusting this note
-  alone.
-- **Windows hands-on QA before a signed release ships**: a real installer run on a clean Windows VM
-  (confirm SmartScreen/Authenticode presentation), a real OAuth loopback + connector auth through the
-  installed app, a simulated crash confirming the Task Scheduler restart-on-failure policy actually
-  restarts the daemon (won't pass until Phase 13 above lands), an Add/Remove Programs uninstall
-  confirming program files and the scheduled task are gone while `%USERPROFILE%\.privacyfence\` is
-  untouched, and installing the bundled `.mcpb` into a real Claude Desktop against the installed
-  daemon. None of this is automatable from CI. `TECHNICAL_REFERENCE.md` now has a dedicated
-  "Windows" installation section parallel to its "Linux" one, but that documents the mechanism —
-  it doesn't substitute for actually running this checklist on real Windows.
-- **[privacyfence/privacyfence#121](https://github.com/privacyfence/privacyfence/issues/121)** (the
-  Windows-support tracking issue) stays open until a real tagged release ships the signed Windows
-  installer and the hands-on QA above has been run against that release build specifically — not an
-  earlier dev build. Close it only then, noting in the closing comment what shipped and anything
-  deliberately deferred (e.g. arm64 Windows, EV vs. OV code signing).
+  Fix 1 alone was re-run via `workflow_dispatch` and is what surfaced fix 2's bug; fix 2's own
+  `workflow_dispatch` re-run is what should confirm both together before this note calls the
+  mechanism proven — check `windows-graphical-session.yml`'s own run history for the actual result
+  rather than trusting this note alone.
+  None of this needed a dedicated bullet on its own here for the manual-QA/issue-closure part of it:
+  that content now lives in [`release-testing.md`](release-testing.md)'s human-checks list
+  (Windows-specific bullets — a real installer run on a clean Windows VM, OAuth loopback, the
+  crash-restart check above, and a clean Add/Remove Programs uninstall) and as a standing comment on
+  [privacyfence/privacyfence#121](https://github.com/privacyfence/privacyfence/issues/121) itself
+  recording that it stays open until a real tagged release ships the signed installer and that QA
+  has run against it — not duplicated here as well.
 - **Linux org mode has not had a real end-to-end run against a live Ubuntu server**: a fresh Ubuntu
   host following `org-mode-setup-guide.md` verbatim, a real OIDC round trip against a real identity
   provider, and at least one live connector (Gmail) exercised through a real MCP client hitting the
