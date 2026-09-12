@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "version": "4.2.0",
+  "channel": "stable",
+  "published_at": "2026-06-01T12:00:00Z",
+  "artifacts": [
+    {
+      "id": "macos-arm64",
+      "kind": "installer",
+      "platform": "macos",
+      "architecture": "arm64",
+      "filename": "PrivacyFence-4.2.0.dmg",
+      "key": "releases/stable/4.2.0/PrivacyFence-4.2.0.dmg",
+      "size": 39,
+      "sha256": "f4297b40ac9fb064a704dd540de06c9aa4ef9e816ee5a7bf3bc6b53242b07d53"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "version": "4.4.0a1",
+  "channel": "alpha",
+  "published_at": "2026-09-03T12:00:00Z",
+  "artifacts": [
+    {
+      "id": "macos-arm64",
+      "kind": "installer",
+      "platform": "macos",
+      "architecture": "arm64",
+      "filename": "PrivacyFence-4.4.0a1.dmg",
+      "key": "releases/alpha/4.4.0a1/PrivacyFence-4.4.0a1.dmg",
+      "size": 40,
+      "sha256": "7c140aaa1f074ba2fbe8d14a46cf5e3338cbf02a2c3d74d617fc5c3780b5407b"
+    }
+  ]
+}

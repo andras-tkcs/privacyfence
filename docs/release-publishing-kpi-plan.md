@@ -1,6 +1,8 @@
 # Release Publishing & Download KPI — Phased Implementation Plan
 
-Status: prerequisites provisioned and confirmed (2026-09-12) — implementation-ready, Phase 1 not
+Status: Phase 1 implemented (`cloudflare/downloads/`, `.github/workflows/deploy-download-worker.yml`)
+and pending its own exit criteria (a green `deploy-download-worker.yml` run on `main` and a manual
+`https://downloads.privacyfence.eu/health` check against the real Cloudflare account) — Phase 2 not
 yet started. Use this doc to scope a single session/PR to one phase — e.g. "implement phase 2 of
 the release publishing plan" refers to a phase heading below.
 

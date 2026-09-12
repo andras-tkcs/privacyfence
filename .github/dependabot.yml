@@ -1,12 +1,14 @@
 version: 2
 
-# SEC-19 (docs/security-remediation-plan.md, Phase 2.4). Three ecosystems,
-# matching the three places this repo declares a dependency version:
-# pyproject.toml (the daemon), mcpb/shim/package.json (the .mcpb shim), and
-# the SHA-pinned `uses:` lines in .github/workflows/*.yml themselves (see
-# those files' own comments on why they're pinned to a commit instead of a
-# tag). A PR from any of these three updates only the manifest/pin — it does
-# not regenerate requirements/*.lock.txt, which is a derived file; the
+# SEC-19 (docs/security-remediation-plan.md, Phase 2.4). Four ecosystems,
+# matching the four places this repo declares a dependency version:
+# pyproject.toml (the daemon), mcpb/shim/package.json (the .mcpb shim),
+# cloudflare/downloads/package.json (the downloads.privacyfence.eu Worker,
+# docs/release-publishing-kpi-plan.md Phase 1), and the SHA-pinned `uses:`
+# lines in .github/workflows/*.yml themselves (see those files' own comments
+# on why they're pinned to a commit instead of a tag). A PR from any of
+# these four updates only the manifest/pin — it does not regenerate
+# requirements/*.lock.txt, which is a derived file; the
 # `lockfile-freshness` job in dependency-audit.yml catches a merged bump
 # that leaves the lock file stale before it reaches main, and
 # scripts/update_dependency_locks.sh is how a human (or a follow-up commit
@@ -42,4 +44,16 @@ updates:
       interval: "weekly"
     groups:
       shim-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/cloudflare/downloads"
+    schedule:
+      interval: "weekly"
+    groups:
+      # package.json's `overrides.vitest` pin routes around a known npm/arborist resolution bug
+      # in this exact dependency set (see deploy-download-worker.yml's "Install dependencies"
+      # step comment) -- batching keeps a Dependabot bump from reintroducing that mismatch across
+      # two separate PRs.
+      downloads-worker-dependencies:
         patterns: ["*"]
