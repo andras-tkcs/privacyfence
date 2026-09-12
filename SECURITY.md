@@ -3,7 +3,7 @@
 ## Supported versions
 
 PrivacyFence has no formal LTS or backport program. As documented in
-[`docs/security-and-compliance.md` §9](docs/security-and-compliance.md#9-vendor-risk-criteria-no-isms-no-bcp-no-sla--and-why-thats-a-risk-acceptance-decision-not-a-security-gap),
+[`docs/security-and-compliance.md`'s Vendor risk criteria section](docs/security-and-compliance.md#vendor-risk-criteria),
 there is no support contract or committed patch SLA — this is a single-maintainer open-source
 project, not a vendor with a release-support matrix.
 
@@ -17,7 +17,7 @@ In practice:
   throwaway builds.
 - Organizations that need a guaranteed patch turnaround for an older, pinned version should treat
   that as a gap to plan around internally (assign an owner able to backport or roll back), per the
-  same §9 discussion — not assume PrivacyFence provides it.
+  same Vendor risk criteria discussion — not assume PrivacyFence provides it.
 
 If you're unsure whether the version you're running is still current, check the
 [Releases page](https://github.com/privacyfence/privacyfence/releases) or compare against the tag
@@ -34,9 +34,10 @@ privately instead, using one of:
    vulnerability"**. This is the preferred channel: it opens a private advisory thread scoped to
    just you and the maintainer, with structured fields for affected versions and severity — see
    status below.
-2. **Email: info@privacyfence.eu** (the channel [`docs/security-and-compliance.md` §10](docs/security-and-compliance.md#10-vulnerability-reporting)
-   already documents for reviewers). Use this if you'd rather not use a GitHub account, or as a
-   fallback if the button below is ever unavailable.
+2. **Email: info@privacyfence.eu** (the channel [`docs/security-and-compliance.md`'s Vulnerability
+   reporting section](docs/security-and-compliance.md#vulnerability-reporting) already documents
+   for reviewers). Use this if you'd rather not use a GitHub account, or as a fallback if the button
+   below is ever unavailable.
 
 ### GitHub private vulnerability reporting status
 
@@ -55,7 +56,8 @@ To make a report actionable without back-and-forth, include:
 - Steps to reproduce, or a proof-of-concept, if you have one.
 - The affected version or commit (`git describe --tags`, or the version PrivacyFence reports in its
   UI/logs).
-- Which deployment mode is involved (local or org — see [`docs/security-and-compliance.md` §2](docs/security-and-compliance.md#2-deployment-model-local-or-org-run-by-you-either-way))
+- Which deployment mode is involved (local or org — see
+  [`docs/security-and-compliance.md`'s Deployment model section](docs/security-and-compliance.md#deployment-model))
   and, if relevant, which connector or gate configuration triggers it.
 - Whether you believe the issue is already publicly known or exploited.
 
@@ -71,7 +73,8 @@ their own vendors.
 ## Acknowledgement and triage
 
 Reports are handled **best-effort, not against a committed response-time SLA** — this mirrors the
-"Risk response process / SLA: None" row in [`docs/security-and-compliance.md` §9](docs/security-and-compliance.md#9-vendor-risk-criteria-no-isms-no-bcp-no-sla--and-why-thats-a-risk-acceptance-decision-not-a-security-gap):
+"Risk response process / SLA: None" line in
+[`docs/security-and-compliance.md`'s Vendor risk criteria section](docs/security-and-compliance.md#vendor-risk-criteria):
 there is no support contract behind this project, and this policy isn't going to promise one it
 can't back. In practice, expect an acknowledgement of receipt from the maintainer, followed by
 triage (confirming the issue, assessing severity and affected versions/modes) and, once confirmed,

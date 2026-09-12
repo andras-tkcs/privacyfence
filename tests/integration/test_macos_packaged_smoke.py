@@ -154,17 +154,39 @@ pytestmark = [
 ]
 
 
-def _wait_until_connectable(host: str, port: int, timeout: float = 30.0) -> None:
+def _wait_until_connectable(
+    host: str, port: int, proc: subprocess.Popen, log_path: Path, timeout: float = 30.0,
+) -> None:
+    """Waits for the daemon's own web port to start answering.
+
+    ``proc``/``log_path`` are checked on every poll for the same reason
+    ``_wait_for_file`` below checks them: a daemon that died on startup
+    never opens the port either, and without this the two cases are
+    indistinguishable -- a real CI failure here spent the full ``timeout``
+    and then reported only "never became connectable", with the reason
+    (the process was gone within a second, and had said why on its own
+    stdout) nowhere in the failure message. This is the first thing
+    ``_running_daemon_at`` waits on, so it is also the first place that
+    distinction is available to make.
+    """
     deadline = time.monotonic() + timeout
     last_exc: OSError | None = None
     while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise AssertionError(
+                f"daemon exited early (code {proc.poll()}) instead of serving {host}:{port} -- log:\n"
+                f"{log_path.read_text(errors='replace')}"
+            )
         try:
             with socket.create_connection((host, port), timeout=0.2):
                 return
         except OSError as exc:
             last_exc = exc
             time.sleep(0.1)
-    raise TimeoutError(f"{host}:{port} never became connectable") from last_exc
+    raise TimeoutError(
+        f"{host}:{port} never became connectable within {timeout}s -- log:\n"
+        f"{log_path.read_text(errors='replace')}"
+    ) from last_exc
 
 
 def _copy_app_from_dmg(dst_dir: Path) -> Path:
@@ -317,7 +339,7 @@ def _running_daemon_at(exe: Path, home: Path):
     proc = subprocess.Popen([str(exe)], env=env, stdout=log_fh, stderr=subprocess.STDOUT)
 
     try:
-        _wait_until_connectable("localhost", port)
+        _wait_until_connectable("localhost", port, proc, log_path)
 
         data_dir = home / ".privacyfence"
         web_token = _wait_for_file(data_dir / WEB_TOKEN_FILE_NAME, proc, log_path)
@@ -607,6 +629,24 @@ def _bump_bundle_version(app_path: Path) -> str:
     info["CFBundleShortVersionString"] = new_version
     with open(info_plist_path, "wb") as f:
         plistlib.dump(info, f)
+
+    # Rewriting Info.plist breaks the bundle's code signature: its hash is part
+    # of what the main executable's own signature seals, so the copy that came
+    # out of the (real, Developer ID signed and notarized) DMG stops validating
+    # the moment that file changes. On the arm64 runners this job actually uses,
+    # that is not a warning -- the kernel refuses to exec a binary whose
+    # signature does not validate at all, so the relabeled bundle died on the
+    # spot and the test saw only its web port never opening. Re-signing ad hoc
+    # ("-") puts a valid signature back on the modified bundle, which is all a
+    # direct exec needs (``_running_daemon_at``'s own docstring covers why
+    # Gatekeeper is deliberately not in the picture here; this bundle is
+    # synthetic and its Developer ID provenance is not what this test is
+    # about -- ``test_packaged_app_signature_and_notarization`` checks that,
+    # against the real unmodified bundle).
+    subprocess.run(
+        ["codesign", "--force", "--sign", "-", str(app_path)],
+        check=True, capture_output=True, text=True,
+    )
     return new_version
 
 

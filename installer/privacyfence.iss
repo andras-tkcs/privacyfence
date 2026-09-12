@@ -136,6 +136,41 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""{#TaskName}"" /f"; \
 ; uninstall" for a typical app might add.
 
 [Code]
+(* Copies whatever schtasks.exe wrote on stdout/stderr into Setup's own log
+   file, one line per log entry.
+
+   Everything about the autostart registration below was otherwise
+   invisible: Inno logs its own [Run] entries automatically but says
+   nothing at all about an Exec() call made from [Code], and Exec()
+   captures neither stream. So a run of consecutive real
+   windows-graphical-session.yml runs could establish only that the task
+   was missing afterwards, never why -- the install log they dumped
+   (tests/integration/test_windows_graphical_session_autostart.py's own
+   _install_log_tail) went straight from "Installation process succeeded"
+   to "Deinitializing Setup" with no trace of the registration attempt in
+   between. An exit code alone would not have closed that gap either: when
+   this finally ran, schtasks' own stderr was the thing that named the
+   defect outright ("(1,40)::ERROR: unable to switch the encoding", the
+   task XML's encoding declaration -- see privacyfence-task.xml.tmpl). *)
+procedure LogSchtasksOutput(OutFile: String);
+var
+  Lines: TArrayOfString;
+  I: Integer;
+begin
+  if not FileExists(OutFile) then
+  begin
+    Log('RegisterAutostartTask: no schtasks output file at ' + OutFile);
+    Exit;
+  end;
+  if not LoadStringsFromFile(OutFile, Lines) then
+  begin
+    Log('RegisterAutostartTask: could not read schtasks output file ' + OutFile);
+    Exit;
+  end;
+  for I := 0 to GetArrayLength(Lines) - 1 do
+    Log('RegisterAutostartTask: schtasks: ' + Lines[I]);
+end;
+
 (* Registers the autostart Task Scheduler task (Phase 3.1) via a real Task
    Scheduler XML task definition (privacyfence-task.xml.tmpl, extracted to
    the temp directory by the [Files] "dontcopy" entry above), not
@@ -149,6 +184,19 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""{#TaskName}"" /f"; \
    entries execute, so the path it substitutes in always exists by the
    time schtasks reads it.
 
+   schtasks runs through cmd.exe rather than directly for one reason only:
+   so its stdout and stderr can be redirected to a file and read back into
+   the log (LogSchtasksOutput above).
+
+   The whole body is wrapped in try/except with a Log() at each step. That
+   was added while the failure was still unexplained, on the theory that an
+   unhandled Pascal Script runtime exception was silently aborting Setup's
+   post-install processing; the actual defect turned out to be in the task
+   XML itself, and no exception was ever involved. It stays because the
+   reasoning behind it holds regardless: an exception here would otherwise
+   abort the rest of post-install with the overall install still reporting
+   success, and nothing would say so.
+
    Deliberately using this parenthesis-asterisk comment style rather than
    curly braces: Pascal's curly-brace comments don't nest, and the
    {app}/{tmp}-style Inno constant references this comment needs to talk
@@ -157,22 +205,10 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""{#TaskName}"" /f"; \
    version of this comment actually hit. *)
 function RegisterAutostartTask(): Boolean;
 var
-  TemplateFile, XmlFile, XmlContent, ExecPath: String;
+  TemplateFile, XmlFile, OutFile, XmlContent, ExecPath, CmdLine: String;
   RawContent: AnsiString;
   ResultCode: Integer;
 begin
-  { A real run against this function's previous version (no logging, no
-    exception handling) showed Setup's own install log recording
-    ExtractTemporaryFile's extraction and then nothing else at all from
-    this function -- not even the separate [Run] "launch now" entry that
-    normally runs after CurStepChanged(ssPostInstall) returns. The most
-    likely explanation is an unhandled Pascal Script runtime exception
-    partway through this function silently aborting the rest of Setup's
-    post-install processing under /SUPPRESSMSGBOXES, with the overall
-    install still reporting success. Wrapped in try/except with an
-    explicit Log() call at every step and on any exception, so the next
-    real run's own install log actually says where and why, instead of
-    this comment's own guess. }
   Result := False;
   try
     Log('RegisterAutostartTask: starting');
@@ -203,13 +239,20 @@ begin
       Exit;
     end;
     Log('RegisterAutostartTask: wrote ' + XmlFile + ', ' + IntToStr(Length(XmlContent)) + ' bytes, running schtasks');
-    if not Exec(ExpandConstant('{sys}\schtasks.exe'),
-        '/create /tn "{#TaskName}" /xml "' + XmlFile + '" /f',
-        '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+
+    OutFile := ExpandConstant('{tmp}\schtasks-create.out');
+    { The doubled outer quotes are cmd.exe's own rule for a /C command line
+      whose first token is itself a quoted path: cmd strips the outermost
+      pair and runs what is left. }
+    CmdLine := '/C ""' + ExpandConstant('{sys}\schtasks.exe') +
+      '" /create /tn "{#TaskName}" /xml "' + XmlFile + '" /f > "' + OutFile + '" 2>&1"';
+    if not Exec(ExpandConstant('{cmd}'), CmdLine, '', SW_HIDE,
+        ewWaitUntilTerminated, ResultCode) then
     begin
-      Log('RegisterAutostartTask: Exec itself failed to launch schtasks.exe');
+      Log('RegisterAutostartTask: Exec itself failed to launch cmd.exe');
       Exit;
     end;
+    LogSchtasksOutput(OutFile);
     Log('RegisterAutostartTask: schtasks exit code = ' + IntToStr(ResultCode));
     Result := ResultCode = 0;
   except
@@ -221,5 +264,15 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
-    RegisterAutostartTask();
+  begin
+    (* A failed registration deliberately does not abort the install: every
+       other part of the install is still usable without autostart, and the
+       user can start PrivacyFence from the Start menu meanwhile. It is
+       logged as a failure rather than passed over silently so that the
+       install log actually says so -- which is also what Phase 7's
+       graphical-session test reads back when it finds the task missing. *)
+    if not RegisterAutostartTask() then
+      Log('RegisterAutostartTask: FAILED; PrivacyFence will not start ' +
+          'automatically at logon.');
+  end;
 end;

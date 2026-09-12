@@ -396,9 +396,12 @@ jobs:
 
       # desktop-file-utils (desktop-file-validate): docs/automated-test-strategy-plan.md Phase 6
       # item 6.3's own packaged-lifecycle test (below, after the build) validates the installed
-      # /etc/xdg/autostart/privacyfence.desktop with it.
+      # /etc/xdg/autostart/privacyfence.desktop with it. patchelf: scripts/build_deb.sh strips the
+      # build host's own RUNPATH out of the bundled CPython extension modules with it -- on this
+      # runner those point back into setup-python's hosted toolcache, which lintian rejects at
+      # error severity (see that script's staging step).
       - name: Install system dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq dpkg-dev lintian desktop-file-utils
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq dpkg-dev lintian desktop-file-utils patchelf
 
       - name: Install Python dependencies
         # [test] alongside [dev]: needed for the org-mode Ubuntu release smoke test below (pytest,
