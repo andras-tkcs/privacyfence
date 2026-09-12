@@ -136,17 +136,25 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""{#TaskName}"" /f"; \
 ; uninstall" for a typical app might add.
 
 [Code]
-{ Registers the autostart Task Scheduler task (Phase 3.1) via a real Task
-  Scheduler XML task definition (privacyfence-task.xml.tmpl, extracted to
-  {tmp} by the [Files] "dontcopy" entry above), not schtasks.exe's plain
-  /create flags -- see [Run]'s own comment and that template's own header
-  comment for why. Substitutes the real installed AliasExeName path for
-  the template's __EXEC_PATH__ placeholder, writes the result to a scratch
-  file under {tmp}, then runs `schtasks /create /xml <file> /f` against
-  it. Called from CurStepChanged(ssPostInstall) below, i.e. after {app}'s
-  files are already in place (Files copy happens during ssInstall, before
-  ssPostInstall) but before this file's own [Run] entries execute, so the
-  path it substitutes in always exists by the time schtasks reads it. }
+(* Registers the autostart Task Scheduler task (Phase 3.1) via a real Task
+   Scheduler XML task definition (privacyfence-task.xml.tmpl, extracted to
+   the temp directory by the [Files] "dontcopy" entry above), not
+   schtasks.exe's plain /create flags -- see [Run]'s own comment and that
+   template's own header comment for why. Substitutes the real installed
+   AliasExeName path for the template's __EXEC_PATH__ placeholder, writes
+   the result to a scratch file, then runs `schtasks /create /xml <file>
+   /f` against it. Called from CurStepChanged(ssPostInstall) below, i.e.
+   after the app's files are already in place (Files copy happens during
+   ssInstall, before ssPostInstall) but before this file's own [Run]
+   entries execute, so the path it substitutes in always exists by the
+   time schtasks reads it.
+
+   Deliberately using this parenthesis-asterisk comment style rather than
+   curly braces: Pascal's curly-brace comments don't nest, and the
+   {app}/{tmp}-style Inno constant references this comment needs to talk
+   about would otherwise close the comment early at their own closing
+   brace -- exactly the "'BEGIN' expected" compile error an earlier
+   version of this comment actually hit. *)
 function RegisterAutostartTask(): Boolean;
 var
   TemplateFile, XmlFile, XmlContent, ExecPath: AnsiString;
