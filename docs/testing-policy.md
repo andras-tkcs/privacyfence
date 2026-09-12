@@ -151,8 +151,20 @@ see that script's `MODULE_FLOORS` for the exact list), drops below where it was 
 raises coverage on one of those modules should bump its floor in the same PR; a PR that needs to
 *lower* one is a real regression, not a config edit. `pytest`'s own `--cov-report=json`/`html`
 output is uploaded as a `coverage-report` CI artifact on every run (pass or fail) so a regression
-can be inspected without re-running locally. This `test` job is the one a PR needs to pass to
-merge.
+can be inspected without re-running locally.
+
+`tests.yml` runs six jobs on every PR, and `main`'s branch protection rule requires all of them to
+pass before a PR can merge: this `test` job; `platform-windows`/`platform-macos` (the full core
+suite again on real Windows/macOS runners — see §3's system-layer row above for what these add);
+`test-python-compat` (the same core suite, Node-free, against Python 3.11 and 3.12 — reported as
+two separate checks, one per Python version, since each matrix leg is its own GitHub check);
+`org-mode-smoke` (`test_org_ubuntu_release_smoke.py`, see §3's row above); and `static-analysis`'s
+blocking `ruff check .` step (its `mypy`/`bandit` steps are `continue-on-error` and stay
+informational — see `coding-and-testing-guidelines.md`). `scripts/update_branch_protection.py`
+is the reviewable, applied-the-same-way-every-time record of exactly that set
+(`docs/automated-test-strategy-plan.md` Phase 11) — update its `REQUIRED_STATUS_CHECKS` list, in
+the same PR, whenever a job here is added, renamed, or removed, then have a repo admin run
+`apply` against the live branch protection rule.
 
 Through P9 this ran on `macos-latest` instead, and a second, non-blocking `test-linux` job carried
 the platform-independent subset (everything under `web/`, `web_approval_ui.py`, `card_builder.py`,
@@ -418,6 +430,9 @@ approval-UI change since the last release, not the mere fact that a release is h
 | `pytest` (full suite, incl. the mcp/daemon, shim/mcp contract, canonical system, and browser-smoke tests) | 1, 2, 3, 4 | Yes, every PR | Always — this is the merge gate |
 | `pytest` on `platform-windows`/`platform-macos` (incl. `tests/platform/`, `-m platform`, and `tests/system/test_local_mode_system.py`) | 1, 2, 3 | Yes, every PR | Always — this is also a merge gate |
 | `test_org_ubuntu_release_smoke.py` (`org-mode-smoke` job) | 3 | Yes, every PR (Ubuntu only) — also re-run in `build.yml`'s `build-deb` job at release time | Always — this is also a merge gate |
+| `pytest` on `test-python-compat` (core suite, Node-free, Python 3.11 and 3.12) | 1, 2 | Yes, every PR (Ubuntu only) — two checks, one per Python version | Always — both are also a merge gate |
+| `ruff check .` (`static-analysis` job) | — (static check, not a layer) | Yes, every PR | Always — this is also a merge gate |
+| `mypy`/`bandit` (`static-analysis` job) | — (static check, not a layer) | Yes, every PR, but `continue-on-error` | No — informational only, doesn't gate the job or the merge |
 | `check_coverage_floor.py` (coverage ratchet, TST-03) | — (a quality gate on layers 1–2, not a layer itself) | Yes, every PR | Always — this is also a merge gate |
 | `npm test` (mcpb/shim/'s own suite) | 1 | Yes, every PR | Always — this is the merge gate |
 | `npm run typecheck` (mcpb/shim/) | — (static check, not a layer) | Yes, every PR | Always — this is the merge gate |
