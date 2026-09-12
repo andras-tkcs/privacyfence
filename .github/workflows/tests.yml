@@ -266,6 +266,39 @@ jobs:
       - name: Run test suite (100% pass rate required)
         run: pytest -v --cov=src/privacyfence --cov-report=term-missing
 
+  # docs/automated-test-strategy-plan.md Phase 8 item 2 (TST-16, docs/
+  # security-remediation-plan.md Phase 3 item 3.11): tests/integration/
+  # test_org_ubuntu_release_smoke.py gates its whole module behind
+  # PRIVACYFENCE_RUN_RELEASE_SMOKE_TESTS -- unset everywhere else in this
+  # file, so the `test` job's own full-suite run above always skips it
+  # instantly. Before Phase 8, the only thing that ever set that variable
+  # was build.yml's tag-triggered build-deb job -- the same dispatch/tag-
+  # only gap platform-windows had before Phase 2.1 promoted it. Promoted
+  # here the same way, as its own permanent per-PR leg: the module's own
+  # "Why a --target install, not the .deb" section is what keeps this
+  # cheap enough to run on every PR (a `pip install --target` of this
+  # package, seconds, not build.yml's real PyInstaller/.deb pipeline,
+  # minutes) without waiting for a release tag to find out org mode broke.
+  org-mode-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+
+      - name: Run org-mode release-workflow smoke test
+        env:
+          PRIVACYFENCE_RUN_RELEASE_SMOKE_TESTS: "1"
+        run: pytest -v tests/integration/test_org_ubuntu_release_smoke.py
+
   # docs/security-remediation-plan.md, Phase 2 item 2.3 (TST-07). Separate
   # job (not a step tacked onto `test` above) so a lint failure is reported
   # on its own line in the checks list, and so it doesn't need the Node/npm

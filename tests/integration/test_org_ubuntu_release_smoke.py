@@ -1,5 +1,7 @@
 """Release-workflow smoke test for the Ubuntu org-mode service (TST-16,
-docs/security-remediation-plan.md Phase 3 item 3.11).
+docs/security-remediation-plan.md Phase 3 item 3.11; extended by
+docs/automated-test-strategy-plan.md Phase 8 -- see its "Remaining work"
+for exactly what that phase added below and why).
 
 Every other org-mode test in this repo (tests/unit/web/test_server_org_
 mode.py, test_org_mcp_e2e.py, test_org_session.py, ...) drives web/
@@ -38,6 +40,13 @@ external IdP, real TLS certificate, or real reverse proxy binary:
     trip through the mocked IdP mints an isolated, per-principal session;
     a second principal's login neither collides with nor is disturbed by
     logging the first one out.
+  - **App-level authz policy** (SEC-22, ``org_mode.AuthzPolicyConfig``,
+    Phase 8): with an ``authz.allowed_domains`` allowlist configured, a
+    principal the IdP already authenticated in an allowed domain signs in
+    normally; one outside every allowed domain is turned away with the
+    same generic sign-in failure any other rejection gets (SEC-10), no
+    session issued -- ``TestAppLevelAuthzPolicy``, its own daemon since the
+    policy is fixed at startup.
   - **MCP OAuth discovery**: DCR (``/register``), the authorization-code +
     PKCE dance (``/authorize`` -> mocked IdP -> ``/oauth/idp/callback``),
     ``/token``, and a real ``tools/list`` call against ``/mcp`` with the
@@ -45,16 +54,48 @@ external IdP, real TLS certificate, or real reverse proxy binary:
     (``paths.user_dir()``) it causes to be created on disk is exactly the
     signed-in principal's own, proving the token really did resolve to
     that principal end to end, not just that the dance completed.
-  - **Clean shutdown/restart**: SIGTERM (what ``systemctl stop`` actually
-    sends) brings the process down promptly, and a second instance started
-    right after against the same ``$HOME`` comes up cleanly -- the
-    instance lock and any on-disk state left behind survive a stop/start
-    cycle the way an admin running ``systemctl restart privacyfence``
-    needs them to.
+  - **An approval, exercised end to end, with audit-principal correctness**
+    (Phase 8): ``privacyfence_propose_auto_accept_rule_change`` (the one
+    MCP-reachable approval this module's zero-connector config can drive
+    without a real Google/Slack/... credential) blocks on a human
+    confirmation the same way a gated tool call's own popup does; a
+    *different* signed-in principal cannot decide it (cross-principal
+    authorization, over the real subprocess this time -- see
+    tests/unit/web/test_routes_org_approvals.py for the in-process version
+    of this same check), the principal it actually belongs to can, and the
+    resulting audit entry lands under that principal's own per-principal
+    audit log directory, not local's or anyone else's. This is also where
+    Phase 8's own grounding work found and fixed two real bugs no earlier
+    org-mode test (all in-process, all effectively single-principal)
+    could have caught: ``gate._run_in_popup_executor`` silently dropped
+    ``contextvars`` (and therefore ``current_principal()``) across its
+    thread-pool hop, so a confirmation dialog with no pre-registered
+    ``PendingApproval`` (``show_rule_confirmation_popup``,
+    ``show_pii_confirmation_popup``) registered under the wrong principal
+    and could never be decided by anyone; and neither
+    ``McpDispatcher.propose_rule_change`` nor ``.list_rules`` forced their
+    principal's ``ConnectorRegistry`` entry (and the
+    ``auto_accept.init_config_path()`` call that's a side effect of
+    building it) to exist first, so calling either as a principal's very
+    first MCP interaction raised "auto_accept config path not
+    initialized." Both are fixed in ``gate.py``/``web/mcp_dispatch.py``.
+  - **Clean shutdown/restart, with persisted state actually surviving it**
+    (Phase 8 extends this beyond "starts cleanly again"): SIGTERM (what
+    ``systemctl stop`` actually sends) brings the process down promptly,
+    and a second instance started right after against the same ``$HOME``
+    comes up cleanly -- the instance lock and any on-disk state left
+    behind survive a stop/start cycle the way an admin running
+    ``systemctl restart privacyfence`` needs them to.
+    ``test_persisted_state_survives_a_restart`` proves the stronger claim:
+    a principal's confirmed auto-accept rule is still on ``settings.yaml``
+    and readable by the fresh process, and that principal's audit trail
+    (the *same* weekly ``.jsonl`` file, its existing entries byte-for-byte
+    unchanged) grows rather than resets when a post-restart MCP call
+    audits again.
 
-Deliberately NOT covered here (out of this item's scope, per this plan's
-own "Notes on scope not in the source review"): a real systemd unit, a
-real Caddy process, a real external IdP, or the packaged ``.deb``
+Deliberately NOT covered here (out of this item's own scope): a real
+systemd unit, a real Caddy process, a real external IdP, or the packaged
+``.deb``
 specifically -- see "Why a --target install, not the .deb" below for why the
 last of those isn't needed for what this test actually checks.
 
@@ -83,20 +124,29 @@ Gating
 ------
 Opt-in via ``PRIVACYFENCE_RUN_RELEASE_SMOKE_TESTS=1`` -- unset (the
 default) skips this whole module instantly, so a contributor's ordinary
-``pytest`` run (and tests.yml's own fast per-PR matrix) never pays this
-module's setup cost. ``.github/workflows/build.yml``'s ``build-deb`` job
-(the release workflow TST-16's own plan-table wording refers to) sets it.
+``pytest`` run never pays this module's setup cost, and neither does the
+`test`/`platform-windows`/`platform-macos` full-suite jobs in tests.yml,
+which never set it. Two CI jobs do: ``.github/workflows/build.yml``'s
+``build-deb`` job (the release workflow TST-16's own plan-table wording
+refers to) at release-tag time, and, since Phase 8 item 2,
+``.github/workflows/tests.yml``'s own ``org-mode-smoke`` job on every PR --
+promoted the same way ``test-windows`` -> ``platform-windows`` was by
+Phase 2.1, once this module was itself proven green rather than left
+release-tag-gated indefinitely.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qsl, urlparse
 
 import pytest
@@ -184,7 +234,9 @@ def installed_privacyfence(tmp_path_factory: pytest.TempPathFactory) -> str:
 # Synthetic org_config.json
 # ---------------------------------------------------------------------------- #
 
-def _signed_org_config(*, idp_issuer: str, port: int, with_idp: bool = True) -> dict:
+def _signed_org_config(
+    *, idp_issuer: str, port: int, with_idp: bool = True, authz: dict | None = None,
+) -> dict:
     from privacyfence.org_bundle_signing import generate_keypair, sign_bundle
 
     cfg: dict = {
@@ -203,6 +255,12 @@ def _signed_org_config(*, idp_issuer: str, port: int, with_idp: bool = True) -> 
     }
     if with_idp:
         cfg["idp"] = {"issuer": idp_issuer, "client_id": "privacyfence-smoke", "client_secret": "smoke-test-secret"}
+    # SEC-22 (org_mode.AuthzPolicyConfig): an app-level allowlist layered on
+    # top of the IdP's own authentication -- absent (the default) admits
+    # every IdP-authenticated principal, unchanged. TestAppLevelAuthzPolicy
+    # below is the only caller that passes this.
+    if authz is not None:
+        cfg["authz"] = authz
     private_key, _ = generate_keypair()
     return sign_bundle(cfg, private_key)
 
@@ -330,11 +388,15 @@ def _extract_cookie(response: requests.Response, name: str) -> str:
     return raw.split(";", 1)[0].split("=", 1)[1]
 
 
-def _complete_browser_login(client: LoopbackClient, idp: MockIdp, *, sub: str, next_path: str = "") -> str:
+def _complete_browser_login(
+    client: LoopbackClient, idp: MockIdp, *, sub: str, next_path: str = "", email: str | None = None,
+) -> str:
     """Drives a full ``/login`` -> (real HTTP hop to the mocked IdP) ->
     ``/oauth/idp/login-callback`` round trip and returns the resulting
-    session cookie value."""
-    idp.enqueue_identity(sub=sub, email=f"{sub}@example.com", name=sub.title())
+    session cookie value. ``email`` defaults to ``f"{sub}@example.com"`` --
+    overridable so TestAppLevelAuthzPolicy below can put a principal in (or
+    outside of) an allowed domain without changing their ``sub``."""
+    idp.enqueue_identity(sub=sub, email=email or f"{sub}@example.com", name=sub.title())
     query = f"?next={next_path}" if next_path else ""
     to_idp = client.get(f"/login{query}")
     assert to_idp.status_code == 302, to_idp.text
@@ -343,6 +405,55 @@ def _complete_browser_login(client: LoopbackClient, idp: MockIdp, *, sub: str, n
     back_at_daemon = client.get(_loopback_target(at_idp.headers["location"]))
     assert back_at_daemon.status_code == 302, back_at_daemon.text
     return _extract_cookie(back_at_daemon, "pf_org_session")
+
+
+def _mcp_bearer_token_for(client: LoopbackClient, idp: MockIdp, *, sub: str) -> str:
+    """DCR (``/register``) -> authorization-code+PKCE (``/authorize`` ->
+    mocked IdP -> ``/oauth/idp/callback``) -> ``/token``, condensed to just
+    the resulting MCP bearer access token -- the same dance
+    test_dcr_authorize_token_and_a_real_tool_call_resolve_to_the_signed_in_
+    principal drives inline (to also assert on each intermediate response),
+    factored out here for a second caller that only needs the end result."""
+    from privacyfence import org_identity as oi
+
+    registration = client.post("/register", json={
+        "redirect_uris": [CLAUDE_REDIRECT_URI], "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"],
+    })
+    assert registration.status_code == 201, registration.text
+    client_id = registration.json()["client_id"]
+
+    verifier, challenge = oi.generate_pkce_pair()
+    idp.enqueue_identity(sub=sub, email=f"{sub}@example.com", name=sub.title())
+    to_idp = client.get("/authorize", params={
+        "response_type": "code", "client_id": client_id, "redirect_uri": CLAUDE_REDIRECT_URI,
+        "code_challenge": challenge, "code_challenge_method": "S256", "state": "mcp-token-state",
+    })
+    assert to_idp.status_code == 302, to_idp.text
+    at_idp = requests.get(to_idp.headers["location"], allow_redirects=False, timeout=10)
+    assert at_idp.status_code == 302, at_idp.text
+    back_at_daemon = client.get(_loopback_target(at_idp.headers["location"]))
+    assert back_at_daemon.status_code == 302, back_at_daemon.text
+    callback_qs = dict(parse_qsl(urlparse(back_at_daemon.headers["location"]).query))
+
+    token_resp = client.post("/token", data={
+        "grant_type": "authorization_code", "code": callback_qs["code"], "redirect_uri": CLAUDE_REDIRECT_URI,
+        "client_id": client_id, "code_verifier": verifier,
+    })
+    assert token_resp.status_code == 200, token_resp.text
+    return token_resp.json()["access_token"]
+
+
+def _find_pending_approval_id(list_page_html: str) -> str | None:
+    """Scrapes the one real (server-rendered) row's ``data-approval-id``
+    out of ``GET /approvals``' HTML -- restricted to a 32-hex uuid4 rather
+    than a bare ``[^"]+`` because approval_list_html.py's own client-side
+    JS template *also* contains the literal substring
+    ``data-approval-id="' + esc(row.id) + '"`` (for rows it appends after
+    the first paint via the SSE stream), which a looser pattern matches
+    even when zero approvals are actually pending."""
+    match = re.search(r'data-approval-id="([0-9a-f]{32})"', list_page_html)
+    return match.group(1) if match else None
 
 
 # ---------------------------------------------------------------------------- #
@@ -545,6 +656,168 @@ class TestRunningOrgModeService:
         r = self.client.post("/mcp", json={}, headers={"Accept": "application/json, text/event-stream"})
         assert r.status_code == 401
 
+    # -- An approval, exercised end to end, with audit-principal
+    # correctness (docs/automated-test-strategy-plan.md Phase 8) --------- #
+
+    async def test_an_approval_is_exercised_by_the_correct_principal_and_audited_there(self):
+        """``privacyfence_propose_auto_accept_rule_change`` (gate.py's
+        ``propose_rule_change``, MCP-reachable with no connector required --
+        unlike a gated *tool* call, there's no real Google/Slack/...
+        credential this synthetic config needs for this one) always blocks
+        on a human confirmation, exactly like a gated tool's own popup --
+        the one approval this module's zero-connector config can actually
+        drive end to end. Proves the three things "an approval exercised"
+        needs that the DCR test above (which never lets the call reach a
+        real pending approval -- "Unknown tool" resolves immediately) does
+        not: a *different* principal cannot decide it (cross-principal
+        authorization, mirroring test_routes_org_approvals.py's own
+        in-process coverage of this, now over the real subprocess); the
+        principal it actually belongs to can; and the resulting audit
+        entry lands under that same principal's own log directory, not
+        local's or anyone else's (SEC-23's per-principal audit trail,
+        proven end to end for the first time here -- every other org-mode
+        test in this repo drives audit_log.py in-process).
+        """
+        access_token = _mcp_bearer_token_for(self.client, self.idp, sub="carol")
+        carol_cookie = _complete_browser_login(self.client, self.idp, sub="carol")
+        bob_cookie = _complete_browser_login(self.client, self.idp, sub="bob")
+
+        async def propose() -> Any:
+            async with httpx.AsyncClient(
+                headers={"Host": ISSUER_HOST, "Authorization": f"Bearer {access_token}"},
+            ) as hc:
+                async with streamable_http_client(f"http://127.0.0.1:{self.port}/mcp", http_client=hc) as (r, w, _sid):
+                    async with ClientSession(r, w) as session:
+                        await session.initialize()
+                        return await session.call_tool("privacyfence_propose_auto_accept_rule_change", {
+                            "target": "rule", "operation": "add", "reason": "TST-16 Phase 8 smoke test",
+                            "operation_key": "gmail.read_message", "rule_name": "trusted_sender_domain",
+                            "value": ["example.com"],
+                        })
+
+        # propose_rule_change blocks (on the human confirmation dialog)
+        # until decided below -- run it as a background task so this test
+        # can poll for, and then decide, the approval it creates while
+        # that call is still in flight, the same "two things happening at
+        # once over one real running service" shape
+        # test_deferred_approval_round_trip.py (TST-09) already proves for
+        # gated *tool* calls, applied here to propose_rule_change instead.
+        propose_task = asyncio.ensure_future(propose())
+        try:
+            approval_id = None
+            for _ in range(100):  # 20s at 0.2s/poll -- well under this class's own 20s startup budget
+                await asyncio.sleep(0.2)
+                listing = self.client.get("/approvals", headers={"Cookie": f"pf_org_session={carol_cookie}"})
+                approval_id = _find_pending_approval_id(listing.text)
+                if approval_id is not None:
+                    break
+            assert approval_id is not None, "propose_rule_change never registered a pending approval for carol"
+
+            # Cross-principal: bob can't see it (P9's per-principal list_
+            # pending filter) or decide it (approvals.PendingApprovalRegistry.
+            # answer's own principal_id check) -- the same authorization
+            # test_routes_org_approvals.py already proves in-process, now
+            # against the real running daemon.
+            assert approval_id not in self.client.get(
+                "/approvals", headers={"Cookie": f"pf_org_session={bob_cookie}"},
+            ).text
+            bob_decide = self.client.post(
+                f"/api/approvals/{approval_id}/decide", json={"result": "confirm", "csrf": bob_cookie},
+                headers={"Cookie": f"pf_org_session={bob_cookie}"},
+            )
+            # approvals.PendingApprovalRegistry.answer's own principal_id
+            # check treats someone else's approval id as though it simply
+            # doesn't exist -- the same 409 an already-decided id gets, not
+            # a distinct "forbidden" status that would leak whether the id
+            # is real.
+            assert bob_decide.status_code == 409, bob_decide.text
+
+            carol_decide = self.client.post(
+                f"/api/approvals/{approval_id}/decide", json={"result": "confirm", "csrf": carol_cookie},
+                headers={"Cookie": f"pf_org_session={carol_cookie}"},
+            )
+            assert carol_decide.status_code == 200, carol_decide.text
+
+            result = await asyncio.wait_for(propose_task, timeout=10)
+        finally:
+            if not propose_task.done():
+                propose_task.cancel()
+
+        assert not result.isError, result.content
+        assert "trusted_sender_domain" in result.content[0].text
+
+        # Audit-principal correctness: the decision this call made landed
+        # under carol's own per-principal audit log directory (audit_log.py's
+        # _fallback_log_dir(), keyed on current_principal() at record() time)
+        # -- not local's, not bob's, not merely "some directory got created"
+        # the way the DCR test above only checks for the connectors side of
+        # per-principal storage.
+        from privacyfence.audit_log import current_week
+        from privacyfence.paths import safe_principal_id
+
+        audit_file = (
+            self.home / ".privacyfence" / "users" / safe_principal_id("carol")
+            / "logs" / "audit" / f"{current_week()}.jsonl"
+        )
+        assert audit_file.exists(), f"expected an audit log for carol at {audit_file}"
+        entries = [json.loads(line) for line in audit_file.read_text().splitlines() if line.strip()]
+        matching = [e for e in entries if e["decision"] == "rule_changed_via_bridge_proposal"]
+        assert matching, f"no rule_changed_via_bridge_proposal entry in {[e['decision'] for e in entries]}"
+        assert matching[-1]["claude_reason"] == "TST-16 Phase 8 smoke test"
+
+        bob_audit_file = (
+            self.home / ".privacyfence" / "users" / safe_principal_id("bob") / "logs" / "audit" / f"{current_week()}.jsonl"
+        )
+        assert not bob_audit_file.exists(), "bob's failed decide attempt must not have audited carol's approval"
+
+
+# ---------------------------------------------------------------------------- #
+# App-level authz policy (SEC-22, org_mode.AuthzPolicyConfig): "authenticated
+# MCP request with identity/policy applied" -- the IdP has already vouched
+# for this human by the time org_identity.check_authz_policy runs; this is
+# PrivacyFence's own, additional say over who it admits. A separate daemon
+# (its own org_config.json "authz" section) rather than a case added to
+# TestRunningOrgModeService above: the policy is fixed at startup, so it
+# can't be toggled per-test against that class's one shared running
+# service the way a login parameter could.
+# ---------------------------------------------------------------------------- #
+
+class TestAppLevelAuthzPolicy:
+    @pytest.fixture(autouse=True)
+    def _service(self, installed_privacyfence, tmp_path, mock_idp):
+        home = tmp_path / "home"
+        home.mkdir()
+        port = _free_port()
+        _write_org_config(home, _signed_org_config(
+            idp_issuer=mock_idp.base_url, port=port, authz={"allowed_domains": ["good.example"]},
+        ))
+        with _daemon(installed_privacyfence, home=home) as (proc, log_path):
+            _wait_until_ready(proc, "127.0.0.1", port, log_path)
+            self.idp = mock_idp
+            self.client = LoopbackClient(port)
+            yield
+
+    def test_a_principal_in_an_allowed_domain_signs_in(self):
+        cookie = _complete_browser_login(self.client, self.idp, sub="alice", email="alice@good.example")
+        r = self.client.get("/approvals", headers={"Cookie": f"pf_org_session={cookie}"})
+        assert r.status_code == 200
+
+    def test_a_principal_outside_every_allowed_domain_is_denied_sign_in(self):
+        # org_identity.check_authz_policy raises AuthorizationDenied, which
+        # login_callback's catch-all (see that exception's own docstring:
+        # deliberately not surfaced to the browser -- SEC-10) turns into
+        # the same generic 400 an IdP-side failure gets, with no session
+        # cookie set -- indistinguishable from any other failed sign-in,
+        # by design.
+        self.idp.enqueue_identity(sub="mallory", email="mallory@evil.example", name="Mallory")
+        to_idp = self.client.get("/login")
+        assert to_idp.status_code == 302, to_idp.text
+        at_idp = requests.get(to_idp.headers["location"], allow_redirects=False, timeout=10)
+        assert at_idp.status_code == 302, at_idp.text
+        back_at_daemon = self.client.get(_loopback_target(at_idp.headers["location"]))
+        assert back_at_daemon.status_code == 400, back_at_daemon.text
+        assert "set-cookie" not in back_at_daemon.headers
+
 
 # ---------------------------------------------------------------------------- #
 # Clean shutdown / restart
@@ -580,3 +853,112 @@ class TestCleanShutdownAndRestart:
             _wait_until_ready(proc2, "127.0.0.1", port, log_path2)
             client = LoopbackClient(port)
             assert client.get("/login").status_code == 302
+
+    def test_persisted_state_survives_a_restart(self, installed_privacyfence, tmp_path, mock_idp):
+        """Starting cleanly again (the test above) isn't the same claim as
+        *this* principal's own on-disk state -- an auto-accept rule they
+        confirmed, and the audit trail that decision wrote -- still being
+        there afterwards, the way ``systemctl restart privacyfence`` needs
+        (docs/org-mode-setup-guide.md's own Step 7): a clean stop/start
+        must never look, from the outside, like each principal's storage
+        reset to empty.
+        """
+        from privacyfence.audit_log import current_week
+        from privacyfence.paths import safe_principal_id
+
+        home = tmp_path / "home"
+        home.mkdir()
+        port = _free_port()
+        _write_org_config(home, _signed_org_config(idp_issuer=mock_idp.base_url, port=port))
+        carol_dir = home / ".privacyfence" / "users" / safe_principal_id("carol")
+        settings_file = carol_dir / "config" / "settings.yaml"
+        audit_file = carol_dir / "logs" / "audit" / f"{current_week()}.jsonl"
+
+        async def _propose_and_decide_rule(client: LoopbackClient, access_token: str, carol_cookie: str) -> None:
+            async def propose():
+                async with httpx.AsyncClient(
+                    headers={"Host": ISSUER_HOST, "Authorization": f"Bearer {access_token}"},
+                ) as hc:
+                    async with streamable_http_client(f"http://127.0.0.1:{port}/mcp", http_client=hc) as (r, w, _sid):
+                        async with ClientSession(r, w) as session:
+                            await session.initialize()
+                            return await session.call_tool("privacyfence_propose_auto_accept_rule_change", {
+                                "target": "rule", "operation": "add", "reason": "restart-state-survival smoke test",
+                                "operation_key": "gmail.read_message", "rule_name": "trusted_sender_domain",
+                                "value": ["example.com"],
+                            })
+
+            propose_task = asyncio.ensure_future(propose())
+            approval_id = None
+            for _ in range(100):
+                await asyncio.sleep(0.2)
+                listing = client.get("/approvals", headers={"Cookie": f"pf_org_session={carol_cookie}"})
+                approval_id = _find_pending_approval_id(listing.text)
+                if approval_id is not None:
+                    break
+            assert approval_id is not None
+            decide = client.post(
+                f"/api/approvals/{approval_id}/decide", json={"result": "confirm", "csrf": carol_cookie},
+                headers={"Cookie": f"pf_org_session={carol_cookie}"},
+            )
+            assert decide.status_code == 200, decide.text
+            result = await asyncio.wait_for(propose_task, timeout=10)
+            assert not result.isError, result.content
+
+        with _daemon(installed_privacyfence, home=home) as (proc, log_path):
+            _wait_until_ready(proc, "127.0.0.1", port, log_path)
+            client = LoopbackClient(port)
+            access_token = _mcp_bearer_token_for(client, mock_idp, sub="carol")
+            carol_cookie = _complete_browser_login(client, mock_idp, sub="carol")
+            asyncio.run(_propose_and_decide_rule(client, access_token, carol_cookie))
+
+            proc.terminate()
+            exited = proc.wait(timeout=15)
+            assert exited is not None
+
+        assert settings_file.exists()
+        assert "trusted_sender_domain" in settings_file.read_text()
+        assert audit_file.exists()
+        entries_before_restart = [
+            line for line in audit_file.read_text().splitlines() if line.strip()
+        ]
+        assert entries_before_restart
+
+        with _daemon(installed_privacyfence, home=home) as (proc2, log_path2):
+            _wait_until_ready(proc2, "127.0.0.1", port, log_path2)
+
+            # The rule is still on disk, read back by a *fresh* process --
+            # not just "the file wasn't deleted", but something in this new
+            # process actually parses it back successfully.
+            assert settings_file.exists()
+            assert "trusted_sender_domain" in settings_file.read_text()
+
+            client2 = LoopbackClient(port)
+            access_token2 = _mcp_bearer_token_for(client2, mock_idp, sub="carol")
+
+            async def _list_rules() -> Any:
+                async with httpx.AsyncClient(
+                    headers={"Host": ISSUER_HOST, "Authorization": f"Bearer {access_token2}"},
+                ) as hc:
+                    async with streamable_http_client(f"http://127.0.0.1:{port}/mcp", http_client=hc) as (r, w, _sid):
+                        async with ClientSession(r, w) as session:
+                            await session.initialize()
+                            return await session.call_tool(
+                                "privacyfence_list_auto_accept_rules", {"reason": "post-restart check"},
+                            )
+
+            result = asyncio.run(_list_rules())
+            assert not result.isError, result.content
+            assert "trusted_sender_domain" in result.content[0].text
+
+        # The audit trail grew, in the *same* weekly file, rather than
+        # being reset or rotated by the restart -- SEC-23's append-only
+        # chain (audit_log.py's own entry_hash/prev_hash linkage) survives
+        # a stop/start cycle, not just the settings a human would notice.
+        entries_after_restart = [line for line in audit_file.read_text().splitlines() if line.strip()]
+        assert len(entries_after_restart) > len(entries_before_restart), (
+            "audit trail should have grown after the restart, not reset"
+        )
+        assert entries_after_restart[: len(entries_before_restart)] == entries_before_restart, (
+            "pre-restart audit entries must be unchanged, not rewritten"
+        )

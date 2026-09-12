@@ -761,6 +761,18 @@ def _start_org_web_server(
         # run_app() and passed down consistently everywhere else in this
         # module, so this stays consistent with that.
         cfg = load_config("config/settings.yaml")
+        # run_app() does this once, for the local principal, right after
+        # its own load_config() call -- ConnectorRegistry.get() never went
+        # through run_app() for any other principal, so without this,
+        # every non-local principal's auto_accept._REGISTRY entry kept its
+        # default config_path=None forever. Invisible until something
+        # actually tried to persist a rule/grant for that principal --
+        # add_auto_accept_rule/mutate_grants (gate.propose_rule_change's
+        # "Always allow"/propose-rule-change paths) would raise
+        # "auto_accept config path not initialized" instead, the one time
+        # this had a live end-to-end test in front of it (docs/
+        # automated-test-strategy-plan.md Phase 8).
+        init_config_path(_resolve_path("config/settings.yaml"))
         return build_connectors(cfg, org_config)
 
     connector_registry = ConnectorRegistry(factory=_connectors_for_principal)

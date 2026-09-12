@@ -1150,30 +1150,48 @@ remaining-work entry above.
 Treat org mode as its own deployment shape, provisioned and exercised from scratch, entirely in
 automated Linux infrastructure.
 
-### Already in this repo
+### Status: done
 
-`tests/integration/test_org_ubuntu_release_smoke.py` already does almost exactly what this phase
-describes, per its own docstring: `daemon_main.main()` end to end, a real synthetic Ed25519-signed
+`tests/integration/test_org_ubuntu_release_smoke.py` already did almost exactly what this phase
+described, per its own docstring: `daemon_main.main()` end to end, a real synthetic Ed25519-signed
 `org_config.json`, a real loopback mocked IdP (`tests/integration/mock_idp.py`), strict fail-closed
 startup on a malformed/unsigned/incomplete bundle, reverse-proxy Host-header handling, org-only
-route mounting, and per-principal session isolation. This is the single largest instance in this
-whole plan of a proposed deliverable already substantially built.
+route mounting, and per-principal session isolation — the single largest instance in this whole
+plan of a proposed deliverable already substantially built. This phase closed the three gaps its
+own "Remaining work" named:
 
-### Remaining work
+1. **The four-scenario check.** Unauthenticated request rejected and authenticated MCP request
+   resolving to the correct principal were already covered. Added: **app-level authz policy**
+   (`TestAppLevelAuthzPolicy`, its own daemon since `authz.allowed_domains` is fixed at startup) —
+   an allowed-domain principal signs in, one outside every allowed domain is turned away with no
+   session; **an approval exercised with audit-principal correctness**
+   (`test_an_approval_is_exercised_by_the_correct_principal_and_audited_there`) — a real MCP
+   `privacyfence_propose_auto_accept_rule_change` call blocks on a human confirmation the way a
+   gated tool's popup does, a different principal can't decide it, the right one can, and the
+   resulting audit entry lands under that principal's own per-principal log directory; and
+   **persisted state surviving a restart** (`test_persisted_state_survives_a_restart`) — a
+   confirmed rule and its audit trail (byte-identical up to that point, then longer) both outlive a
+   SIGTERM/restart cycle. Grounding these against the real subprocess (not an in-process shortcut)
+   surfaced two real, previously-uncaught bugs, both fixed as part of this phase:
+   `gate._run_in_popup_executor` ran its callable in a bare thread-pool thread with no `contextvars`
+   propagation, so a confirmation dialog registered with no pre-registered `PendingApproval`
+   (`show_rule_confirmation_popup`, `show_pii_confirmation_popup` — the main gated-call popup path
+   was unaffected, since it always pre-registers before this function is ever called) silently
+   attributed itself to the wrong principal and could never be decided by anyone; and neither
+   `McpDispatcher.propose_rule_change` nor `.list_rules` forced their principal's
+   `ConnectorRegistry` entry (and the `auto_accept.init_config_path()` side effect of building it)
+   to exist first, so either raised "auto_accept config path not initialized" if called as a
+   principal's very first MCP interaction. Both single-principal-only in-process tests could never
+   have caught, by construction.
+2. **CI promotion.** This test was dispatch/tag-only (`build.yml`'s `build-deb` job), the same gap
+   `test-windows` had before Phase 2.1 — promoted the same way, as its own permanent `org-mode-smoke`
+   job in `tests.yml`, on every PR (Ubuntu only; `build-deb` still runs it too, unchanged, at release
+   time).
+3. **Readiness doc.** `org-mode-operational-readiness.md`'s "Automated evidence" section now cites
+   this module by name for each claim it backs, instead of a generic pointer to "broader unit/
+   security tests."
 
-1. Read the rest of `test_org_ubuntu_release_smoke.py` (it was only partially read while grounding
-   this plan) and check it against the full scenario the source strategy lists: unauthenticated
-   request rejected, authenticated MCP request with identity/policy applied, an approval exercised
-   with audit principal correctness, daemon restart with state survival. Add whichever of those
-   isn't already present as a case in this file — extend it, don't fork a second org-mode system
-   test module.
-2. Confirm this test already runs as a permanent Ubuntu PR job (not dispatch-gated) — if it's
-   currently dispatch-only like `test-windows` was before Phase 2.1, promote it the same way.
-3. Update `org-mode-operational-readiness.md` to reference this test module as the automated
-   evidence for whatever readiness claims it makes, rather than leaving org-mode readiness resting
-   on a claim with no cited test.
-
-### Exit criteria
+### Exit criteria (met)
 
 Org mode can be provisioned and exercised from scratch entirely in automated Linux CI, with no real
 Google/Microsoft identity login required for routine coverage.
@@ -1374,9 +1392,9 @@ Phase 6  Packaged-artifact lifecycle                              (DONE — macO
 Phase 7  Graphical-session/autostart                              (Done for both Linux (P7.2) and
    ↓                                                               Windows (8.2); macOS deliberately
    ↓                                                               not built.)
-Phase 8  Org-mode system CI                                       (mostly an audit/extend of
+Phase 8  Org-mode system CI                                       (DONE — audit/extend of
    ↓                                                               test_org_ubuntu_release_smoke.py,
-   ↓                                                               already largely built)
+   ↓                                                               promoted to a permanent per-PR job)
 Phase 9  Retire obsolete manual QA
    ↓
 Phase 10 Observability and maintenance polish
@@ -1450,7 +1468,9 @@ plan's grounding pass found the work already done, and a note on which remain ge
 22. ~~Windows graphical-session/autostart CI~~ — **done** (Phase 7 item 2): closes
     `windows-support-plan.md` 8.2, `tests/integration/test_windows_graphical_session_autostart.py`,
     its own `.github/workflows/windows-graphical-session.yml`
-23. Org-mode system test audit/extension — likely small (Phase 8)
+23. ~~Org-mode system test audit/extension~~ — **done** (Phase 8): closed the four-scenario gap,
+    promoted `test_org_ubuntu_release_smoke.py` to a permanent `org-mode-smoke` per-PR job, and
+    updated `org-mode-operational-readiness.md`
 24. Manual QA documentation reduction (Phase 9)
 25. CI diagnostic/observability polish (Phase 10)
 26. Update branch-protection required status checks (Phase 11) — not one PR but a small addition
@@ -1492,8 +1512,8 @@ combination.
 - Package upgrade tests prove user state survives, on all three platforms (Phase 6, done).
 - Local-mode autostart has automated platform-specific coverage (Phase 7, done for Linux and Windows;
   macOS deliberately not built).
-- Org mode executes an authenticated synthetic end-to-end request in CI (Phase 8, mostly already
-  true — confirm and close remaining gaps).
+- Org mode executes an authenticated synthetic end-to-end request in CI, on every PR (Phase 8,
+  done).
 - `connector-qa-testing.md` is exploratory, not mandatory, for routine releases (Phase 9).
 - Routine manual release validation takes minutes, not hours (Phase 9).
 - PrivacyFence can be confidently released without owning physical Windows, Linux, or macOS
