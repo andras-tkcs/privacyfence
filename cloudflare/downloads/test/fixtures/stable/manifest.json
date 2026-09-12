@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "version": "4.3.0",
+  "channel": "stable",
+  "published_at": "2026-09-01T12:00:00Z",
+  "artifacts": [
+    {
+      "id": "macos-arm64",
+      "kind": "installer",
+      "platform": "macos",
+      "architecture": "arm64",
+      "filename": "PrivacyFence-4.3.0.dmg",
+      "key": "releases/stable/4.3.0/PrivacyFence-4.3.0.dmg",
+      "size": 39,
+      "sha256": "938a4c3a3ae6a02a3214a6182582efc906fdf0d06b8aed6de8de21d6c04876ff"
+    },
+    {
+      "id": "windows-x64",
+      "kind": "installer",
+      "platform": "windows",
+      "architecture": "x64",
+      "filename": "PrivacyFence-4.3.0-setup.exe",
+      "key": "releases/stable/4.3.0/PrivacyFence-4.3.0-setup.exe",
+      "size": 39,
+      "sha256": "d1e3cd199bad9d97c41f31e2d5dc26e1c832a08ad496e01b0111834f3aa4c9e8"
+    },
+    {
+      "id": "linux-x64",
+      "kind": "installer",
+      "platform": "linux",
+      "architecture": "x64",
+      "filename": "privacyfence_4.3.0_amd64.deb",
+      "key": "releases/stable/4.3.0/privacyfence_4.3.0_amd64.deb",
+      "size": 37,
+      "sha256": "81dba5784a850c76b7a92c0911327ad8b91df0ede564ccae101becb57d413e03"
+    }
+  ]
+}

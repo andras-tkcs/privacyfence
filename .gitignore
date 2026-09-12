@@ -48,10 +48,11 @@ dist/
 .venv/
 venv/
 
-# Node (mcpb/shim/)
+# Node (mcpb/shim/, cloudflare/downloads/)
 node_modules/
 *.tsbuildinfo
 env/
+.wrangler/
 
 # Test / coverage artifacts
 .coverage

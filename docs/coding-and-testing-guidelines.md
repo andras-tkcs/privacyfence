@@ -153,6 +153,19 @@ npm run typecheck
 npm run build
 ```
 
+For changes under `cloudflare/downloads/` (the downloads.privacyfence.eu Worker,
+[`release-publishing-kpi-plan.md`](release-publishing-kpi-plan.md) Phase 1), run:
+
+```bash
+cd cloudflare/downloads
+npm test
+npm run typecheck
+npm run dry-run
+```
+
+`npm test` runs entirely against local Miniflare/workerd -- no Cloudflare credentials or network
+access to the real R2/D1 resources involved.
+
 ## 2. Testing guidelines
 
 ### 2.1 Framework & layout
