@@ -641,7 +641,14 @@ home for this layer) with:
 
 1. **Approval behavior** (`TestApprovalListBehavior` or similar): empty list, "Always allow" →
    proposed-rule side effect, return-to-list + toast, live SSE refresh, multiple pending cards,
-   double-decision idempotency.
+   double-decision idempotency — done. `TestApprovalListBehavior` in `test_browser_smoke.py` covers
+   all six: the bare empty state, clicking a card's "Always allow" button and confirming the
+   `(result, choice)` tuple gate.py's caller needs actually reaches the blocked `show_popup()` call
+   (the rule-proposal side effect itself stays test_gate.py's job, per that module's own "Accept
+   all" classes — this is the browser-observable half only), the post-decision toast rendering the
+   right message across two separate round trips (not stuck on the first one), the SSE stream
+   dropping the right row live with two cards pending at once, and a double-submitted decide POST
+   resolving the call exactly once (200 then 409, not a second resolution).
 2. **PII behavior** (`TestPiiApprovalUi`): deterministic synthetic PII triggers the banner/tint,
    Proceed and Cancel both work, an unrelated operation is never highlighted.
 3. **Responsive layout** (`TestResponsiveLayout`): the three viewports above; assert no horizontal

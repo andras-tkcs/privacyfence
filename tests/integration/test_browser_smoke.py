@@ -60,7 +60,9 @@ from privacyfence.principal import Principal  # noqa: E402
 from privacyfence.web import org_session  # noqa: E402
 from privacyfence.web.oauth_provider import OrgOAuthProvider  # noqa: E402
 from privacyfence.web.org_session import OrgSessionStore  # noqa: E402
+from privacyfence.web.routes_approvals import _DECIDED_MESSAGE, _DENIED_MESSAGE  # noqa: E402
 from privacyfence.web.server import OrgAuth, WebServer  # noqa: E402
+from privacyfence.web.session_auth import SESSION_COOKIE as _LOCAL_SESSION_COOKIE  # noqa: E402
 from privacyfence.web_approval_ui import WebApprovalUI  # noqa: E402
 
 pytestmark = pytest.mark.timeout(60)
@@ -233,6 +235,13 @@ def _register_card(web_ui: WebApprovalUI, **kwargs) -> tuple[threading.Thread, o
         time.sleep(0.01)
     card = web_ui.current()
     assert card is not None, "card never registered"
+    # Stashed on the thread itself (rather than returned as a third tuple
+    # element) so every existing two-value `thread, card = _register_card(...)`
+    # call site keeps working unchanged -- only tests that actually care what
+    # the blocked show_popup()/show_read_popup() call resolved to need reach
+    # for it, via `thread.result_box.get("result")` once `thread.join()`
+    # confirms it's populated.
+    t.result_box = box
     return t, card
 
 
@@ -452,6 +461,162 @@ class TestApprovalDecisionFlow:
         finally:
             web_ui.resolve(card.id, "deny")
             thread.join(timeout=5)
+
+
+# --------------------------------------------------------------------- #
+# Approval-list behaviors beyond one Allow/Deny round trip (Phase 4 item
+# 4.1, docs/automated-test-strategy-plan.md) -- everything that section's
+# own "Already in this repo" bullet lists as still missing from
+# TestApprovalDecisionFlow above: the empty state on its own, "Always
+# allow"'s (result, choice) round trip, the post-decision toast surviving
+# more than one decision, live SSE refresh with several cards pending at
+# once, and double-submit idempotency.
+# --------------------------------------------------------------------- #
+
+
+class TestApprovalListBehavior:
+    def test_empty_list_shows_nothing_is_waiting(self, page, local_server):
+        server, _web_ui = local_server
+        _sign_in_local(page, server)
+        page.goto(f"{server.base_url}/approvals")
+        page.wait_for_load_state("load")
+        assert page.get_by_text("Nothing is waiting.").is_visible()
+        assert page.get_by_text("PrivacyFence is watching.").is_visible()
+
+    def test_always_allow_resolves_with_the_picked_candidate_and_returns_to_list(self, page, local_server):
+        """Clicking the card's own "Always allow" button must post
+        ``data-pf-choice``'s index alongside ``data-pf-action="accept_all"``
+        (approval_window_html.py's ``_button_row_html``) -- the signal
+        gate.py's caller uses to know *which* matching candidate rule to
+        actually propose (test_gate.py's own "Accept all" classes cover
+        that side unit-tested; this is the browser-observable half: the
+        right ``(result, choice)`` tuple actually reaches the blocked
+        ``show_popup()`` call, and the card still returns to the list with
+        its normal "decided" toast like any other decision)."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        thread, card = _register_card(
+            web_ui, accept_all_choices=[("Always allow — gmail.com", "gmail.com")],
+        )
+        try:
+            page.goto(f"{server.base_url}/approvals/{card.id}")
+            page.wait_for_load_state("load")
+            page.locator('[data-pf-action="accept_all"]').click()
+            page.wait_for_url(f"{server.base_url}/approvals")
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert thread.result_box.get("result") == ("accept_all", 0)
+            toast = page.locator("#pf-shell-toast")
+            assert toast.text_content() == _DECIDED_MESSAGE
+            assert "shown" in (toast.get_attribute("class") or "")
+        finally:
+            if thread.is_alive():
+                web_ui.resolve(card.id, "deny")
+                thread.join(timeout=5)
+
+    def test_toast_message_reflects_each_decision_across_successive_round_trips(self, page, local_server):
+        """The sessionStorage-relayed post-decision toast (_bridge_shim's
+        own isDeny branch) set fresh for *each* card decided from a
+        separate round trip -- not just once, and not left showing the
+        first decision's message on the second. Allow, then Deny, in
+        sequence on the same already-open list page."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+
+        thread_a, card_a = _register_card(web_ui)
+        try:
+            page.goto(f"{server.base_url}/approvals/{card_a.id}")
+            page.wait_for_load_state("load")
+            page.locator('[data-pf-action="accept"]').click()
+            page.wait_for_url(f"{server.base_url}/approvals")
+            thread_a.join(timeout=5)
+            assert page.locator("#pf-shell-toast").text_content() == _DECIDED_MESSAGE
+        finally:
+            if thread_a.is_alive():
+                web_ui.resolve(card_a.id, "deny")
+                thread_a.join(timeout=5)
+
+        thread_b, card_b = _register_card(web_ui)
+        try:
+            page.goto(f"{server.base_url}/approvals/{card_b.id}")
+            page.wait_for_load_state("load")
+            page.locator('[data-pf-action="deny"]').click()
+            page.wait_for_url(f"{server.base_url}/approvals")
+            thread_b.join(timeout=5)
+            assert page.locator("#pf-shell-toast").text_content() == _DENIED_MESSAGE
+        finally:
+            if thread_b.is_alive():
+                web_ui.resolve(card_b.id, "deny")
+                thread_b.join(timeout=5)
+
+    def test_sse_refreshes_the_list_live_with_multiple_pending_cards(self, page, local_server):
+        """Two cards pending at once (possible since gate.py's
+        ``_popup_lock`` removal, per this module's own routes_approvals.py
+        docstring) -- resolving one must drop only that row from an
+        already-open list page via the SSE stream, live, leaving the other
+        one in place, then drop the second down to the empty state too."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        thread_a, card_a = _register_card(web_ui)
+        thread_b, card_b = _register_card(web_ui)
+        try:
+            page.goto(f"{server.base_url}/approvals")
+            page.wait_for_selector(f'[data-approval-id="{card_a.id}"]')
+            page.wait_for_selector(f'[data-approval-id="{card_b.id}"]')
+
+            # Resolved out-of-band (as a second tab, or a native path,
+            # would) -- this tab's own SSE stream must pick it up with no
+            # reload.
+            web_ui.resolve(card_a.id, "deny")
+            thread_a.join(timeout=5)
+            page.wait_for_selector(f'[data-approval-id="{card_a.id}"]', state="detached", timeout=5000)
+            assert page.locator(f'[data-approval-id="{card_b.id}"]').count() == 1
+
+            web_ui.resolve(card_b.id, "deny")
+            thread_b.join(timeout=5)
+            page.wait_for_selector(f'[data-approval-id="{card_b.id}"]', state="detached", timeout=5000)
+            assert page.get_by_text("Nothing is waiting.").is_visible()
+        finally:
+            for thread, card in ((thread_a, card_a), (thread_b, card_b)):
+                if thread.is_alive():
+                    web_ui.resolve(card.id, "deny")
+                    thread.join(timeout=5)
+
+    def test_double_submitting_the_same_decision_is_idempotent(self, page, context, local_server):
+        """A slow-network retry (or an over-eager double click) posting the
+        exact same decision twice must resolve the pending call exactly
+        once: the first POST wins (200), the second is turned away as
+        ``already_decided`` (409, §7.1's own idempotency guarantee) rather
+        than raising or double-resolving the already-unblocked
+        ``show_popup()`` call. Driven with a raw ``fetch()`` (same approach
+        as ``test_wrong_csrf_value_is_rejected`` above) since the real
+        button click navigates away after the first response, leaving
+        nothing on screen to click a genuine second time."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        thread, card = _register_card(web_ui)
+        csrf = next(c["value"] for c in context.cookies() if c["name"] == _LOCAL_SESSION_COOKIE)
+        decide_url = f"{server.base_url}/api/approvals/{card.id}/decide"
+        try:
+            statuses = page.evaluate(
+                """async (args) => {
+                    const body = JSON.stringify({result: 'accept', csrf: args.csrf});
+                    const opts = {method: 'POST', credentials: 'same-origin',
+                        headers: {'Content-Type': 'application/json'}, body: body};
+                    const r1 = await fetch(args.url, opts);
+                    const r2 = await fetch(args.url, opts);
+                    return [r1.status, r2.status];
+                }""",
+                {"url": decide_url, "csrf": csrf},
+            )
+            assert statuses == [200, 409]
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert thread.result_box.get("result") == ("accept", None)
+        finally:
+            if thread.is_alive():
+                web_ui.resolve(card.id, "deny")
+                thread.join(timeout=5)
 
 
 # --------------------------------------------------------------------- #
