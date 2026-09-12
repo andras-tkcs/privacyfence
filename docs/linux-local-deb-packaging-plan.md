@@ -55,8 +55,10 @@ PyInstaller pipeline already proven for macOS.
       remove/purge lifecycle all genuinely exercised — see P7.1's note), on the judgment that the
       `.deb`'s own packaging correctness doesn't depend on A2.1's outcome (it wraps the same
       onedir bundle either way) even though this plan's own ordering recommends against starting
-      early. A2.1's graphical-login verification remains open — do it before treating either the
-      `--user` systemd unit or the `.deb`'s autostart entry (P7.2, also still open) as proven.
+      early. A2.1's graphical-login verification remains open for the unpackaged `pipx install`
+      `--user` systemd unit path — do it before treating that path as proven. The `.deb`'s own
+      autostart entry no longer waits on it: P7.2 below is now closed by a CI-automated real
+      systemd-session scenario (`automated-test-strategy-plan.md` Phase 7 item 1).
 
 ## Phase 1 — PyInstaller Linux build
 
@@ -245,10 +247,37 @@ Checklist:
       job in `build.yml`'s `build-deb` job, right after `scripts/build_deb.sh`, on the same
       `ubuntu-latest` runner (still not a throwaway container -- same substitution as above, now
       also true of the CI runner itself, not just the environment that first implemented this plan).
-- [ ] **P7.2** Real desktop-session test (not just a container — autostart needs an actual graphical
+- [x] **P7.2** Real desktop-session test (not just a container — autostart needs an actual graphical
       login to verify): install on a real or VM Ubuntu/Debian desktop, log out/in, confirm the daemon
       is running post-login (`curl 127.0.0.1:8765/settings` or checking the `mcp_url` file), confirm
       the OAuth loopback browser flow opens correctly from that session.
+
+      **CI-automated** (`automated-test-strategy-plan.md` Phase 7 item 1):
+      `tests/integration/test_linux_graphical_session_autostart.py`, run by its own
+      `.github/workflows/linux-graphical-session.yml` (packaging-related `main` pushes, weekly, and
+      on demand — deliberately not per-PR or wired into `build.yml`'s release pipeline, since this is
+      the flakiest tier in the whole test taxonomy and a flaky run here must never block a release).
+      No real display manager exists on a CI runner to actually log into, so this substitutes the one
+      real OS mechanism a modern systemd desktop session already uses for XDG autostart in its place:
+      it brings up a real `systemd --user` manager for the account (the same `user@<uid>.service`
+      unit `pam_systemd` starts at a real login) and starts `xdg-desktop-autostart.target` -- the same
+      target a real GNOME/KDE/Sway session's compositor/session manager pulls in once it comes up.
+      Everything downstream of that one substitution is the real, unmocked mechanism:
+      `systemd-xdg-autostart-generator` (confirmed present, not hand-parsed) turning the installed
+      `/etc/xdg/autostart/privacyfence.desktop` into a transient `app-privacyfence@autostart.service`
+      unit, that unit actually starting the real packaged binary (`/proc/<pid>/exe` checked against
+      `/opt/privacyfence/PrivacyFenceApp`), a real daemon/MCP/approval/audit round trip against it
+      (Phase 3's own contract shape), and "Quit PrivacyFence" cleanly stopping the real systemd unit,
+      not just the process. A second test in the same module closes the "OAuth loopback browser flow"
+      half for real too, under a genuine Xvfb `$DISPLAY` -- see that module's own docstring for why
+      this is real coverage `tests/platform/test_browser_launch_default.py` (Phase 2.3) doesn't
+      already give (that one monkeypatches `webbrowser.open` itself; this one lets the stdlib's own
+      browser-detection/subprocess-launch code run unmocked, via a real launched subprocess that
+      performs the actual loopback round trip). This closes the gap for the `.deb`'s own XDG autostart
+      path specifically; Track A2.1's separate, broader ask in `windows-linux-support-plan.md` (a
+      human verifying a real physical/VM desktop login, including the unpackaged `pipx install`
+      `--user` systemd unit path) is unrelated infrastructure and remains open -- see this document's
+      own P0.1 status note.
 - [x] **P7.3** Upgrade-in-place: install version N, do something that creates real state
       (`~/.privacyfence/config/settings.yaml`, a connected connector's token file), install version
       N+1 over it (`dpkg -i` the new `.deb`), confirm that state survived untouched (expected — it
