@@ -701,7 +701,8 @@ async def test_macos_upgrade_preserves_user_state(tmp_path):
         new_version = _bump_bundle_version(app_n1)
         exe_n1 = app_n1 / "Contents" / "MacOS" / "PrivacyFenceApp"
 
-        info = plistlib.load(open(app_n1 / "Contents" / "Info.plist", "rb"))
+        with open(app_n1 / "Contents" / "Info.plist", "rb") as f:
+            info = plistlib.load(f)
         assert info["CFBundleShortVersionString"] == new_version
 
         # ── State survived the upgrade untouched ──────────────────────────
