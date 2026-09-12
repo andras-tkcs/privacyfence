@@ -135,7 +135,7 @@ def _replace_with_retries(tmp_path: Path, path: Path) -> None:
     changing behavior on every other platform (one attempt, no sleep).
     """
     attempts = _REPLACE_RETRY_ATTEMPTS if os.name == "nt" else 1
-    for attempt in range(1, attempts + 1):
+    for attempt in range(1, attempts + 1):  # pragma: no branch -- attempts is always >= 1
         try:
             os.replace(tmp_path, path)
             return
