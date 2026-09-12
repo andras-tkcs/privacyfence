@@ -1114,10 +1114,16 @@ originally planned.
    makes two deliberate substitutions rather than one hand-rolled workaround: a throwaway local
    account stands in for "someone signs in" (this test mints and knows its password, unlike the CI
    runner's own already-logged-on account, and `installer/privacyfence.iss`'s own `schtasks /create`
-   never passes `/RU`, which per Microsoft's documented default for `/SC ONLOGON` means the trigger
-   fires for *any* interactive logon — the same "whichever account is at the keyboard" scope the
-   macOS LaunchAgent and Linux XDG autostart already have, so a throwaway account is a valid stand-in,
-   not a special case); and that throwaway account is added to local Administrators purely to satisfy
+   call passes `/ru "BUILTIN\Users"`, the built-in group rather than one specific account, so the
+   trigger fires for *any* interactive logon — the same "whichever account is at the keyboard" scope
+   the macOS LaunchAgent and Linux XDG autostart already have, so a throwaway account is a valid
+   stand-in, not a special case. This line originally omitted `/RU` entirely on the mistaken
+   assumption that the unqualified default already meant "any user" — Microsoft's own documentation
+   says the opposite, that it scopes the task to whichever account ran `schtasks /create`; this
+   module's own first real run against a real Windows runner is what caught that, alongside the
+   separate `/ri`/`/du` registration bug Phase 12's own verification pass found and fixed — see that
+   phase's own status note and `platform-support.md`'s "Known open items"); and that throwaway
+   account is added to local Administrators purely to satisfy
    this Windows Server base image's default "Log on locally" policy (denied to plain standard
    accounts), not to change how the daemon itself runs — the scheduled task's own `/rl limited`
    still governs that regardless of the account's own group membership. Everything else is the real,
@@ -1449,15 +1455,24 @@ claim did not actually account for:
   A new finding from this verification pass, not previously known: `windows-graphical-session.yml`
   was not green — the installed Task Scheduler autostart task was missing immediately after a real
   silent install reporting success, on every real run to date, including the run against `main`
-  after PR #315's own fix (which addressed a different bug in the same test module). **Root cause
-  found and fixed, not just theorized**: the `PrivilegesRequired=lowest`/non-elevation guess this
-  note originally carried was wrong. The actual cause was `installer/privacyfence.iss`'s
-  `schtasks /create` call passing `/ri 1 /du 9999:59`, trying to get crash-restart behavior out of
-  plain CLI flags that Microsoft documents as "not applicable" to an `ONLOGON` schedule —
-  `schtasks.exe` rejected the whole call outright, silently, since an Inno `[Run]` entry's nonzero
-  exit code doesn't abort Setup by default. Fixed by dropping the invalid flags and confirmed via a
-  real `workflow_dispatch` run before merging. This does not restore crash-restart behavior, which
-  was never actually working — tracked as the new Phase 13 below.
+  after PR #315's own fix (which addressed a different bug in the same test module). **Two
+  independent real root causes found and fixed, not just theorized, each confirmed by an actual
+  `workflow_dispatch` run rather than assumed**: the `PrivilegesRequired=lowest`/non-elevation guess
+  this note originally carried was wrong on both counts.
+  1. `installer/privacyfence.iss`'s `schtasks /create` call passed `/ri 1 /du 9999:59`, trying to
+     get crash-restart behavior out of plain CLI flags that Microsoft documents as "not applicable"
+     to an `ONLOGON` schedule — `schtasks.exe` rejected the whole call outright, silently, since an
+     Inno `[Run]` entry's nonzero exit code doesn't abort Setup by default. Fixed by dropping the
+     invalid flags. This does not restore crash-restart behavior, which was never actually working —
+     tracked as the new Phase 13 below.
+  2. Once that fix let registration itself succeed for the first time, the next real run exposed a
+     second bug: the same `schtasks /create` call omitted `/RU` entirely, on the mistaken assumption
+     (this document's own text included) that Microsoft's unqualified default for `/SC ONLOGON`
+     already meant "any interactive logon." It doesn't — per Microsoft's own documentation, omitting
+     `/RU` scopes the task to whichever account ran `schtasks /create`, i.e. the installing account
+     only. The real test run caught this directly: registration succeeded, but the throwaway
+     account's logon never fired the trigger within 30s. Fixed by adding `/ru "BUILTIN\Users"`, the
+     standard technique for "any interactive logon, in that user's own session."
 - **Linux**: a real end-to-end org-mode run against a live Ubuntu server with a real identity
   provider and a real live connector remains undone, distinct from `org-mode-smoke`'s synthetic,
   mocked-IdP CI coverage (Phase 8).
@@ -1490,12 +1505,10 @@ which Phase 3's original design intent wanted but never actually shipped.
 
 ### Already in this repo
 
-Phase 12's own verification pass found and fixed the reason `windows-graphical-session.yml` was red
-on every run: `installer/privacyfence.iss` registered the autostart task with `schtasks /create ...
-/ri 1 /du 9999:59`, trying to fake restart-on-failure through plain CLI flags that Microsoft
-documents as "not applicable" to an `ONLOGON` schedule — `schtasks.exe` rejected the whole call, so
-no task was ever registered at all. Fixed by dropping the invalid flags and re-validated via
-`workflow_dispatch`; the task now registers correctly, but it is logon-triggered only — no
+Phase 12's own verification pass found and fixed two independent reasons
+`windows-graphical-session.yml` was red on every run — see that phase's own status note for the
+detail on both. Neither fix restores restart-on-failure, which is what this phase is for: the task
+now registers correctly and fires for any interactive logon, but it is logon-triggered only — no
 restart-on-failure of any kind, since there was never a working implementation of it to begin with.
 `platform-support.md`'s "Known open items" and `TECHNICAL_REFERENCE.md`'s "Windows" subsection both
 already name this as a known, expected-to-fail check.

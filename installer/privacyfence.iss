@@ -107,7 +107,7 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 ; MONTHLY/ONCE; /du only for MINUTE/HOURLY) -- schtasks.exe rejects the
 ; combination outright, so this whole /create call was failing on every
 ; install ("Task Scheduler task 'PrivacyFence' missing after install",
-; the confirmed root cause of windows-graphical-session.yml's failures --
+; a confirmed root cause of windows-graphical-session.yml's failures --
 ; see platform-support.md's "Known open items"), silently, because an
 ; Inno [Run] entry's own nonzero exit code doesn't abort Setup by
 ; default. There is no equivalent restart-on-failure knob exposed
@@ -120,8 +120,27 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 ; Startup-folder shortcut would have given -- strictly less than the
 ; crash-restart parity Phase 3's own decision wanted, but a working
 ; autostart beats a task that was never actually being created.
+;
+; /RU "BUILTIN\Users": a second, independent bug in this same line, found
+; once the /ri/du fix above let registration itself succeed for the first
+; time. Omitting /RU entirely (as this line used to) does NOT make the
+; ONLOGON trigger fire for any interactive logon -- per Microsoft's own
+; schtasks /create documentation, "By default, the task runs with the
+; permissions of the current user" -- so the task was scoped to whichever
+; account ran the installer only, never firing for a different account's
+; later logon. A real end-to-end run (windows-graphical-session.yml's own
+; throwaway-account logon, a different account from the one that ran the
+; installer) caught this: task registration succeeded, but the trigger
+; never fired within 30s of that account's logon. `/ru "BUILTIN\Users"`
+; targets the built-in Users group rather than one specific account, the
+; standard technique for "run once per interactive logon, in that user's
+; own session, whoever they are" (no password needed or accepted for a
+; well-known built-in group, same as `/ru System` needing none) -- the
+; actual "whichever account is at the keyboard" scope this task always
+; intended, now for real rather than by an incorrect assumption about the
+; unqualified default.
 Filename: "{sys}\schtasks.exe"; \
-    Parameters: "/create /tn ""{#TaskName}"" /tr ""'{app}\{#AliasExeName}'"" /sc onlogon /rl limited /f"; \
+    Parameters: "/create /tn ""{#TaskName}"" /tr ""'{app}\{#AliasExeName}'"" /sc onlogon /ru ""BUILTIN\Users"" /rl limited /f"; \
     Flags: runhidden; StatusMsg: "Registering startup task..."
 ; Start the daemon immediately after install, same as the macOS DMG's
 ; LaunchAgent starting the app right after a drag-install's first login --

@@ -22,15 +22,22 @@ in CI):
    the CI runner's own already-logged-on account.** This test has no way to
    learn that account's password (nor should it), so it can't make it log on
    a *second* time -- and ``installer/privacyfence.iss``'s own ``schtasks
-   /create`` call (see ``[Run]``) never passes ``/RU``, which per Microsoft's
-   documented default for ``/SC ONLOGON`` means the trigger fires for *any*
-   interactive logon, not just the installing user's. That's the same
-   "whichever account is at the keyboard" scope the macOS LaunchAgent (keyed
-   off the current console uid) and the Linux ``.deb``'s XDG autostart
-   (keyed off the current desktop session) already have -- so a brand-new
-   throwaway account, whose password this test mints and knows, is a valid
-   stand-in for "a user signs in", not a special case the real trigger
-   wouldn't also fire for.
+   /create`` call (see ``[Run]``) passes ``/ru "BUILTIN\Users"``, the
+   built-in group rather than one specific account, so the trigger fires for
+   *any* interactive logon, not just the installing user's. (An earlier
+   version of this line omitted ``/RU`` entirely on the assumption that the
+   unqualified default already meant "any user" -- it doesn't: per
+   Microsoft's own documentation, omitting ``/RU`` scopes the task to
+   whichever account ran ``schtasks /create``, i.e. the installing user
+   only. This module's own first real run against a real Windows runner is
+   what caught that -- registration succeeded, but the throwaway account's
+   logon never fired the trigger -- fixed by the explicit
+   ``/ru "BUILTIN\Users"`` above.) That's the same "whichever account is at
+   the keyboard" scope the macOS LaunchAgent (keyed off the current console
+   uid) and the Linux ``.deb``'s XDG autostart (keyed off the current
+   desktop session) already have -- so a brand-new throwaway account, whose
+   password this test mints and knows, is a valid stand-in for "a user
+   signs in", not a special case the real trigger wouldn't also fire for.
 2. **The throwaway account is a local Administrator**, even though the
    daemon it ends up running still runs at ``/rl limited`` (the scheduled
    task's own execution-level setting, independent of the account's own
@@ -393,7 +400,8 @@ async def test_installer_autostart_activates_daemon_via_real_logon_session(
 
     # ── Install (as this test's own -- not the throwaway -- account; see
     # module docstring point 1 for why the installer's own schtasks /create
-    # having no /RU makes this the exact real-world trigger scope) ─────────
+    # using /ru "BUILTIN\Users" makes this the exact real-world trigger
+    # scope, regardless of which account runs the installer) ──────────────
     install_result = _run_installer(
         str(setup_exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/SP-", "/NORESTART",
         f"/DIR={install_dir}", f"/LOG={tmp_path / 'install.log'}",

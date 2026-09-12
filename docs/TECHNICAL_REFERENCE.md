@@ -988,12 +988,16 @@ alongside it, and a Start Menu entry pointing at the embedded web settings UI ra
 daemon executable directly.
 
 Autostart is a Task Scheduler task (`PrivacyFence`), not a Startup-folder shortcut, registered by
-the installer's own `[Run]` section (`schtasks /create ... /sc onlogon /rl limited`) and removed by
-the uninstaller's `[UninstallRun]` section (`schtasks /delete`) — visible and removable through
-normal Windows install/uninstall UI, the same way the macOS LaunchAgent plist and the Linux `.deb`'s
-XDG autostart entry are. It fires on any interactive logon (the installer's `schtasks /create` call
-never passes `/RU`), runs the packaged `privacyfence-app.exe` alias at a non-elevated run level, and
-starts the daemon once, at logon — there is currently no crash-restart behavior analogous to the
+the installer's own `[Run]` section (`schtasks /create ... /sc onlogon /ru "BUILTIN\Users" /rl
+limited`) and removed by the uninstaller's `[UninstallRun]` section (`schtasks /delete`) — visible
+and removable through normal Windows install/uninstall UI, the same way the macOS LaunchAgent plist
+and the Linux `.deb`'s XDG autostart entry are. It fires on any interactive logon (`/ru
+"BUILTIN\Users"` targets the built-in group rather than one specific account — omitting `/RU`
+entirely does *not* get this: per Microsoft's own documentation the unqualified default scopes the
+task to whichever account ran the installer only, a real bug this mechanism shipped with briefly,
+caught by `windows-graphical-session.yml`'s own real-logon test and fixed), runs the packaged
+`privacyfence-app.exe` alias at a non-elevated run level, and starts the daemon once, at logon —
+there is currently no crash-restart behavior analogous to the
 macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` or the Linux `.deb`'s systemd restart policy;
 that needs the task's own `<RestartOnFailure>` XML settings (`schtasks /create /xml`, not exposed
 through `schtasks.exe`'s plain flags), tracked as

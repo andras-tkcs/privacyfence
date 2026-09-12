@@ -64,20 +64,32 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
 
 ## Known open items
 
-- **Windows Task Scheduler autostart registration — root cause confirmed and fixed.** The
-  `PrivilegesRequired=lowest`/non-elevation theory this bullet previously carried was wrong:
-  `installer/privacyfence.iss`'s `schtasks /create` call passed `/ri 1 /du 9999:59`, trying to get
-  crash-restart behavior out of plain `schtasks.exe` CLI flags. Both are documented by Microsoft as
-  "not applicable" to an `ONLOGON` schedule (`/ri` is valid only for MINUTE/HOURLY/DAILY/WEEKLY/
-  MONTHLY/ONCE; `/du` only for MINUTE/HOURLY) — `schtasks.exe` rejected the whole `/create` call
-  outright, on every install, silently, since an Inno `[Run]` entry's nonzero exit code doesn't
-  abort Setup by default. This explains the installer reporting success while `schtasks /query`
-  found nothing registered, on every real run to date. Fixed by dropping the invalid flags;
-  re-validated via `workflow_dispatch` on `windows-graphical-session.yml` before merging that fix
-  (see that workflow's run history for the result). **This does not restore crash-restart
-  behavior** — the task is logon-triggered only now; real restart-on-failure needs the task's own
-  `<RestartOnFailure>` XML settings, not exposed through `schtasks.exe`'s plain flags at all, tracked
-  as [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13, not yet built.
+- **Windows Task Scheduler autostart — two real, independent bugs found and fixed via actual
+  `workflow_dispatch` runs, not by inspection alone.** The `PrivilegesRequired=lowest`/non-elevation
+  theory this bullet previously carried was wrong on both counts it tried to explain:
+  1. **Registration itself was failing.** `installer/privacyfence.iss`'s `schtasks /create` call
+     passed `/ri 1 /du 9999:59`, trying to get crash-restart behavior out of plain `schtasks.exe`
+     CLI flags. Both are documented by Microsoft as "not applicable" to an `ONLOGON` schedule (`/ri`
+     is valid only for MINUTE/HOURLY/DAILY/WEEKLY/MONTHLY/ONCE; `/du` only for MINUTE/HOURLY) —
+     `schtasks.exe` rejected the whole `/create` call outright, on every install, silently, since an
+     Inno `[Run]` entry's nonzero exit code doesn't abort Setup by default. Fixed by dropping the
+     invalid flags. **This does not restore crash-restart behavior** — the task is logon-triggered
+     only; real restart-on-failure needs the task's own `<RestartOnFailure>` XML settings, not
+     exposed through `schtasks.exe`'s plain flags at all, tracked as
+     [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13, not yet built.
+  2. **Once registration was fixed and re-validated, the trigger itself turned out to be scoped to
+     the wrong account.** The installer's `schtasks /create` call omitted `/RU` entirely, on the
+     assumption (also baked into `test_windows_graphical_session_autostart.py`'s own docstring) that
+     Microsoft's unqualified default for an `ONLOGON` trigger already meant "fires for any
+     interactive logon." It doesn't: per Microsoft's own documentation, omitting `/RU` scopes the
+     task to whichever account ran `schtasks /create` — i.e. the installing user only. The re-run
+     against a real Windows runner caught this directly: task registration succeeded, but a
+     different (throwaway) account's logon never fired the trigger within 30s. Fixed by adding
+     `/ru "BUILTIN\Users"` — the built-in group rather than one specific account, the standard
+     technique for "fire on any interactive logon, in that user's own session."
+  Both fixes are validated via a real `workflow_dispatch` run of `windows-graphical-session.yml`
+  before merging — see that workflow's run history for the result, rather than trusting this note
+  alone.
 - **Windows hands-on QA before a signed release ships**: a real installer run on a clean Windows VM
   (confirm SmartScreen/Authenticode presentation), a real OAuth loopback + connector auth through the
   installed app, a simulated crash confirming the Task Scheduler restart-on-failure policy actually
