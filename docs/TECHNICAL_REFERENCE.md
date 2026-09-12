@@ -49,6 +49,26 @@ The daemon exposes the MCP protocol over Streamable HTTP at `/mcp` using the off
 
 The MCP tool registry is built from the configured connectors. Tool calls are routed through the PrivacyFence gate before connector execution where policy requires review or confirmation.
 
+## Meta-tools
+
+Alongside the connector-derived tools, the daemon exposes six `privacyfence_`-prefixed meta-tools over the same `/mcp` endpoint (`web/mcp_tools.py`'s `META_TOOLS`), dispatched by `routes_mcp.py`'s `_dispatch_meta_tool` to `McpDispatcher` methods (`web/mcp_dispatch.py`) that call back into `gate.py`/`auto_accept.py`. Each takes a `reason` string, logged the same self-reported, unverified way as every gated connector tool's own `reason` param.
+
+- `privacyfence_check_policy` — asks whether a specific `(connector, tool, args)` call would auto-accept or need a human, without making the call or having any side effects. Returns one of `auto_accept`, `requires_review`, or `unknown` (whether it auto-accepts can depend on fetched content this can't see in advance); for `review`-gated tools, `pii_gate_may_apply` is always `true`, since the PII gate scans real content and can never be predicted ahead of time. Safe to call as often as needed while planning a task.
+- `privacyfence_list_auto_accept_rules` — read-only listing of the current `auto_accept_rules` and `auto_accept_grants` from `settings.yaml`. Call this before `privacyfence_propose_auto_accept_rule_change` so an update/remove targets an entry that actually exists rather than a guessed identifier.
+- `privacyfence_propose_auto_accept_rule_change` — proposes adding, updating, or removing a rule (`target: "rule"`) or a resource-scoped grant (`target: "grant"`). Always blocks on a native confirmation dialog a human must approve — there is no way to change this config without one, even for an entry that already exists — and throws if declined, or outright if the connection is in an unattended session.
+- `privacyfence_begin_unattended_session` / `privacyfence_end_unattended_session` — see "Scheduled / unattended Cowork tasks" below.
+- `privacyfence_await_approval` — long-polls one or more `approval_id`s from a gated call's `{status: "approval_pending", approval_id, ...}` result and reports status only (`pending`, `approved`, `denied`, `expired`, or `unknown`), never content — a re-issue of the original gated call with the same arguments is still what actually retrieves data once `approved`.
+
+Every tool advertised over `/mcp`, meta-tools included, carries the same uniform read-only/non-destructive/idempotent annotations regardless of its real effect (`_UNIFORM_READ_ONLY_ANNOTATIONS` in `web/mcp_tools.py`) — those are MCP UI hints, not a security boundary. The real authorization is the gate itself, enforced here in the daemon.
+
+### Scheduled / unattended Cowork tasks
+
+`privacyfence_begin_unattended_session` tells PrivacyFence that the rest of this MCP connection is a scheduled/unattended run — a Cowork Routine firing on a schedule with no human necessarily watching — rather than an interactive conversation. It errors unless an administrator has opted the install into this: `unattended_sessions.enabled` in `org/org_config.json`, a deliberate per-organization setting, not a per-user one.
+
+Once set, the flag is tracked per MCP session (`McpDispatcher._unattended_sessions`) and read by `gate.py`'s `is_unattended()` through every gated call on that connection. It changes exactly one thing: a call that isn't already covered by a configured auto-accept rule is denied immediately (audited as `denied_unattended`) instead of PrivacyFence opening a native approval dialog nobody is there to answer. It never changes what auto-accepts, only what happens when nothing does. `privacyfence_propose_auto_accept_rule_change` is likewise refused outright in an unattended session, since a config change always requires a human confirmation.
+
+`privacyfence_end_unattended_session` clears the flag, restoring normal interactive approval behavior — not strictly required, since it also clears when the connection closes, but useful if the connection might be reused afterward for something interactive. Pairing `privacyfence_check_policy` with a scheduled run lets it plan around steps that would otherwise need a human who isn't there.
+
 ## Approval model
 
 A gated request becomes a `PendingApproval` managed by `PendingApprovalRegistry`.
@@ -987,23 +1007,29 @@ the installer runs without admin elevation — `PrivilegesRequired=lowest`), the
 alongside it, and a Start Menu entry pointing at the embedded web settings UI rather than at the
 daemon executable directly.
 
-Autostart is a Task Scheduler task (`PrivacyFence`), not a Startup-folder shortcut, registered by
-the installer's own `[Run]` section (`schtasks /create ... /sc onlogon /ru "BUILTIN\Users" /rl
-limited`) and removed by the uninstaller's `[UninstallRun]` section (`schtasks /delete`) — visible
-and removable through normal Windows install/uninstall UI, the same way the macOS LaunchAgent plist
-and the Linux `.deb`'s XDG autostart entry are. It fires on any interactive logon (`/ru
-"BUILTIN\Users"` targets the built-in group rather than one specific account — omitting `/RU`
-entirely does *not* get this: per Microsoft's own documentation the unqualified default scopes the
-task to whichever account ran the installer only, a real bug this mechanism shipped with briefly,
-caught by `windows-graphical-session.yml`'s own real-logon test and fixed), runs the packaged
-`privacyfence-app.exe` alias at a non-elevated run level, and starts the daemon once, at logon —
-there is currently no crash-restart behavior analogous to the
-macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` or the Linux `.deb`'s systemd restart policy;
-that needs the task's own `<RestartOnFailure>` XML settings (`schtasks /create /xml`, not exposed
-through `schtasks.exe`'s plain flags), tracked as
-[`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13. See
+Autostart is a Task Scheduler task (`PrivacyFence`), not a Startup-folder shortcut, registered from
+`installer/privacyfence.iss`'s `[Code]` section (`CurStepChanged(ssPostInstall)` calling
+`RegisterAutostartTask`) rather than a plain `[Run]` entry, and removed by the uninstaller's
+`[UninstallRun]` section (`schtasks /delete`) — visible and removable through normal Windows
+install/uninstall UI, the same way the macOS LaunchAgent plist and the Linux `.deb`'s XDG autostart
+entry are. Registration is a real Task Scheduler XML task definition
+(`installer/privacyfence-task.xml.tmpl`, extracted at install time, `__EXEC_PATH__` substituted for
+the real installed path, registered via `schtasks /create /xml`), not plain `schtasks /create` CLI
+flags — an earlier CLI-flag-only version of this mechanism shipped briefly with two real bugs
+(invalid `/ri`/`/du` flags for an `ONLOGON` schedule, then a trigger scoped to only the installing
+account), both superseded by this XML-based rewrite rather than patched in place; see that
+template's own header comment and `platform-support.md`'s "Known open items" for the full history.
+`<LogonTrigger>` with no `<UserId>` fires for any interactive logon, `<Principal>` uses `GroupId`
+(`Builtin\Users`) rather than a specific account so the task runs as whichever user just signed in,
+in their own session, at the non-elevated `LeastPrivilege` run level, and
+`<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>` gives it real
+crash-restart behavior — parity with the macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and
+the Linux `.deb`'s systemd restart policy, closing
+[`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13's implementation. See
 [`platform-support.md`](platform-support.md)'s "Known open items" for this mechanism's current
-verification status.
+verification status — the installer/task definition itself is confirmed working via
+`workflow_dispatch`, but the one dedicated end-to-end CI test for it still fails on a hosted runner
+for a reason specific to that test's own real-logon substitution, not to the shipped task.
 
 Per-user state (credentials, settings, the audit log) lives under `%USERPROFILE%\.privacyfence\`,
 created by the app on first run — the installer never touches it, and uninstalling removes only the

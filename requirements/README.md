@@ -7,10 +7,17 @@ comments for why) after any `pyproject.toml` dependency change, and commit the r
 `.github/workflows/dependency-audit.yml`'s `lockfile-freshness` job fails the build if a committed
 file has drifted from what `pyproject.toml` actually resolves to under 3.13.
 
-- **`runtime.lock.txt`** — `pyproject.toml`'s `[project.dependencies]` only, no extras. This is what
-  `pip install privacyfence` actually installs and what PyInstaller bundles into the `.app`. It's
-  also the blocking half of `dependency-audit.yml`'s `pip-audit` severity policy — see that
-  workflow's own comments.
+- **`runtime.lock.txt`** — `pyproject.toml`'s `[project.dependencies]` only, no extras. This is not
+  what a plain `pip install privacyfence` resolves — pip doesn't auto-discover or apply a lock file,
+  so that command still resolves fresh from `pyproject.toml`'s version ranges (see the literal
+  install command in [`org-mode-setup-guide.md`](../docs/org-mode-setup-guide.md)). This file is
+  installed from explicitly, by name, in exactly three places: `build.yml`'s macOS/Windows/Linux
+  jobs (`pip install --require-hashes -r requirements/runtime.lock.txt`), before PyInstaller freezes
+  whatever's importable into the `.app`/installer/`.deb` — so it pins what actually ships in a
+  *packaged desktop build*, not what a `pip`/PyPI install resolves. It's also the blocking half of
+  `dependency-audit.yml`'s `pip-audit` severity policy, and the input to the release SBOM
+  (`cyclonedx-py requirements requirements/runtime.lock.txt` in `build.yml`) — see that workflow's
+  own comments.
 - **`dev.lock.txt`** — the above plus the `dev`, `test`, and `lint` extras: build/release/test/static-
   analysis tooling CI and contributors install, that never reaches an end user's machine. Audited
   too, but informationally, by the same workflow.
