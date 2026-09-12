@@ -53,12 +53,12 @@ rather than a second real build, the same substitution 6.3's own Linux upgrade t
 6.4 landed as a same-repo REST-API polling job rather than a `needs:` edge, since GitHub Actions has
 no such edge across separate workflow files). [Phase 7](#phase-7--graphical-sessionautostart-verification)
 is now fully done — Linux (item 1) landed first as `tests/integration/test_linux_graphical_session_
-autostart.py`, its own `.github/workflows/linux-graphical-session.yml`, closing `linux-local-deb-
-packaging-plan.md` P7.2 (one deliberate substitution: no real display manager in CI, so a real
+autostart.py`, its own `.github/workflows/linux-graphical-session.yml`, closing the now-removed
+`linux-local-deb-packaging-plan.md` P7.2 (one deliberate substitution: no real display manager in CI, so a real
 `systemd --user` session brought up and pointed at `xdg-desktop-autostart.target` stands in for the
 missing physical login); Windows (item 2) followed the same shape as `tests/integration/test_windows_
 graphical_session_autostart.py`, its own `.github/workflows/windows-graphical-session.yml`, closing
-`windows-support-plan.md` 8.2 (two deliberate substitutions this time — see that phase's own status
+the now-removed `windows-support-plan.md` 8.2 (two deliberate substitutions this time — see that phase's own status
 note). Item 3 (macOS) remains deliberately not built, per the source strategy's own guidance. Phases
 8–10 are otherwise unaffected by any of these merges and reflect this plan's original grounding pass.
 Phase 11 (update branch-protection required checks) is new in this revision — added once this plan
@@ -115,7 +115,7 @@ already implemented once checked against the current tree.
 ### Objective
 
 Make the repository describe tests by what they prove, not by the historical "CI vs manual" split,
-so later phases don't duplicate checks `testing-policy.md`/`manual-pre-release-test-plan.md` still
+so later phases don't duplicate checks `testing-policy.md`/the now-removed `manual-pre-release-test-plan.md` still
 describe as needing a human.
 
 ### Status: done
@@ -125,7 +125,7 @@ carried over verbatim except its "Runs" column was filled in with what's *actual
 per-layer rather than left as a Phase-number placeholder — three layers, 3/6/(most of)7, are still
 partially or fully open, and the table says so inline instead of pointing only at a future phase),
 a "Test ownership: failure type → layer" table plus the governing rule stated verbatim, and a new
-"Checked against `manual-pre-release-test-plan.md`" cross-check mapping each of that document's five
+"Checked against the now-removed `manual-pre-release-test-plan.md`" cross-check mapping each of that document's five
 sections to a layer (item 4 below) — no item there turned out to map to zero layers, so no new phase
 gap was found beyond what Phases 1–8 already cover. `pyproject.toml` has the marker list registered
 verbatim. The five TST-08–13 modules got backfilled as planned — as class-level `@pytest.mark.unit`
@@ -154,7 +154,7 @@ implements Phase 2 should decide whether `platform` becomes an eighth registered
   layers this plan needs (cross-platform system, browser system, and packaged-artifact aren't
   distinguished from each other or from "integration" today), and there are no pytest markers at
   all (`pyproject.toml`'s `[tool.pytest.ini_options]` has no `markers` list).
-- `manual-pre-release-test-plan.md` and `connector-qa-testing.md` already exist as the two manual
+- the now-removed `manual-pre-release-test-plan.md` and `connector-qa-testing.md` already exist as the two manual
   documents this plan's Phase 9 eventually rewrites.
 
 ### Remaining work
@@ -197,7 +197,7 @@ implements Phase 2 should decide whether `platform` becomes an eighth registered
    determine pass/fail* — visual judgment and first-time third-party consent screens are the two
    recurring cases that meet that bar in this project; nothing else should.
 
-4. Cross-check `manual-pre-release-test-plan.md` against the table above — every checklist item
+4. Cross-check the now-removed `manual-pre-release-test-plan.md` against the table above — every checklist item
    there should map to exactly one layer. Where an item doesn't map to any layer, that's this plan's
    signal that the layer needs a phase (it does — see Phases 1–8 below); don't remove the manual
    item until the corresponding phase actually lands automation for it.
@@ -290,7 +290,7 @@ shipped, versus what was originally planned here:
   "mark complete": `docs/security-remediation-plan.md` and `docs/connector-ci-integration-plan.md`
   are both deleted from `main`, with every dangling cross-reference elsewhere in `docs/` (
   `security-and-compliance.md`, `org-mode-operational-readiness.md`, `testing-policy.md`,
-  `coding-and-testing-guidelines.md`, `windows-linux-support-plan.md`, `adr/0001`,
+  `coding-and-testing-guidelines.md`, the now-removed `windows-linux-support-plan.md`, `adr/0001`,
   `requirements/README.md`) converted to plain "(now-removed)" citations rather than real links.
   `connector-live-check-setup.md` is the new home for the parts of the removed
   `connector-ci-integration-plan.md` that still need standing documentation.
@@ -309,7 +309,7 @@ shipped, versus what was originally planned here:
    against (both edits have to land together — `EXPECTED_FIXTURES`/`CONNECTOR_CHECKS` self-check at
    import time, so adding `apps_script` to one without a fixture already committed for the other
    fails every PR, not just this connector's). Since Phase 9's rewrite of
-   `manual-pre-release-test-plan.md` no longer enumerates connectors by name or count, this item no
+   the now-removed `manual-pre-release-test-plan.md` no longer enumerates connectors by name or count, this item no
    longer needs a matching doc edit there.
 2. **1.8 — bounded lifecycle tests for write-capable providers** (create/read/update/delete a
    uniquely-tagged QA object, verify cleanup) — done. `scripts/qa_fixture_recorder.py`'s
@@ -427,7 +427,7 @@ Phase 2.3 identified as otherwise-uncovered, on top of the full suite, not inste
 in place with the promotion decision rather than replaced). It still runs the full core suite
 rather than a `platform`-marked subset: Phase 2.3's `tests/platform/` directory and `platform`
 marker don't exist yet, and 2.1 always said to narrow later once that subset lands rather than
-block promotion on it — so the full-suite version landed first. `windows-support-plan.md`'s own
+block promotion on it — so the full-suite version landed first. the now-removed `windows-support-plan.md`'s own
 Phase 6.2 (the item that originally left "permanent leg vs. release-time-only" as an open decision)
 is updated to record that this is the decision made.
 
@@ -439,11 +439,11 @@ are fixed (a POSIX-only `strftime` directive, a `mimetypes.guess_type()` call wh
 handful of known extensions shouldn't depend on the Windows registry, a bare `"npm"` passed to
 `subprocess.run()` instead of its resolved `npm.cmd` path, and a test that only set `$HOME` instead
 of also `$USERPROFILE`). The rest split into two buckets, both left red-skipped rather than papered
-over: the already-known-and-accepted POSIX file-permission gap (`windows-linux-support-plan.md`
+over: the already-known-and-accepted POSIX file-permission gap (the now-removed `windows-linux-support-plan.md`
 Track B3), and a new finding — POSIX-style path strings (`"credentials/telegram.session"`,
 a `"/tmp"` destination_dir) colliding with `ntpath`'s `os.path.join()`/`os.path.isabs()`, which in
 one case (`daemon_main._resolve_path`) silently resolves to a different on-disk location entirely
-on Python 3.13/Windows, not just a cosmetic separator mismatch. See `windows-support-plan.md`
+on Python 3.13/Windows, not just a cosmetic separator mismatch. See the now-removed `windows-support-plan.md`
 Phase 6.3 for the full breakdown and the design question the path finding raises.
 
 ### 2.2 Add macOS platform CI — done
@@ -480,7 +480,7 @@ would have been pure churn:
   test_relative_path_for_a_non_local_principal_uses_its_own_storage_root`). The one case that does
   **not** work correctly on Windows today — a hardcoded POSIX-style path literal (e.g.
   `"credentials/telegram.session"`, `"/etc/hosts"`) run through `os.path.join()`/`os.path.isabs()` —
-  is a known, already-tracked open design question (`windows-support-plan.md` Phase 6.3's "new
+  is a known, already-tracked open design question (the now-removed `windows-support-plan.md` Phase 6.3's "new
   finding, tracked, not fixed"), not something this item re-litigates or works around with a new
   test; the existing `@pytest.mark.skipif(sys.platform == "win32", ...)` cases stay exactly as they
   are.
@@ -769,7 +769,7 @@ own architecture, not a gap in this one.
   decision, and rule/grant side effect are asserted directly) — no case found checking only a
   subset that should be extended.
 - **`testing-policy.md`/`connector-qa-testing.md` framing** — both updated. `testing-policy.md`'s
-  §3 intro and its `manual-pre-release-test-plan.md` cross-check table (§3 row) now say Phase 5
+  §3 intro and its the now-removed `manual-pre-release-test-plan.md` cross-check table (§3 row) now say Phase 5
   confirmed `test_gate.py`'s coverage rather than "is auditing" it.
   `connector-qa-testing.md`'s §3 ("Gate behavior") now states outright that `test_gate.py` is the
   primary, deterministic proof for gate-state coverage and this tier is no longer required to
@@ -813,7 +813,7 @@ no such thing) — see that subsection's own text for why. Phase 6 as a whole is
   approval round trip; §6.1 closed the two gaps this phase's own audit found (signature/notarization
   validation, and state-outside-package survival) rather than rebuilding any of the above.
 - **Linux**: done as of this phase's own §6.3 below — `tests/integration/test_deb_packaged_
-  lifecycle.py` turns `docs/linux-local-deb-packaging-plan.md` Phase 7's install/autostart-file/
+  lifecycle.py` turns the now-removed `linux-local-deb-packaging-plan.md` Phase 7's install/autostart-file/
   remove/purge lifecycle (P7.1) and upgrade-in-place test (P7.3), both previously only manually
   verified, into a repeatable `build.yml` CI job. P7.2 (graphical-session autostart) is explicitly
   still open there and belongs to this plan's Phase 7, not here.
@@ -956,7 +956,7 @@ itself does — a direct HTTP POST to `/api/approvals/<id>/decide` with the boot
 cookie as CSRF — so this job needs no Node/Playwright dependency, only what `scripts/build_deb.sh`
 itself already needs.
 
-`docs/linux-local-deb-packaging-plan.md`'s P7.1 and P7.3 are marked CI-automated (not just
+the now-removed `linux-local-deb-packaging-plan.md`'s P7.1 and P7.3 are marked CI-automated (not just
 manually-verified-once); P7.2 (graphical-session autostart) is closed by this phase's own item 1,
 below.
 
@@ -1061,10 +1061,10 @@ since GUI-session infrastructure is the most expensive, flakiest tier here.
 
 ### Already in this repo
 
-`linux-local-deb-packaging-plan.md` already tracks this exact gap as its own open item, **P7.2**:
+the now-removed `linux-local-deb-packaging-plan.md` already tracks this exact gap as its own open item, **P7.2**:
 "Real desktop-session test... install on a real or VM Ubuntu/Debian desktop, log out/in, confirm the
 daemon is running post-login... confirm the OAuth loopback browser flow opens correctly." Nothing
-in this repo implements it yet. `windows-support-plan.md` already has a home for the Windows
+in this repo implements it yet. the now-removed `windows-support-plan.md` already has a home for the Windows
 equivalent too — its own manual-QA item **8.2** ("Log out/in (or reboot), confirm the daemon
 autostarts via the Task Scheduler task") — just not yet automated.
 
@@ -1076,7 +1076,7 @@ originally planned.
 
 ### Remaining work
 
-1. ~~**Linux**: a graphical Ubuntu VM scenario implementing `linux-local-deb-packaging-plan.md` P7.2
+1. ~~**Linux**: a graphical Ubuntu VM scenario implementing the now-removed `linux-local-deb-packaging-plan.md` P7.2
    exactly as already specified there — install, ensure stopped, logout/reboot, login, wait for
    session startup, verify daemon, exercise the system request from Phase 3, and where practical the
    OAuth loopback browser-opening flow. Close P7.2 in that document once this lands.~~ **Done** —
@@ -1099,16 +1099,16 @@ originally planned.
    `tests/platform/test_browser_launch_default.py` (Phase 2.3), which proves `oauth_loopback.py`'s
    default path reaches `webbrowser.open` by monkeypatching that function itself, this test lets the
    stdlib `webbrowser` module's own real browser-detection-and-subprocess-launch logic run unmocked,
-   via a real launched subprocess that performs the actual loopback HTTP round trip. `docs/linux-
-   local-deb-packaging-plan.md` P7.2 is now marked closed accordingly. Scheduled on packaging-related
+   via a real launched subprocess that performs the actual loopback HTTP round trip. The now-removed
+   `linux-local-deb-packaging-plan.md` P7.2 is now marked closed accordingly. Scheduled on packaging-related
    `main` pushes, weekly, and on demand via its own workflow — deliberately kept out of both
    `tests.yml`'s per-PR jobs and `build.yml`'s tag-triggered release pipeline, since a flaky run in
    this tier (the flakiest and most expensive in this plan's whole taxonomy, per this phase's own
    objective) must never block an actual release.
 2. ~~**Windows**: equivalent scenario on a Windows desktop VM/session — install, sign out/reboot, sign
    in, verify autostart, exercise the Phase 3 system contract. Add this as a new tracked item in
-   `windows-support-plan.md` if that document doesn't already have a home for it.~~ **Done** —
-   `tests/integration/test_windows_graphical_session_autostart.py`, closing `windows-support-plan.md`
+   the now-removed `windows-support-plan.md` if that document doesn't already have a home for it.~~ **Done** —
+   `tests/integration/test_windows_graphical_session_autostart.py`, closing the now-removed `windows-support-plan.md`
    8.2 (that document already had a home for this item — it just needed converting from manual QA to
    automated CI). There's no physical sign-in to drive on a GitHub-hosted Windows runner, so this
    makes two deliberate substitutions rather than one hand-rolled workaround: a throwaway local
@@ -1205,11 +1205,11 @@ Google/Microsoft identity login required for routine coverage.
 ### Objective
 
 Shrink manual release validation to minutes, now that Phases 0–8 have replaced most of what
-`manual-pre-release-test-plan.md` and `connector-qa-testing.md` currently ask a human to do by hand.
+the now-removed `manual-pre-release-test-plan.md` and `connector-qa-testing.md` currently ask a human to do by hand.
 
 ### Status: done
 
-1. **`manual-pre-release-test-plan.md`**: rewritten from a five-section, half-day walkthrough into a
+1. **the now-removed `manual-pre-release-test-plan.md`**: rewritten from a five-section, half-day walkthrough into a
    three-section, minutes-long checklist — §1 "Automated prerequisites" (confirm `tests.yml`'s
    merge-gate jobs and `connector-live-check.yml`'s scheduled run are green/recent, no unresolved
    `chore/connector-live-fixture-drift` PR, no open gate/auto-accept/approval-UI PR that skipped the
@@ -1233,7 +1233,7 @@ Shrink manual release validation to minutes, now that Phases 0–8 have replaced
    releases need none of it, naming the four cases that do (new connector, material connector/gate
    change, unexplained regression, or the broad gate/auto-accept/approval-UI change
    `testing-policy.md` §3 already required this for).
-3. **`testing-policy.md`**: consistency pass done. The "Checked against `manual-pre-release-test-plan.md`"
+3. **`testing-policy.md`**: consistency pass done. The "Checked against the now-removed `manual-pre-release-test-plan.md`"
    section (Phase 0) now maps each *old* section to where its coverage lives post-rewrite instead of
    describing a still-pending rewrite; §3's closing paragraph and the Quick-reference table's
    `connector-qa-testing.md` row both dropped their "before a release" framing in favor of the same
@@ -1428,32 +1428,48 @@ assumed, to block merge (pending remaining-work item 4, which depends on item 1)
 ### Objective
 
 Return to one active plan doc under `docs/`, as this document's own docs-audit pass intended
-before `windows-support-plan.md`, `windows-linux-support-plan.md`,
-`linux-local-deb-packaging-plan.md`, and `manual-pre-release-test-plan.md` all had to be restored
-because they still tracked open work `main` had landed against them.
+before `windows-support-plan.md`, `windows-linux-support-plan.md`, `linux-local-deb-packaging-
+plan.md`, and `manual-pre-release-test-plan.md` all had to be restored because they still tracked
+open work `main` had landed against them.
 
-### Already in this repo
+### Status: done
 
-Every open item in those four documents is already tracked above, owned by the phase that covers
-it: `windows-support-plan.md`'s remaining phases and its Phase 6.3 open path-handling finding under
-Phase 2/Phase 6 above; `windows-linux-support-plan.md`'s Track B3 (the accepted POSIX
-file-permission gap) referenced from Phase 2.1 and Phase 6; `linux-local-deb-packaging-plan.md`'s
-P7.2/P7.3 under Phase 7/Phase 6.3; `manual-pre-release-test-plan.md` under Phase 9's reduction.
-This phase adds no new scope — it is bookkeeping once that scope is closed.
+Verified against the current source tree and live CI rather than trusting each of the four
+documents' own checkbox state, which turned out to be stale in both directions: several genuinely-
+landed items were never checked off in their own source document (`portalocker`, the Windows
+installer's `schtasks` registration, the README's Windows/Linux install sections), while two real,
+still-open items existed that this phase's original "every open item is already tracked above"
+claim did not actually account for:
 
-### Remaining work
+- **Windows**: closing [privacyfence/privacyfence#121](https://github.com/privacyfence/privacyfence/issues/121)
+  stays gated on a real signed Windows release actually shipping (none has, since this packaging
+  work landed), plus the inherently-manual Windows QA items (a real installer run, OAuth loopback
+  through the installed app, crash-restart, a clean uninstall, `.mcpb` in a real Claude Desktop) and
+  a still-missing `TECHNICAL_REFERENCE.md` Windows section. A new finding from this verification
+  pass, not previously known: `windows-graphical-session.yml` is not currently green — the
+  installed Task Scheduler autostart task is missing immediately after a real silent install
+  reporting success, on every real run to date, including the run against `main` after PR #315's
+  own fix (which addressed a different bug in the same test module). Plausibly
+  `installer/privacyfence.iss`'s `PrivilegesRequired=lowest` means its own `[Run]`-section
+  `schtasks /create` call runs unelevated, and Task Scheduler commonly refuses non-elevated
+  registration even from an Administrators-group account — not yet confirmed against real Windows.
+- **Linux**: a real end-to-end org-mode run against a live Ubuntu server with a real identity
+  provider and a real live connector remains undone, distinct from `org-mode-smoke`'s synthetic,
+  mocked-IdP CI coverage (Phase 8).
 
-1. Confirm every open item in `windows-support-plan.md`, `windows-linux-support-plan.md`,
-   `linux-local-deb-packaging-plan.md`, and `manual-pre-release-test-plan.md` has actually landed —
-   i.e. Phases 2, 6, 7, and 9 above are done, not just summarized as done here.
-2. Delete all four files from `docs/`.
-3. Update `docs/README.md`'s doc index and "active implementation plans" note to drop the four
-   retired entries, leaving `automated-test-strategy-plan.md` as the only plan doc again.
-4. Remove this document's own cross-references to the four retired documents (the "Already in this
-   repo" paragraph above, and any other mention elsewhere in this file) once they're gone, so
-   nothing here links to a deleted file.
+Neither is phase-shaped implementation work belonging in a plan document, so both are migrated into
+[`platform-support.md`](platform-support.md)'s new "Known open items" section instead of left to
+disappear with the retired docs. `manual-pre-release-test-plan.md` needed no such migration —
+`release-testing.md` already stands alone as its evergreen replacement, confirmed by reading it,
+exactly matching this phase's original design.
 
-### Exit criteria
+All four documents are deleted; `docs/README.md`'s doc index and "active implementation plans" note
+drop the four retired entries; every cross-reference to the four documents elsewhere in the repo —
+this file included — is converted to a plain "now-removed" citation, the same convention Phase
+1.10's removal of `security-remediation-plan.md`/`connector-ci-integration-plan.md` already
+established, rather than left as a link to a deleted file.
+
+### Exit criteria (met)
 
 `docs/` contains exactly one `*plan*.md`: this document.
 
@@ -1511,9 +1527,11 @@ Phase 11 Update branch-protection required checks                (policy/script/
    ↓                                                               live GitHub setting itself is a
    ↓                                                               repo-admin hand-off, see Phase
    ↓                                                               11's own status note)
-Phase 12 Retire the platform-specific plan docs                  (bookkeeping only, once Phases 2,
-                                                                    6, 7, and 9 above are actually
-                                                                    done — last step in this plan)
+Phase 12 Retire the platform-specific plan docs                  (DONE — all four docs deleted;
+                                                                    their two still-real open items
+                                                                    (Windows issue #121 gating +
+                                                                    QA, a live Linux org-mode run)
+                                                                    live in platform-support.md now)
 ```
 
 Phases 4 and 5 may proceed in parallel once Phase 3 is stable, as in the source strategy. Phase 7
@@ -1573,12 +1591,12 @@ plan's grounding pass found the work already done, and a note on which remain ge
     P7.2, `tests/integration/test_linux_graphical_session_autostart.py`, its own
     `.github/workflows/linux-graphical-session.yml`
 22. ~~Windows graphical-session/autostart CI~~ — **done** (Phase 7 item 2): closes
-    `windows-support-plan.md` 8.2, `tests/integration/test_windows_graphical_session_autostart.py`,
+    the now-removed `windows-support-plan.md` 8.2, `tests/integration/test_windows_graphical_session_autostart.py`,
     its own `.github/workflows/windows-graphical-session.yml`
 23. ~~Org-mode system test audit/extension~~ — **done** (Phase 8): closed the four-scenario gap,
     promoted `test_org_ubuntu_release_smoke.py` to a permanent `org-mode-smoke` per-PR job, and
     updated `org-mode-operational-readiness.md`
-24. ~~Manual QA documentation reduction~~ — **done** (Phase 9): `manual-pre-release-test-plan.md`
+24. ~~Manual QA documentation reduction~~ — **done** (Phase 9): the now-removed `manual-pre-release-test-plan.md`
     rewritten to a three-section checklist, `connector-qa-testing.md` reframed as exploratory-only,
     `testing-policy.md` consistency pass
 25. ~~CI diagnostic/observability polish~~ — **done** (Phase 10): `tests/diagnostics.py`'s generic
@@ -1590,9 +1608,9 @@ plan's grounding pass found the work already done, and a note on which remain ge
     `testing-policy.md` names the real required set instead of "the `test` job." Actually running
     `apply` against the live repo, and the enforcement check that follows it, are a repo-admin
     hand-off outside of what a PR merge can do — see Phase 11's own status note.
-27. Retire `windows-support-plan.md`, `windows-linux-support-plan.md`,
-    `linux-local-deb-packaging-plan.md`, and `manual-pre-release-test-plan.md` once 12–24 above are
-    actually done (Phase 12) — last PR in this plan, bookkeeping only
+27. ~~Retire `windows-support-plan.md`, `windows-linux-support-plan.md`,
+    `linux-local-deb-packaging-plan.md`, and `manual-pre-release-test-plan.md`~~ — **done** (Phase
+    12) — last PR in this plan
 
 Each PR should leave the repository green.
 
@@ -1640,7 +1658,7 @@ combination.
   run actually blocks merge, confirmed rather than assumed (Phase 11's target set is defined and
   scripted; applying it live and confirming enforcement is the repo-admin hand-off its status note
   describes).
-- `docs/` contains exactly one `*plan*.md` — this document — with `windows-support-plan.md`,
+- ✅ `docs/` contains exactly one `*plan*.md` — this document. `windows-support-plan.md`,
   `windows-linux-support-plan.md`, `linux-local-deb-packaging-plan.md`, and
-  `manual-pre-release-test-plan.md` retired once the work they track has actually shipped
-  (Phase 12, last).
+  `manual-pre-release-test-plan.md` are retired (Phase 12); their still-real open items live in
+  `platform-support.md`'s "Known open items" instead.

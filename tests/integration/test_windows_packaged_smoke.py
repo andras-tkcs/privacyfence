@@ -19,7 +19,7 @@ as possible to how a real user would.
    that, so it runs the same way an unprivileged CI runner does.
 2. **Validate the autostart entry**: ``installer/privacyfence.iss``'s
    ``[Run]`` section registers the Task Scheduler task
-   (docs/windows-support-plan.md Phase 3) as part of the (silent) install
+   (the now-removed windows-support-plan.md Phase 3) as part of the (silent) install
    itself, not a separate opt-in step -- ``schtasks /query`` against it is
    the one thing that would silently no-op at next logon if the install step
    ever stopped wiring it up.
@@ -128,7 +128,7 @@ pytestmark = [
     pytest.mark.packaged,
     pytest.mark.skipif(
         platform.system() != "Windows",
-        reason="only meaningful against a real installer -- see docs/windows-support-plan.md Phase 4",
+        reason="only meaningful against a real installer -- see the now-removed windows-support-plan.md Phase 4",
     ),
     pytest.mark.skipif(
         not _built_installers(),
@@ -261,7 +261,7 @@ def _running_daemon(exe: Path, home: Path):
     _prepare_home(home, port=port)
     # Path.home()/os.path.expanduser() resolve through USERPROFILE on
     # Windows, not HOME -- see paths.py's data_dir() and
-    # docs/windows-support-plan.md Phase 6.3's own note on the analogous
+    # The now-removed windows-support-plan.md Phase 6.3's own note on the analogous
     # ~-expansion fix. HOME is set alongside it defensively; it costs
     # nothing and some third-party code (this daemon's own dependencies
     # included) still checks it first.

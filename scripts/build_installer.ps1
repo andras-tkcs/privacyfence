@@ -1,6 +1,6 @@
 # Build PrivacyFence-<version>-setup.exe -- the Windows installer.
 #
-# docs/windows-support-plan.md Phase 4 (B4 in docs/windows-linux-support-
+# The now-removed docs/windows-support-plan.md Phase 4 (B4 in the now-removed docs/windows-linux-support-
 # plan.md). PowerShell, not bash, since this step only ever runs on a
 # Windows build host -- mirrors build_dmg.sh being bash because it only
 # ever runs on macOS.
@@ -120,7 +120,7 @@ Copy-Item -Force $MainExe $AliasExe
 # -- 5. Build the Claude Desktop extension (.mcpb) ---------------------------
 # scripts/build_mcpb.sh is plain bash + Node/TypeScript -- no macOS-specific
 # step in it -- so it runs unchanged here via Git for Windows' bash.exe
-# rather than being ported to PowerShell (docs/windows-support-plan.md
+# rather than being ported to PowerShell (the now-removed docs/windows-support-plan.md
 # Phase 4.1 flagged this as the small decision to make once this script was
 # actually being written; bash it is, since Git for Windows is already a
 # near-universal Windows dev-machine prerequisite and this avoids a second,

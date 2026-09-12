@@ -23,7 +23,7 @@ const CONNECT_TIMEOUT_MS = 10_000; // time to wait for daemon startup
 const CONNECT_INTERVAL_MS = 400;
 const PATIENT_RETRY_INTERVAL_MS = 2_000; // polling interval once the initial window has elapsed
 
-// Where the installer puts privacyfence-app on each platform (docs/windows-
+// Where the installer puts privacyfence-app on each platform (the now-removed docs/windows-
 // support-plan.md Phase 4.2's %ProgramFiles%\PrivacyFence\ install dir on
 // Windows; build_dmg.sh's Contents/MacOS/ on macOS). No Linux entry here --
 // a `.deb` install's /usr/bin/privacyfence-app is normally already on PATH
@@ -73,9 +73,9 @@ export interface FindDaemonCmdOptions {
  * bridge/src/daemon.ts's findDaemonCmd: the shim ships inside the .mcpb,
  * never as a sibling of privacyfence-app on disk, so this normally only
  * matters as a fallback -- the daemon should already be running via its
- * LaunchAgent (macOS), Task Scheduler task (Windows, docs/windows-support-
+ * LaunchAgent (macOS), Task Scheduler task (Windows, the now-removed docs/windows-support-
  * plan.md Phase 3), or systemd --user unit / XDG autostart entry (Linux,
- * per docs/linux-local-deb-packaging-plan.md's Phase 3) by the time Claude
+ * per the now-removed docs/linux-local-deb-packaging-plan.md's Phase 3) by the time Claude
  * Desktop spawns the shim.
  */
 export function findDaemonCmd(opts: FindDaemonCmdOptions = {}): string[] {
@@ -97,7 +97,7 @@ export function findDaemonCmd(opts: FindDaemonCmdOptions = {}): string[] {
 
   // Linux fallback: a `.deb` install puts a wrapper at /usr/bin/privacyfence-app
   // (normally already on PATH, so the which() lookup above would have found
-  // it), but a `pipx install privacyfence` (windows-linux-support-plan.md's
+  // it), but a `pipx install privacyfence` (the now-removed windows-linux-support-plan.md's
   // Track A2 "verify the pip/pipx path" item) drops the console script at
   // ~/.local/bin/privacyfence-app instead -- a location that's on a user's
   // interactive shell PATH but not necessarily on the trimmed-down PATH a

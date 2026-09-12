@@ -167,7 +167,7 @@ pytestmark = [
     pytest.mark.packaged,
     pytest.mark.skipif(
         platform.system() != "Windows",
-        reason="only meaningful against a real installer -- see docs/windows-support-plan.md 8.2",
+        reason="only meaningful against a real installer -- see the now-removed windows-support-plan.md 8.2",
     ),
     pytest.mark.skipif(
         not _built_installers(),

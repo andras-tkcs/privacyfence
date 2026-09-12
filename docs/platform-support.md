@@ -40,7 +40,7 @@ The installer:
 
 Optional signing is configured through `SIGN_CERT_PATH`, `SIGN_CERT_PASSWORD`, and optionally `SIGN_TIMESTAMP_URL`.
 
-The normal PR test suite runs on Ubuntu. A Windows pytest job exists in `.github/workflows/tests.yml` and is currently available through `workflow_dispatch`; Windows packaging itself is exercised by the release build workflow.
+The `platform-windows` job in `.github/workflows/tests.yml` runs the full core Python suite on `windows-latest` on every PR, alongside the normal Ubuntu suite. Windows packaging itself (the installer build, silent install/autostart/uninstall) is exercised only by the release build workflow (`build.yml`'s `build-windows` job, tag/`workflow_dispatch`-triggered), not per PR — see "Known open items" below for its current live status.
 
 ## Debian/Ubuntu local mode
 
@@ -61,3 +61,40 @@ PyInstaller builds are native to the runner architecture. The current Debian rel
 The repository distinguishes build automation from target-environment validation. Packaging workflows prove that release artifacts can be built and exercise their automated smoke tests; OS-native presentation and login-session behavior still require the relevant platform environment where automation does not cover it.
 
 Remaining test-automation work is tracked only in [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md).
+
+## Known open items
+
+- **Windows Task Scheduler autostart registration is not currently confirmed working.**
+  `.github/workflows/windows-graphical-session.yml` — a real silent install followed by an
+  interactive logon of a throwaway account — has failed on every run to date (including the run
+  against `main` after the graphical-session-test fixes in PR #315) with the installed task missing
+  immediately after a silent install that itself reports success (`schtasks /query` finds nothing
+  registered). `tests/integration/test_windows_packaged_smoke.py`'s own equivalent assertion has not
+  run against a real Windows runner recently either — it only runs in `build.yml`'s `build-windows`
+  job, which is tag/`workflow_dispatch`-triggered and has not run since this installer/autostart
+  work landed. `installer/privacyfence.iss` sets `PrivilegesRequired=lowest` so the installer (and
+  therefore its `[Run]` section's `schtasks /create` call) runs without UAC elevation; Task Scheduler
+  commonly refuses to register a task from a non-elevated process even when the caller is a member of
+  Administrators, and Inno Setup does not check `[Run]` entries' exit codes by default — a plausible,
+  not yet confirmed, explanation for a silently-failing task registration behind a green installer
+  exit code. Needs investigation and validation with real Windows access before Windows autostart can
+  be considered proven.
+- **Windows hands-on QA before a signed release ships**: a real installer run on a clean Windows VM
+  (confirm SmartScreen/Authenticode presentation), a real OAuth loopback + connector auth through the
+  installed app, a simulated crash confirming the Task Scheduler restart-on-failure policy actually
+  restarts the daemon, an Add/Remove Programs uninstall confirming program files and the scheduled
+  task are gone while `%USERPROFILE%\.privacyfence\` is untouched, and installing the bundled `.mcpb`
+  into a real Claude Desktop against the installed daemon. None of this is automatable from CI.
+  [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md) also still has no dedicated Windows installation
+  section parallel to its Linux one.
+- **[privacyfence/privacyfence#121](https://github.com/privacyfence/privacyfence/issues/121)** (the
+  Windows-support tracking issue) stays open until a real tagged release ships the signed Windows
+  installer and the hands-on QA above has been run against that release build specifically — not an
+  earlier dev build. Close it only then, noting in the closing comment what shipped and anything
+  deliberately deferred (e.g. arm64 Windows, EV vs. OV code signing).
+- **Linux org mode has not had a real end-to-end run against a live Ubuntu server**: a fresh Ubuntu
+  host following `org-mode-setup-guide.md` verbatim, a real OIDC round trip against a real identity
+  provider, and at least one live connector (Gmail) exercised through a real MCP client hitting the
+  public `/mcp` URL. The `org-mode-smoke` CI job exercises the same daemon/MCP/approval/audit
+  contract end to end, but against a synthetic, mocked identity provider — a different, narrower
+  guarantee than a real deployment run.

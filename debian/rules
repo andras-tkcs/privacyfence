@@ -1,7 +1,7 @@
 #!/usr/bin/make -f
 #
 # debhelper boilerplate for the privacyfence .deb -- see
-# docs/linux-local-deb-packaging-plan.md Phase 2 for the reasoning.
+# the now-removed docs/linux-local-deb-packaging-plan.md Phase 2 for the reasoning.
 #
 # NOTE on how this repo actually builds the package: scripts/build_deb.sh does NOT invoke
 # `dpkg-buildpackage`/`fakeroot debian/rules binary` against this file. It builds the PyInstaller
@@ -29,7 +29,7 @@
 # *build host's* system libraries. dh_shlibdeps scanning those bundled .so files would compute
 # spurious ${shlibs:Depends} bounds tied to the build host's package versions, not what the
 # bundle actually carries -- exactly the "no python3-* dependency requirements" property the "key
-# decision" in docs/linux-local-deb-packaging-plan.md is built around. Skip it entirely.
+# decision" in the now-removed docs/linux-local-deb-packaging-plan.md is built around. Skip it entirely.
 override_dh_shlibdeps:
 
 # Same reasoning as dh_shlibdeps: PyInstaller's bootloader embeds the frozen application's PKG

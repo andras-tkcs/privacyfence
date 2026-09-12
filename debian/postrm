@@ -2,7 +2,7 @@
 # postrm for the privacyfence .deb.
 #
 # Explicitly scoped to do nothing beyond a cosmetic icon-cache refresh -- see
-# docs/linux-local-deb-packaging-plan.md P2.2:
+# the now-removed docs/linux-local-deb-packaging-plan.md P2.2:
 #
 #   - `apt remove privacyfence` must leave per-user data (~/.privacyfence/ -- config/settings.yaml,
 #     credentials/, the audit log) alone. That data is created by the app itself on first run

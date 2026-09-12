@@ -79,7 +79,7 @@ describe("findDaemonCmd", () => {
     assert.deepEqual(cmd, ["python3", "-m", "privacyfence.daemon_main"]);
   });
 
-  // Windows branch (docs/windows-support-plan.md Phase 7 / B6 in docs/
+  // Windows branch (the now-removed docs/windows-support-plan.md Phase 7 / B6 in the now-removed docs/
   // windows-linux-support-plan.md) -- `platform` is injectable specifically
   // so these can run on any CI host, not just a real Windows one.
   it("falls back to python -m privacyfence.daemon_main (not python3) on win32", () => {

@@ -13,7 +13,7 @@ dist/PrivacyFenceApp/* opt/privacyfence/
 resources/linux/privacyfence-app-wrapper usr/bin/privacyfence-app
 
 # XDG autostart entry -- see debian/postinst / resources/linux/privacyfence.desktop and
-# docs/linux-local-deb-packaging-plan.md Phase 3 for why this is the packaged default instead of
+# the now-removed docs/linux-local-deb-packaging-plan.md Phase 3 for why this is the packaged default instead of
 # the --user systemd unit privacyfence.service (repo root) already documents for a bare pip/pipx
 # install.
 resources/linux/privacyfence.desktop etc/xdg/autostart/

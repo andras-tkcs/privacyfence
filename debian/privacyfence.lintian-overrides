@@ -1,5 +1,5 @@
 # Both overrides below are the direct, documented consequence of this package's "key decision"
-# (docs/linux-local-deb-packaging-plan.md): privacyfence is deliberately "a Debian package that
+# (the now-removed docs/linux-local-deb-packaging-plan.md): privacyfence is deliberately "a Debian package that
 # happens to install a bundled PyInstaller binary," the same way signal-desktop, 1password, and
 # most Electron/PyInstaller-style .debs ship -- not a package built against python3-* system
 # packages. Both tags are lintian's correct, expected reaction to that choice; nothing below is
@@ -9,7 +9,7 @@
 # interpreter + all dependencies) -- exactly the FHS-sanctioned use of /opt for "the installation
 # of add-on software packages" that don't integrate with the system package management for their
 # internals (Debian policy §9.1.2, cited directly in debian/control's Description and this repo's
-# docs/linux-local-deb-packaging-plan.md Phase 2).
+# the now-removed docs/linux-local-deb-packaging-plan.md Phase 2).
 privacyfence: dir-or-file-in-opt *
 
 # PyInstaller bundles its own copies of several common libraries (bzip2, expat, libxml2, libyaml,
