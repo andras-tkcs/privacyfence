@@ -243,7 +243,7 @@ class TestDeleteCredential:
 # no real socket -- unit per testing-policy.md's seven-layer taxonomy.
 @pytest.mark.unit
 class TestCrossPrincipalIsolation:
-    """TST-10 (docs/security-remediation-plan.md Phase 3.12): every route
+    """TST-10: every route
     here resolves ``principal`` from the request's own session
     (``_current_principal``) and never takes an id from the request body/
     path, so every store this module touches -- webauthn_stepup.py's

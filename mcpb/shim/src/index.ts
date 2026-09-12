@@ -2,9 +2,9 @@
  * PrivacyFence .mcpb shim: a thin stdio-to-Streamable-HTTP transport proxy,
  * spawned by Claude Desktop exactly the way it used to spawn
  * privacyfence-bridge (mcpb/manifest.json.tmpl's server.mcp_config -- same
- * shape, only the staged file changed, see scripts/build_mcpb.sh). D11 in
- * docs/https-connector-refactor-plan.md §12: what replaces the bridge for
- * Desktop once tool calls go over /mcp (P2) instead of the IPC socket.
+ * shape, only the staged file changed, see scripts/build_mcpb.sh). This is
+ * what replaces the bridge for Desktop once tool calls go over /mcp (P2)
+ * instead of the IPC socket.
  *
  * Unlike the bridge (bridge/src/index.ts), this process has no knowledge of
  * ToolSpec, no manifest fetch, no tool registration, and no JSON-RPC framing

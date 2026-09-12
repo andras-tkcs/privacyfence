@@ -98,10 +98,9 @@ def build_authorize_url(
     login_url: str = DEFAULT_LOGIN_URL,
 ) -> str:
     """Salesforce's OAuth 2.0 Web Server flow authorize URL -- factored out
-    of ``authorize_interactive`` (P8, docs/https-connector-refactor-plan.md
-    §9.3) so ``web/routes_connect.py``'s org-mode server-redirect flow can
-    build the same URL without going through ``oauth_loopback.
-    run_browser_oauth``'s local listener."""
+    of ``authorize_interactive`` (P8) so ``web/routes_connect.py``'s
+    org-mode server-redirect flow can build the same URL without going
+    through ``oauth_loopback.run_browser_oauth``'s local listener."""
     login_url = (login_url or DEFAULT_LOGIN_URL).rstrip("/")
     params = {
         "response_type": "code",

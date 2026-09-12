@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Local-only smoke test for the web surfaces (`/settings`, `/approvals`,
-docs/https-connector-refactor-plan.md §16): does a real click, in a real
-browser, against the real embedded HTTP server (not the Starlette
+"""Local-only smoke test for the web surfaces (`/settings`, `/approvals`):
+does a real click, in a real browser, against the real embedded HTTP server (not the Starlette
 TestClient every test in tests/unit/web/ uses), actually round-trip?
 
 tests/unit/web/ and tests/unit/test_web_shell.py/test_approval_list_html.py
@@ -32,8 +31,7 @@ functions, resources/sw.js, or web/server.py's CSP change. Not on every
 settings_controller.py/settings_window_html.py change -- those are covered
 by tests/unit/test_settings_window_html.py's construction-only assertions.
 (Through P9 the equivalent script for the native approval popup was
-qa_popup_smoke.py, retired at P10 along with the popup itself -- see
-docs/https-connector-refactor-plan.md §12, decision D6.)
+qa_popup_smoke.py, retired at P10 along with the popup itself, decision D6.)
 
     .venv/bin/pip install playwright   # once, locally -- not committed
     .venv/bin/python scripts/qa_web_smoke.py

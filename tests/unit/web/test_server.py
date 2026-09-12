@@ -1,10 +1,8 @@
 """Tests for web/server.py -- the Host allowlist and security-header
 middleware, the shared local-mode token, and the SEC-06 bootstrap flow
-(docs/security-remediation-plan.md, Phase 1 item 1.2) that replaces it as
-what a browser actually presents. See docs/https-connector-refactor-plan.md
-§10.5 for the control table this covers (Host allowlist against DNS
-rebinding, CSP/X-Frame-Options, Cache-Control -- the last one is per-route,
-tested in test_routes_approvals.py instead).
+that replaces it as what a browser actually presents. Covers the Host
+allowlist against DNS rebinding, CSP/X-Frame-Options, Cache-Control -- the
+last one is per-route, tested in test_routes_approvals.py instead.
 """
 from __future__ import annotations
 
@@ -132,8 +130,8 @@ class TestParseHostHeader:
 
 
 class TestPrincipalScopeMiddleware:
-    """P6, docs/https-connector-refactor-plan.md §9.1: "entered once per
-    HTTP request, in exactly one place" for the browser surface -- proves
+    """P6: entered once per HTTP request, in exactly one place, for the
+    browser surface -- proves
     the ASGI wiring actually scopes a real request (and only that request),
     not just that principal_scope() itself works (that's test_principal.py's
     job)."""
@@ -214,7 +212,7 @@ class TestSecurityHeaders:
         assert r.headers.get("x-frame-options") == "DENY"
 
     def test_permissions_policy_denies_unused_powerful_features(self):
-        # SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5).
+        # SEC-18.
         r = self._client().get("/approvals")
         policy = r.headers.get("permissions-policy", "")
         assert "camera=()" in policy
@@ -242,9 +240,8 @@ class TestSecurityHeaders:
 
 
 class TestCacheControlOnSensitivePages:
-    """SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): a sweep
-    across every local-mode page that carries session- or approval-specific
-    content, rather than trusting that each route author remembered
+    """SEC-18: a sweep across every local-mode page that carries session-
+    or approval-specific content, rather than trusting that each route author remembered
     Cache-Control: no-store on their own -- a future new page that forgets
     it fails here instead of shipping silently cacheable."""
 
@@ -278,7 +275,7 @@ class TestCacheControlOnSensitivePages:
 
 
 class TestCspNonce:
-    """SEC-08 (docs/security-remediation-plan.md Phase 3.1)."""
+    """SEC-08."""
 
     def _client(self):
         sessions = LocalSessionStore()
@@ -323,8 +320,8 @@ class TestCspNonce:
 
 
 class TestSecurityHeadersMiddlewareReplacesNotExtends:
-    """SEC-08 (docs/security-remediation-plan.md Phase 3.1): the middleware
-    used to blindly append its fixed header set, which would have emitted
+    """SEC-08: the middleware used to blindly append its fixed header set,
+    which would have emitted
     *two* headers of the same name if the wrapped app already set one of
     them -- this proves it overrides instead."""
 
@@ -460,9 +457,8 @@ class TestWebServerConstruction:
 
 
 # --------------------------------------------------------------------------- #
-# SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2): the
-# ?bootstrap=<code> one-time exchange that replaces the old ?token= link,
-# and WebServer.mint_bootstrap_url()'s own wrapper around it.
+# SEC-06: the ?bootstrap=<code> one-time exchange that replaces the old
+# ?token= link, and WebServer.mint_bootstrap_url()'s own wrapper around it.
 # --------------------------------------------------------------------------- #
 
 class TestBootstrapFlow:
@@ -583,9 +579,9 @@ class TestWebServerBootstrap:
 
 
 # --------------------------------------------------------------------------- #
-# D11 (docs/https-connector-refactor-plan.md §12): the mcp_url discovery
-# file mcpb/shim reads to find /mcp without any config the user has to
-# edit -- the direct successor of ipc.py's PORT_FILE. Only written/cleared
+# D11: the mcp_url discovery file mcpb/shim reads to find /mcp without any
+# config the user has to edit -- the direct successor of ipc.py's
+# PORT_FILE. Only written/cleared
 # when this WebServer actually has an mcp_dispatcher (i.e. web.mcp.enabled);
 # a server started for the approval UI alone must not claim /mcp exists.
 # --------------------------------------------------------------------------- #
@@ -683,9 +679,8 @@ class TestAudienceSeparation:
 
 
 # --------------------------------------------------------------------------- #
-# P4 (docs/https-connector-refactor-plan.md §16): /settings and
-# /api/state/stream folded into the same combined app, sharing the
-# approval surface's own session -- see build_app()'s own docstring for why
+# P4: /settings and /api/state/stream folded into the same combined app,
+# sharing the approval surface's own session -- see build_app()'s own docstring for why
 # this is the deliberate contrast with MCP's separate audience.
 # --------------------------------------------------------------------------- #
 

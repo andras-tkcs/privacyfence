@@ -1,6 +1,5 @@
-"""End-to-end deferred-approval round trip (TST-09,
-docs/security-remediation-plan.md Phase 3.12): drives the full P3 deferred
-protocol (gate.py's own module docstring) against a real, socket-bound
+"""End-to-end deferred-approval round trip (TST-09): drives the full P3
+deferred protocol (gate.py's own module docstring) against a real, socket-bound
 web/server.py WebServer -- the official ``mcp`` Python client for the
 tool-call side, a real ``httpx`` POST against the real decide route for the
 human-decision side -- rather than in-process unit coverage of each half
@@ -8,8 +7,8 @@ separately. tests/unit/test_gate.py proves gated_call's own state machine
 and tests/unit/web/test_routes_approvals.py proves the decide route in
 isolation, but nothing before this test proved that a human deciding
 through the real HTTP approval surface actually unblocks a second,
-identical MCP tool call the way docs/https-connector-refactor-plan.md §5
-describes end to end: register-or-coalesce -> hold_window elapses ->
+identical MCP tool call end to end: register-or-coalesce -> hold_window
+elapses ->
 "approval_pending" returned to the MCP client -> POST /api/approvals/{id}/
 decide -> the *next* identical call finds the decision in approvals.py's
 ledger and releases without a second prompt.

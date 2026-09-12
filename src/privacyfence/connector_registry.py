@@ -1,5 +1,5 @@
-"""Per-principal connector registry (P6, docs/https-connector-refactor-plan.md
-§9.2's "Connectors become per-principal too" paragraph).
+"""Per-principal connector registry (P6's "Connectors become per-principal
+too" paragraph).
 
 ``connector_host.py``'s ``ConnectorHost`` holds one process-wide
 ``{name: Connector}`` map, built once by ``daemon_main.build_connectors()``
@@ -7,8 +7,8 @@ at daemon startup -- correct for local mode, where there is exactly one
 principal for the life of the process. Org mode needs a *set* of these, one
 per principal, built lazily (a principal's connectors can't exist before
 that principal has authorized the underlying services -- P8) and evicted
-when idle, since "N users x up to 12 authenticated API clients" is, per that
-same section, "the main memory-scaling question."
+when idle, since "N users x up to 12 authenticated API clients" is "the
+main memory-scaling question."
 
 ``ConnectorRegistry`` is that: a lazy, bounded, principal-keyed cache of
 ``ConnectorHost`` instances. P6 built it but deliberately did **not** wire it
@@ -17,8 +17,8 @@ exactly one ``ConnectorHost`` for the local principal directly, unchanged,
 which is what kept local mode byte-identical (P6's own exit criterion). This
 class was the seam a later phase's real per-request serving would plug into
 once there's a second principal whose connectors can actually be built: P7
-supplied the identity, P8 (docs/https-connector-refactor-plan.md §9.3) the
-per-user service authorization that makes a second principal's connectors
+supplied the identity, P8 the per-user service authorization that makes a
+second principal's connectors
 buildable at all.
 
 **P8 wires this in.** ``daemon_main.py``'s ``_start_org_web_server`` now

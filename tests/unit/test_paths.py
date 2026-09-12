@@ -170,7 +170,7 @@ class TestSafePrincipalId:
 
 
 class TestUserDir:
-    """P6, docs/https-connector-refactor-plan.md §9.2's storage layout."""
+    """Per-principal storage layout."""
 
     def test_local_principal_is_data_dir_itself(self, monkeypatch, tmp_path):
         monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
@@ -217,7 +217,7 @@ class TestUserDir:
 
 
 class TestDownloadsDir:
-    """docs/org-mode-download-delivery-plan.md, Phase 1."""
+    """The per-principal downloads directory used for staged delivery."""
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, the now-removed windows-linux-support-plan.md's Track B3)",

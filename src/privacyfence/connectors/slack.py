@@ -57,8 +57,7 @@ def _message_page_result(filtered: list[dict[str, Any]], has_more: bool) -> dict
     plus note when has_more is true. Slack's own pagination signal
     (SlackClient.get_channel_history's has_more, not a message-count
     comparison), not surfacing it left Claude reasoning as though a
-    truncated read were the whole conversation (see
-    docs/slack-performance-review.md's item #4)."""
+    truncated read were the whole conversation."""
     result: dict[str, Any] = {"messages": filtered, "has_more": has_more}
     if has_more:
         result["note"] = (
@@ -656,8 +655,7 @@ class SlackConnector(Connector):
             # The thread's root message, not the raw timestamp id -- one
             # single-message conversations.history lookup (get_message),
             # not a full conversations.replies fetch of the whole thread
-            # just to read its first entry (see
-            # docs/slack-performance-review.md's bug #3). Best-effort:
+            # just to read its first entry. Best-effort:
             # falls back to the raw thread_ts if the message can't be
             # found, same as other lookups in this file.
             root_message = await self._fetch(self._slack.get_message, channel_id, thread_ts)

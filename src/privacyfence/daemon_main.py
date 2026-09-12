@@ -6,8 +6,7 @@ automatically by Claude Desktop's ``.mcpb`` shim on first use. Only one
 instance is allowed (enforced via a lock file). Claude reaches this process
 over the embedded ``/mcp`` Streamable HTTP endpoint (see
 web/mcp_dispatch.py's module docstring) -- the original bridge/IPC-socket
-transport was retired at P5 (docs/https-connector-refactor-plan.md §12);
-``connector_host.py``'s ``ConnectorHost`` is what's left of
+transport was retired at P5; ``connector_host.py``'s ``ConnectorHost`` is what's left of
 ``ipc_server.py``'s own role once the socket and its dispatch logic are
 gone. A human reaches it the same way: over the embedded web approval/
 settings surfaces (``/approvals``, and ``/settings`` when
@@ -51,8 +50,7 @@ Configuration is split into two files (see paths.py):
     and docs/google-cloud-setup.md. It's plain data, not a credential, and is
     handed straight to CalendarConnector; the Calendar OAuth client itself
     never carries Workspace-admin directory scope. ``mode``/``server``/
-    ``idp`` (P7, docs/https-connector-refactor-plan.md §4/§9.4/§10.2)
-    switch this daemon into org mode — a real OAuth 2.1 authorization
+    ``idp`` (P7) switch this daemon into org mode — a real OAuth 2.1 authorization
     server on ``/mcp`` instead of the local shared-secret token, human
     identity resolved via the org's own OIDC IdP. Absent (every install
     before this phase, and every one that hasn't opted in) means local
@@ -207,7 +205,7 @@ def _release_instance_lock() -> None:
 
 
 # ---------------------------------------------------------------------------- #
-# Shutdown wait (P10, docs/https-connector-refactor-plan.md §12): through P9
+# Shutdown wait (P10): through P9
 # the main thread blocked inside menu_bar.run_menu_bar()'s own AppKit run
 # loop until the tray icon's "Quit PrivacyFence" (or the web settings page's
 # own quit action, wired to the same rumps.quit_application()) ended it. P10
@@ -266,9 +264,8 @@ def _resolve_path(path: str) -> str:
     """Relative to ``PROJECT_ROOT`` for the local principal -- exactly as
     before this phase, including for the tests that monkeypatch
     ``PROJECT_ROOT`` directly to sandbox where a test run reads/writes --
-    or to that *other* principal's own storage root (P6, docs/
-    https-connector-refactor-plan.md §9.2) when this runs inside a
-    ``principal_scope()`` block for someone else (only
+    or to that *other* principal's own storage root (P6) when this runs
+    inside a ``principal_scope()`` block for someone else (only
     connector_registry.py's ``ConnectorRegistry.get()`` does that today).
     """
     if os.path.isabs(path):
@@ -420,8 +417,7 @@ def log_org_config_bundle_hash(org_config: dict[str, Any]) -> None:
 
 
 def get_or_create_deployment_id() -> str:
-    """SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6): a
-    stable, opaque identifier for *this installation* -- not per-principal,
+    """SEC-23: a stable, opaque identifier for *this installation* -- not per-principal,
     and not re-generated across restarts -- stamped onto every audit entry
     (audit_log.AuditEntry.deployment_id, filled in by AuditLogger.record())
     so a centralized collection of entries -- forwarded (audit_forwarding.py)
@@ -498,7 +494,7 @@ def setup_logging(config: dict[str, Any]) -> None:
     log_file = _resolve_path(log_cfg.get("file", "logs/privacyfence.log"))
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    # SEC-10 (docs/security-remediation-plan.md Phase 1.7): every logger in
+    # SEC-10: every logger in
     # the process inherits the root logger's handlers, so this is the one
     # place that needs to redact token-shaped substrings for the whole
     # daemon rather than at each individual `except Exception` -- see
@@ -523,16 +519,16 @@ def setup_logging(config: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------- #
-# Web approval UI + MCP-over-HTTP (see docs/https-connector-refactor-plan.md's
-# P1/P2). Through P9, config/settings.yaml's web.approval_ui selected native
-# (AppKit, the default) or web; P10 deleted the native implementation (§12,
-# D6), so the web approval UI is now unconditionally installed in local mode
-# -- there is nothing left to select. web.mcp.enabled independently turns
-# the /mcp endpoint on (§8 of that document is a transport change, separate
-# from the approval surface), and web.settings.enabled independently turns
-# /settings on -- either can be on or off without affecting the other two;
-# all three share the one embedded server/one port, per §3's target
-# architecture, which local mode now always starts.
+# Web approval UI + MCP-over-HTTP (P1/P2). Through P9, config/settings.yaml's
+# web.approval_ui selected native (AppKit, the default) or web; P10 deleted
+# the native implementation (D6), so the web approval UI is now
+# unconditionally installed in local mode -- there is nothing left to
+# select. web.mcp.enabled independently turns the /mcp endpoint on (a
+# transport change, separate from the approval surface), and
+# web.settings.enabled independently turns /settings on -- either can be
+# on or off without affecting the other two; all three share the one
+# embedded server/one port, the target architecture which local mode now
+# always starts.
 # ---------------------------------------------------------------------------- #
 
 def _maybe_start_web_server(
@@ -550,12 +546,10 @@ def _maybe_start_web_server(
     back to there either, but org mode has never had a way to reach one
     without ``/mcp`` in the first place -- see ``_start_org_web_server``'s
     own docstring). ``web.mcp.enabled``/``web.settings.enabled`` remain
-    independent rollback levers for those two surfaces specifically
-    (docs/https-connector-refactor-plan.md §12's "P2: the HTTP listener is
-    off unless configured" / §16.6's ``web.settings.enabled``) -- turning
-    both off still leaves the server running for ``/approvals`` alone,
-    since P10 left that with no off switch of its own (§12: "P10 is the one
-    phase with no rollback -- it deletes the fallback"). Since P5 retired
+    independent rollback levers for those two surfaces specifically --
+    turning both off still leaves the server running for ``/approvals``
+    alone, since P10 left that with no off switch of its own ("it deletes
+    the fallback"). Since P5 retired
     the bridge, turning ``mcp.enabled`` off also leaves this install with
     no way for Claude to reach it at all -- ``web.mcp.enabled: true``
     (settings.yaml.example's default since D11/P4b) is no longer "additive
@@ -630,9 +624,8 @@ def _maybe_start_web_server(
         pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
         ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
         max_pending=int(approvals_config.get("max_pending", 50)),
-        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): see
-        # approvals.DEFAULT_MAX_PENDING_PER_PRINCIPAL's own comment for why
-        # this exists alongside max_pending above.
+        # SEC-15: see approvals.DEFAULT_MAX_PENDING_PER_PRINCIPAL's own
+        # comment for why this exists alongside max_pending above.
         max_pending_per_principal=int(approvals_config.get("max_pending_per_principal", 20)),
     )
     web_ui = init_web_approval_ui(registry=registry)
@@ -667,7 +660,7 @@ def _maybe_start_web_server(
     # only meaningful once the server is actually listening -- set here,
     # not at registry construction.
     registry.set_base_url(server.base_url)
-    # SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2): each of
+    # SEC-06: each of
     # these is a fresh, single-use bootstrap link, not the persistent
     # secret itself -- see WebServer.mint_bootstrap_url()'s own docstring.
     # Once it's expired or already used, a fresh one needs either a daemon
@@ -695,8 +688,7 @@ def _start_org_web_server(
     web_config: dict[str, Any], org_config: dict[str, Any], connector_host: ConnectorHost,
     *, unattended_sessions_enabled: bool,
 ) -> Any:
-    """org mode's own boot path (P7, docs/https-connector-refactor-plan.md
-    §9.4, §10.2) -- a real OAuth 2.1 authorization server on ``/mcp``
+    """org mode's own boot path (P7) -- a real OAuth 2.1 authorization server on ``/mcp``
     instead of the local shared-secret ``StaticTokenVerifier``, no local-
     token approval/settings surface mounted at all (see web/server.py's
     own module docstring for why). Raises ``org_mode.ConfigurationError``
@@ -710,8 +702,8 @@ def _start_org_web_server(
     mode's own call but is otherwise unused here as of P8: every org
     principal's connectors now come from ``ConnectorRegistry`` below,
     built lazily per principal instead of shared off the local principal's
-    set (docs/https-connector-refactor-plan.md §9.3 -- see connector_
-    registry.py's own docstring for why this was left unwired until now).
+    set (see connector_registry.py's own docstring for why this was left
+    unwired until now).
     """
     from .approvals import PendingApprovalRegistry
     from .connector_registry import ConnectorRegistry
@@ -737,9 +729,8 @@ def _start_org_web_server(
         pending_ttl=float(approvals_config.get("pending_ttl_seconds", 15 * 60.0)),
         ledger_ttl=float(approvals_config.get("ledger_ttl_seconds", 5 * 60.0)),
         max_pending=int(approvals_config.get("max_pending", 50)),
-        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): see
-        # approvals.DEFAULT_MAX_PENDING_PER_PRINCIPAL's own comment for why
-        # this exists alongside max_pending above.
+        # SEC-15: see approvals.DEFAULT_MAX_PENDING_PER_PRINCIPAL's own
+        # comment for why this exists alongside max_pending above.
         max_pending_per_principal=int(approvals_config.get("max_pending_per_principal", 20)),
     )
     web_ui = init_web_approval_ui(registry=approval_registry)
@@ -777,7 +768,7 @@ def _start_org_web_server(
 
     connector_registry = ConnectorRegistry(factory=_connectors_for_principal)
 
-    # SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7): layered
+    # SEC-22: layered
     # on top of the IdP's own authentication above -- see org_identity.
     # check_authz_policy's own docstring for what this does and doesn't
     # change. Absent "authz" section in org_config.json -> disabled,
@@ -834,8 +825,7 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
 
 def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list:
     """Builds every enabled, currently-authenticated connector for the
-    *current principal* (P6, docs/https-connector-refactor-plan.md §9.2):
-    every credential/cache path below resolves through ``_resolve_path()``/
+    *current principal* (P6): every credential/cache path below resolves through ``_resolve_path()``/
     ``user_dir()``, which is the local principal's own storage root (i.e.
     unchanged from before this phase) unless this is called from inside a
     ``principal_scope()`` block for someone else -- see
@@ -851,13 +841,13 @@ def build_connectors(config: dict[str, Any], org_config: dict[str, Any]) -> list
 
     google_client_config = _google_client_config(org_config)
 
-    # docs/org-mode-download-delivery-plan.md, Phase 2: computed once, not
+    # Computed once, not
     # per connector -- Drive/Gmail/Confluence's own _download_file/
     # _download_attachment methods branch on connector.download_mode, and
     # (in org mode only) build a fully-qualified download_url from
     # connector.download_base_url. Local mode's own connector.download_mode
     # stays "local" and connector.download_config/download_base_url stay
-    # unset, exactly the pre-Phase-2 shape.
+    # unset, exactly the original shape.
     download_mode = org_mode.resolve_mode(org_config)
     download_config = None
     download_base_url = ""

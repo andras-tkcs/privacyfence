@@ -36,8 +36,7 @@ class ConfluenceConnector(Connector):
     def __init__(self, client: ConfluenceClient) -> None:
         self._confluence = client
         self.my_email: str = ""
-        # docs/org-mode-download-delivery-plan.md, Phase 2 -- see
-        # connectors/drive.py's own DriveConnector.__init__ comment.
+        # See connectors/drive.py's own DriveConnector.__init__ comment.
         self.download_mode: str = "local"
         self.download_config: DownloadDeliveryConfig | None = None
         self.download_base_url: str = ""

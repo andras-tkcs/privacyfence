@@ -2337,9 +2337,8 @@ class TestDownloadFile:
 
 
 class TestDownloadFileBytes:
-    """docs/org-mode-download-delivery-plan.md, Phase 2: org-mode inline/
-    staged delivery's own entry point -- same fetch as download_file, but
-    returns bytes instead of writing to disk."""
+    """org-mode inline/staged delivery's own entry point -- same fetch as
+    download_file, but returns bytes instead of writing to disk."""
 
     def test_empty_file_id_raises(self):
         client = make_client(MagicMock())

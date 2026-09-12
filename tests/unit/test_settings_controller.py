@@ -179,13 +179,13 @@ class TestOnChangeMarshaling:
 
 
 class TestCallOnMain:
-    """§16.2.1's dispatcher seam: call_on_main resolves to a registered
+    """The dispatcher seam: call_on_main resolves to a registered
     set_main_dispatcher(), else runs inline -- the inline case is what makes
     _run_async's on_done actually observable when nothing has attached a
     dispatcher yet (a standalone import, or a test with no web server
     running), instead of dying with AttributeError inside the worker thread
     where nothing surfaces it (the exact bug this seam fixes -- see this
-    module's git history / docs/https-connector-refactor-plan.md §16.2.1).
+    module's git history).
     Through P9 a third path existed (AppKit's own run loop, via
     PyObjCTools.AppHelper.callAfter, when the native settings window was
     hosting); P10 deleted that host along with the rest of the AppKit UI

@@ -104,11 +104,11 @@ class TestBuildAppOrgMode:
 
 
 class TestConnectSurfaceOrgMode:
-    """P8 (docs/https-connector-refactor-plan.md §9.3): /connect and the
-    /oauth/start|callback/{service} routes are mounted only once a real
-    ConnectorRegistry is supplied on OrgAuth -- see that class's own
-    docstring. A hand-built OrgAuth without one (every test above this
-    class) keeps getting exactly P7's own route set."""
+    """P8: /connect and the /oauth/start|callback/{service} routes are
+    mounted only once a real ConnectorRegistry is supplied on OrgAuth --
+    see that class's own docstring. A hand-built OrgAuth without one
+    (every test above this class) keeps getting exactly P7's own route
+    set."""
 
     def test_connect_is_not_mounted_without_a_connector_registry(self, tmp_path, monkeypatch):
         org = _org_auth(tmp_path, monkeypatch)
@@ -197,9 +197,8 @@ class TestApprovalsAndSecuritySurfaceOrgMode:
 
 
 class TestSecurityHeadersOrgMode:
-    """SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5):
-    Strict-Transport-Security is org mode's own addition to the header set
-    web/test_server.py's TestSecurityHeaders already covers for local
+    """SEC-18: Strict-Transport-Security is org mode's own addition to the
+    header set web/test_server.py's TestSecurityHeaders already covers for local
     mode -- CSP/X-Frame-Options/Permissions-Policy/Cross-Origin-Opener-
     Policy come from the same shared _SecurityHeadersMiddleware either way,
     so they're not re-asserted here."""
@@ -287,8 +286,8 @@ class TestCacheControlOnSensitivePagesOrgMode:
 
 
 class TestDownloadsSurfaceOrgMode:
-    """docs/org-mode-download-delivery-plan.md, Phase 1: /downloads/{token}
-    is mounted unconditionally in org mode (like /approvals/security --
+    """/downloads/{token} is mounted unconditionally in org mode
+    (like /approvals/security --
     needs nothing from OrgAuth.connector_registry), and not mounted at all
     in local mode."""
 

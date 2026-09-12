@@ -1,5 +1,4 @@
-"""Principal identity and per-request scoping (P6,
-docs/https-connector-refactor-plan.md §9.1-§9.2).
+"""Principal identity and per-request scoping (P6).
 
 ``local`` mode has exactly one user, but the code from here on treats that
 user as ``Principal(id="local")`` — a principal like any other — rather than
@@ -42,8 +41,8 @@ class Principal:
     cosmetic (a label for a settings page or an audit entry), never a lookup
     key, and are empty for the ``local`` principal, exactly as today.
 
-    ``is_admin`` (P7, docs/https-connector-refactor-plan.md §9.4: "Group/
-    claim mapping decides who is an admin ... versus a plain user") is
+    ``is_admin`` (P7: "Group/claim mapping decides who is an admin ...
+    versus a plain user") is
     resolved once, at sign-in, from whatever the org's IdP claims say
     (org_identity.py's ``principal_from_claims``) -- never recomputed
     per-request, so a change to a user's group membership takes effect on
@@ -129,8 +128,7 @@ class PrincipalRegistry(Generic[T]):
     approvals are shown (native popup vs. the web surface), not per-user
     data, and in org mode one ``WebApprovalUI`` instance still serves every
     principal (its ``PendingApprovalRegistry`` gains the principal dimension
-    internally instead -- see approvals.py and docs/
-    https-connector-refactor-plan.md §6's "New coalescing case").
+    internally instead -- see approvals.py's "New coalescing case").
 
     Thread-safe: ``get_audit_logger()`` in particular is reachable from more
     than one thread (the web server's event loop, background cache-warm

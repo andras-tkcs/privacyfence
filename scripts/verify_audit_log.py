@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the append-integrity hash chain on an installed audit log (SEC-23,
-docs/security-remediation-plan.md, Phase 3 item 3.6).
+"""Verify the append-integrity hash chain on an installed audit log (SEC-23).
 
 Checks every ``*.jsonl`` file under an audit log directory with
 ``AuditLogger.verify_chain()`` (src/privacyfence/audit_log.py) -- each

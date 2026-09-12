@@ -4,16 +4,14 @@ see and decide it from a browser instead of a native dialog.
 
 P3: ``GET /approvals`` lists every currently-unanswered card/confirmation
 (approvals.PendingApprovalRegistry.list_pending()), not just one -- several
-can genuinely be pending at once now that gate.py's ``_popup_lock`` is gone
-(§6 of docs/https-connector-refactor-plan.md), each independently
-decidable from its own ``/approvals/{id}`` link. ``GET
-/api/approvals/stream`` is the SSE counterpart (§7.1) so the list page (or
+can genuinely be pending at once now that gate.py's ``_popup_lock`` is gone,
+each independently decidable from its own ``/approvals/{id}`` link. ``GET
+/api/approvals/stream`` is the SSE counterpart so the list page (or
 whatever's showing it) updates live as approvals appear and get decided,
 without polling.
 
 The one JS change to approval_window_html.py's/dialog_window_html.py's
-otherwise-untouched documents (§7.1's own wording, and P0's own validated
-approach, §11 of that document): a small shim script, injected here rather
+otherwise-untouched documents: a small shim script, injected here rather
 than editing either module, defines ``window.webkit.messageHandlers.pf.
 postMessage`` as a ``fetch()`` POST to this module's own decide endpoint --
 the two shipped documents never need to know whether they're running in a
@@ -51,7 +49,7 @@ _STREAM_POLL_SECONDS = 1.0
 logger = logging.getLogger(__name__)
 
 # resources/sw.js -- tier 0/1 notifications (docs/approval-list-ui-ux.md
-# §4, docs/https-connector-refactor-plan.md §16's W8). Served at the
+# §4). Served at the
 # origin root, not under /api, so its default scope covers the whole app
 # (a service worker's scope can never be wider than the path it's served
 # from) -- see web_shell.py's own registration call.
@@ -83,8 +81,8 @@ def _bridge_shim(*, decide_url: str, csrf: str, nonce: str) -> str:
 
     docs/approval-list-ui-ux.md §3 ("After a decision: back to the list"):
     on a 2xx or a 409 (``already_decided`` -- a rule elsewhere resolved
-    this one first, a genuinely common case once §6 of the plan's rules-
-    changed re-evaluation is live, not an error), navigate straight back to
+    this one first, a genuinely common case once rules-changed
+    re-evaluation is live, not an error), navigate straight back to
     ``/approvals`` via ``location.replace`` (not a push -- the browser back
     button must not walk into a card that no longer exists) with a toast
     message stashed in ``sessionStorage`` for the list page to show once
@@ -92,7 +90,7 @@ def _bridge_shim(*, decide_url: str, csrf: str, nonce: str) -> str:
     error, an unexpected status) leaves the card on screen with an inline
     message -- there is nothing to navigate back to for those.
 
-    ``nonce`` (SEC-08, docs/security-remediation-plan.md Phase 3.1): this
+    ``nonce`` (SEC-08): this
     shim is a real ``<script>`` element injected into an already-rendered
     card document (see ``_inject_shim`` below), so it has to carry the same
     nonce that document's own ``<script>``/``<style>`` tags already do --
@@ -176,8 +174,7 @@ def create_app(
     ``extra_routes``/``lifespan`` are how server.py folds the ``/mcp``
     endpoint (routes_mcp.py, P2) into this same combined app rather than
     running a second ASGI app/server on a second port -- one embedded HTTP
-    server, per docs/https-connector-refactor-plan.md §3's target
-    architecture. Both default to nothing so every existing caller
+    server. Both default to nothing so every existing caller
     (including this module's own tests) is unaffected.
 
     ``notifications_enabled`` is settings.yaml.example's
@@ -210,7 +207,7 @@ def create_app(
     async def list_approvals(request: Request) -> Response:
         if not _authenticated(request):
             return _unauthorized(request)
-        # SEC-08 (docs/security-remediation-plan.md Phase 3.1): this page is
+        # SEC-08: this page is
         # rendered fresh every request, so it just takes the nonce
         # _SecurityHeadersMiddleware already generated for this response
         # (web/csp.py's nonce_for) -- both build_list_html's own <style>/
@@ -236,8 +233,7 @@ def create_app(
             # answered card is left in the registry a while longer now (it
             # may still be feeding the decision ledger, see approvals.py),
             # but there's nothing left here for a human to decide, so this
-            # says so rather than 404-ing (docs/https-connector-refactor-
-            # plan.md §7.1).
+            # says so rather than 404-ing.
             return HTMLResponse(
                 "<!DOCTYPE html><html><body style=\"font:15px sans-serif;padding:40px\">"
                 "This approval is no longer pending — it may already have been decided, "
@@ -247,7 +243,7 @@ def create_app(
                 headers={"Cache-Control": "no-store"},
             )
         csrf = request.cookies.get(_SESSION_COOKIE, "")
-        # SEC-08 (docs/security-remediation-plan.md Phase 3.1): card.html
+        # SEC-08: card.html
         # was rendered once, at approval-creation time -- long before this
         # request/response existed -- so its own nonce was picked then, not
         # now (see approval_window_html.py's module docstring). Recover it
@@ -288,8 +284,7 @@ def create_app(
         if not isinstance(payload, dict) or not _csrf_matches(request, payload.get("csrf")):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         # Origin check on top of the double-submit token above -- the two
-        # are independent defenses (see docs/https-connector-refactor-plan.md
-        # §10.5's CSRF row): a same-site page couldn't forge the cookie
+        # are independent defenses: a same-site page couldn't forge the cookie
         # value into its own request body, but this also stops a
         # same-origin-cookie-jar edge case from ever mattering.
         if not _origin_ok(request):

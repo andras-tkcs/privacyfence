@@ -1,9 +1,8 @@
 """The live connector registry the daemon builds once and shares with every
 consumer that needs the current connector set.
 
-This is the one piece of ``ipc_server.IPCServer`` that outlives it (P5,
-docs/https-connector-refactor-plan.md §12: "``bridge/``, ``ipc.py``,
-``ipc_server.py`` deleted"): everything else that class used to own --
+This is the one piece of ``ipc_server.IPCServer`` that outlives it (P5:
+"``bridge/``, ``ipc.py``, ``ipc_server.py`` deleted"): everything else that class used to own --
 socket framing, the per-launch auth token, connector-call dispatch, retry
 dedupe, the meta-tools (``check_policy``/``list_rules``/
 ``propose_rule_change``), unattended-session bookkeeping -- lived there only

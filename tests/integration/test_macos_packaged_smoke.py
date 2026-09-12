@@ -1,5 +1,5 @@
 """Release-workflow smoke test against the actual packaged macOS artifact
-(docs/security-remediation-plan.md, Phase 3 item 3.10, TST-15).
+(TST-15).
 
 Every other test in this repo runs against source -- an editable install, or
 (tests/integration/test_shim_mcp_contract.py) a freshly-built dist/shim.js

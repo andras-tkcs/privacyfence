@@ -87,12 +87,11 @@ class DriveConnector(Connector):
     def __init__(self, client: DriveClient) -> None:
         self._drive = client
         self.my_email: str = ""
-        # docs/org-mode-download-delivery-plan.md, Phase 2 -- set post-
-        # construction by daemon_main.py's build_connectors, exactly like
-        # my_email above. "local" (download_config/download_base_url left
-        # unset) is the pre-Phase-2 default: drive_download_file keeps
-        # writing straight to destination_dir unless a caller explicitly
-        # switches this to "org".
+        # Set post-construction by daemon_main.py's build_connectors,
+        # exactly like my_email above. "local" (download_config/
+        # download_base_url left unset) is the original default:
+        # drive_download_file keeps writing straight to destination_dir
+        # unless a caller explicitly switches this to "org".
         self.download_mode: str = "local"
         self.download_config: DownloadDeliveryConfig | None = None
         self.download_base_url: str = ""
@@ -863,8 +862,7 @@ class DriveConnector(Connector):
         name = os.path.basename(dest_path)
 
         cfg = self.download_config or DownloadDeliveryConfig()
-        # Phase 3 audit trail (docs/org-mode-download-delivery-plan.md):
-        # the delivery path this call is about to take, estimated from
+        # Audit trail: the delivery path this call is about to take, estimated from
         # metadata size the same way the preview below is -- may not match
         # the eventual actual delivery in the rare case a Google Workspace
         # export ends up a different size than drive_file.size, but that's
@@ -996,8 +994,7 @@ class DriveConnector(Connector):
         inline_max_bytes``, else a one-time staged link, else (staging
         disabled for this org) a clear refusal. Never writes to this
         daemon's own disk except via download_staging.py's own encrypted-
-        at-rest store. See docs/org-mode-download-delivery-plan.md's Phase
-        2."""
+        at-rest store."""
         if not cfg.allow_disk_staging and not cfg.fits_inline(metadata_size):
             # Bail before ever fetching bytes -- metadata_size (already
             # known, no extra round trip) already rules out inline, and

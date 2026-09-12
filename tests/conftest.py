@@ -3,8 +3,7 @@ audit_log.py, approval_ui.py, resource_names.py, and web_approval_ui.py use,
 so tests don't leak state into each other via import-time globals.
 
 Five of these (auto_accept, audit_log, pii_detector, privacy_filter,
-resource_names) are per-*principal* registries as of P6 (docs/
-https-connector-refactor-plan.md §9.2), not bare singletons -- resetting
+resource_names) are per-*principal* registries as of P6, not bare singletons -- resetting
 means clearing every principal's cached instance, not just the local one,
 so a test that used principal_scope() directly doesn't leak into the next
 test either. approval_ui and web_approval_ui stay true process-wide

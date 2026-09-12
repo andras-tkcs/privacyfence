@@ -1,7 +1,6 @@
 version: 2
 
-# SEC-19 (docs/security-remediation-plan.md, Phase 2.4). Three ecosystems,
-# matching the three places this repo declares a dependency version:
+# Three ecosystems, matching the three places this repo declares a dependency version:
 # pyproject.toml (the daemon), mcpb/shim/package.json (the .mcpb shim), and
 # the SHA-pinned `uses:` lines in .github/workflows/*.yml themselves (see
 # those files' own comments on why they're pinned to a commit instead of a

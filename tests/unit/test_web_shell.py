@@ -1,6 +1,5 @@
 """web_shell.py -- the shared header/nav/live-indicator chrome wrapping
-/approvals and /settings (docs/https-connector-refactor-plan.md §16.2.3/
-§16.3)."""
+/approvals and /settings."""
 from __future__ import annotations
 
 from pathlib import Path

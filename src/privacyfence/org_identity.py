@@ -1,5 +1,4 @@
-"""Org identity: OIDC against the organization's IdP (P7, docs/
-https-connector-refactor-plan.md §9.4 and §15's decision B).
+"""Org identity: OIDC against the organization's IdP (P7, decision B).
 
 PrivacyFence never asks a human for a password of its own. Every org-mode
 sign-in -- whether it's a browser visiting ``/login`` (web/routes_org_
@@ -214,7 +213,7 @@ def build_authorization_url(
     one to hand (see PendingAuthorization/LoginAttempt in oauth_provider.py/
     org_session.py, both of which generate one alongside state/PKCE).
 
-    ``extra_params`` (P9, docs/https-connector-refactor-plan.md §10.6) is
+    ``extra_params`` (P9) is
     how web/routes_org_approvals.py's IdP step-up flow layers ``prompt``/
     ``max_age``/``acr_values`` onto the same authorization request this
     function already builds for an ordinary sign-in, rather than a second
@@ -304,7 +303,7 @@ def principal_from_claims(claims: dict[str, Any], idp: IdpConfig) -> Principal:
 class AuthorizationDenied(PermissionError):
     """Raised by ``check_authz_policy`` when a principal the IdP itself
     already authenticated fails PrivacyFence's own app-level policy
-    (SEC-22, docs/security-remediation-plan.md, Phase 3 item 3.7) -- unlike
+    (SEC-22) -- unlike
     every other exception this module raises (a bad code, an unverifiable
     token, a discovery document that doesn't check out), this one means the
     IdP leg *succeeded*; PrivacyFence itself is the one declining.

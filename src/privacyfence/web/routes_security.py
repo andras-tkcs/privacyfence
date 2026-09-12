@@ -1,5 +1,4 @@
-"""Passkey enrollment for org mode (P9, docs/https-connector-refactor-plan.md
-§10.6, §15 D7): ``GET /security`` lets a signed-in principal see and manage
+"""Passkey enrollment for org mode (P9): ``GET /security`` lets a signed-in principal see and manage
 their own enrolled WebAuthn credentials, and the ``/api/security/webauthn/*``
 routes drive the two ceremonies webauthn_stepup.py implements. web/routes_
 org_approvals.py's decide endpoint is the other, later consumer of an
@@ -48,9 +47,9 @@ logger = logging.getLogger(__name__)
 # see webauthn_stepup.py's module docstring on why hand-rolling the
 # verification side, but not this encode/decode plumbing, would be a
 # mistake). Written by hand, not loaded from a CDN: web/server.py's CSP
-# (script-src is a per-response nonce, no external host -- SEC-08, docs/
-# security-remediation-plan.md Phase 3.1) allows no external script on any
-# page this daemon serves -- see web/csp.py's own module docstring.
+# (script-src is a per-response nonce, no external host -- SEC-08) allows
+# no external script on any page this daemon serves -- see web/csp.py's own
+# module docstring.
 PF_WEBAUTHN_JS = """
 function pfB64uToBuf(s) {
   var b64 = s.replace(/-/g, '+').replace(/_/g, '/');

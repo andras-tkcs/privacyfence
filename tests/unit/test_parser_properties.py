@@ -1,6 +1,5 @@
 """Property-based round-trip tests for the four HTML/Markdown/document
-parsers (TST-12, docs/security-remediation-plan.md Phase 3.12):
-html_to_text.py, markdown_to_html.py, email_markdown.py, and
+parsers: html_to_text.py, markdown_to_html.py, email_markdown.py, and
 text_extraction.py.
 
 These four modules sit between untrusted external content (an HTML email,
