@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0"?>
 <!--
 PrivacyFence autostart Task Scheduler task definition (Phase 3.1, revised).
 
@@ -56,6 +56,25 @@ arbitrarily large number: the restart count is a bounded schema type,
 so a large value is a validation risk for no practical gain, and a
 daemon that has failed to stay up across three one minute retries is
 not going to be rescued by a fourth.
+
+The XML declaration deliberately carries no encoding attribute.
+schtasks.exe reads this file and hands it to MSXML as a Unicode stream,
+so a declaration saying UTF-8 (what installer/privacyfence.iss's
+SaveStringToFile actually writes) contradicts the stream the parser is
+already on, and MSXML cannot switch encodings mid parse. That is not a
+guess: with the registration failure finally visible in the install log,
+schtasks said exactly this, and nothing else:
+
+    ERROR: The task XML is malformed.
+    (1,40)::ERROR: unable to switch the encoding
+
+Column 40 of line 1 is where `encoding="UTF-8"` sat. With no encoding
+declared there is nothing to switch to, and the file parses whichever way
+schtasks decides to read it; the content here is pure ASCII, so UTF-8 and
+UTF-16 readings agree on every character in it either way. Writing real
+UTF-16 bytes and declaring UTF-16, the way Task Scheduler's own exports
+do, would also work for today's schtasks, but only for a schtasks that
+reads the file exactly that way.
 
 NOTE: this comment intentionally avoids the two-hyphen sequence, which
 XML comments may not contain anywhere in their body.
