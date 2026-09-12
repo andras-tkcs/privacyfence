@@ -68,7 +68,7 @@ Monitor memory/use patterns for the expected number of simultaneously active use
 
 ## Download staging
 
-Encrypted staged downloads are temporary delivery state. They expire according to the configured TTL and should not be relied on for persistence or backup. See [`org-mode-download-delivery.md`](org-mode-download-delivery.md).
+Encrypted staged downloads are temporary delivery state. A token past its configured TTL is never claimable, but the underlying ciphertext file is swept opportunistically — only on the next `stage()`/`claim()` for that principal, not on a background timer — so an unclaimed expired file can persist on disk until then. Don't rely on staged downloads for persistence or backup either way. See [`org-mode-download-delivery.md`](org-mode-download-delivery.md).
 
 ## Audit operations
 

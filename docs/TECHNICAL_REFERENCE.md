@@ -49,6 +49,26 @@ The daemon exposes the MCP protocol over Streamable HTTP at `/mcp` using the off
 
 The MCP tool registry is built from the configured connectors. Tool calls are routed through the PrivacyFence gate before connector execution where policy requires review or confirmation.
 
+## Meta-tools
+
+Alongside the connector-derived tools, the daemon exposes six `privacyfence_`-prefixed meta-tools over the same `/mcp` endpoint (`web/mcp_tools.py`'s `META_TOOLS`), dispatched by `routes_mcp.py`'s `_dispatch_meta_tool` to `McpDispatcher` methods (`web/mcp_dispatch.py`) that call back into `gate.py`/`auto_accept.py`. Each takes a `reason` string, logged the same self-reported, unverified way as every gated connector tool's own `reason` param.
+
+- `privacyfence_check_policy` — asks whether a specific `(connector, tool, args)` call would auto-accept or need a human, without making the call or having any side effects. Returns one of `auto_accept`, `requires_review`, or `unknown` (whether it auto-accepts can depend on fetched content this can't see in advance); for `review`-gated tools, `pii_gate_may_apply` is always `true`, since the PII gate scans real content and can never be predicted ahead of time. Safe to call as often as needed while planning a task.
+- `privacyfence_list_auto_accept_rules` — read-only listing of the current `auto_accept_rules` and `auto_accept_grants` from `settings.yaml`. Call this before `privacyfence_propose_auto_accept_rule_change` so an update/remove targets an entry that actually exists rather than a guessed identifier.
+- `privacyfence_propose_auto_accept_rule_change` — proposes adding, updating, or removing a rule (`target: "rule"`) or a resource-scoped grant (`target: "grant"`). Always blocks on a native confirmation dialog a human must approve — there is no way to change this config without one, even for an entry that already exists — and throws if declined, or outright if the connection is in an unattended session.
+- `privacyfence_begin_unattended_session` / `privacyfence_end_unattended_session` — see "Scheduled / unattended Cowork tasks" below.
+- `privacyfence_await_approval` — long-polls one or more `approval_id`s from a gated call's `{status: "approval_pending", approval_id, ...}` result and reports status only (`pending`, `approved`, `denied`, `expired`, or `unknown`), never content — a re-issue of the original gated call with the same arguments is still what actually retrieves data once `approved`.
+
+Every tool advertised over `/mcp`, meta-tools included, carries the same uniform read-only/non-destructive/idempotent annotations regardless of its real effect (`_UNIFORM_READ_ONLY_ANNOTATIONS` in `web/mcp_tools.py`) — those are MCP UI hints, not a security boundary. The real authorization is the gate itself, enforced here in the daemon.
+
+### Scheduled / unattended Cowork tasks
+
+`privacyfence_begin_unattended_session` tells PrivacyFence that the rest of this MCP connection is a scheduled/unattended run — a Cowork Routine firing on a schedule with no human necessarily watching — rather than an interactive conversation. It errors unless an administrator has opted the install into this: `unattended_sessions.enabled` in `org/org_config.json`, a deliberate per-organization setting, not a per-user one.
+
+Once set, the flag is tracked per MCP session (`McpDispatcher._unattended_sessions`) and read by `gate.py`'s `is_unattended()` through every gated call on that connection. It changes exactly one thing: a call that isn't already covered by a configured auto-accept rule is denied immediately (audited as `denied_unattended`) instead of PrivacyFence opening a native approval dialog nobody is there to answer. It never changes what auto-accepts, only what happens when nothing does. `privacyfence_propose_auto_accept_rule_change` is likewise refused outright in an unattended session, since a config change always requires a human confirmation.
+
+`privacyfence_end_unattended_session` clears the flag, restoring normal interactive approval behavior — not strictly required, since it also clears when the connection closes, but useful if the connection might be reused afterward for something interactive. Pairing `privacyfence_check_policy` with a scheduled run lets it plan around steps that would otherwise need a human who isn't there.
+
 ## Approval model
 
 A gated request becomes a `PendingApproval` managed by `PendingApprovalRegistry`.
