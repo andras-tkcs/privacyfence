@@ -234,26 +234,42 @@ Checklist:
       reach neither Docker Hub nor any other image registry (outbound network policy), so this ran
       directly on that environment's own Ubuntu 24.04 base instead of a fresh `docker run` container
       -- same `dpkg`/lintian/`desktop-file-validate` tooling, same real `dpkg -i`/`-r`/`-P` lifecycle
-      against a simulated `$HOME`, just not a throwaway container. Re-run in a real container (or a
-      real machine) before relying on this as the final sign-off; nothing here suggests it would
-      behave differently, but it hasn't been proven inside one.
+      against a simulated `$HOME`, just not a throwaway container.
+
+      **CI-automated** (`automated-test-strategy-plan.md` Phase 6 item 6.3):
+      `tests/integration/test_deb_packaged_lifecycle.py`'s
+      `test_deb_install_validate_scenario_remove_purge_lifecycle` now runs this exact lifecycle --
+      `dpkg -i` → `desktop-file-validate` → the real installed daemon started and driven through a
+      full daemon/MCP/approval/audit round trip → `dpkg -r` (`$HOME` untouched, the autostart
+      conffile survives) → `dpkg -P` (conffile gone too, `$HOME` still untouched) -- as a repeatable
+      job in `build.yml`'s `build-deb` job, right after `scripts/build_deb.sh`, on the same
+      `ubuntu-latest` runner (still not a throwaway container -- same substitution as above, now
+      also true of the CI runner itself, not just the environment that first implemented this plan).
 - [ ] **P7.2** Real desktop-session test (not just a container — autostart needs an actual graphical
       login to verify): install on a real or VM Ubuntu/Debian desktop, log out/in, confirm the daemon
       is running post-login (`curl 127.0.0.1:8765/settings` or checking the `mcp_url` file), confirm
       the OAuth loopback browser flow opens correctly from that session.
-- [ ] **P7.3** Upgrade-in-place: install version N, do something that creates real state
+- [x] **P7.3** Upgrade-in-place: install version N, do something that creates real state
       (`~/.privacyfence/config/settings.yaml`, a connected connector's token file), install version
       N+1 over it (`dpkg -i` the new `.deb`), confirm that state survived untouched (expected — it
       lives outside anything the package manages, per P2.2 — but worth proving once rather than
       asserting).
 
-      **Partially checked:** re-running `dpkg -i` with the *same* built `.deb` over an already-
-      configured install left `~/.privacyfence/config/settings.yaml` untouched, which exercises the
-      same "package reinstall/upgrade must not touch $HOME" path P2.2 relies on. What's not yet
-      proven is a real N -> N+1 version bump (this session only had one resolvable
-      `setuptools_scm` version to build from, since no new tag was pushed) -- low-risk given how
-      that state is scoped (outside anything the package manages at all, per P2.2), but still worth
-      the real two-version run before calling this fully closed.
+      **Partially checked** (original note, kept for history): re-running `dpkg -i` with the *same*
+      built `.deb` over an already-configured install left `~/.privacyfence/config/settings.yaml`
+      untouched, which exercises the same "package reinstall/upgrade must not touch $HOME" path
+      P2.2 relies on. What wasn't yet proven was a real N -> N+1 version bump (that session only had
+      one resolvable `setuptools_scm` version to build from, since no new tag was pushed).
+
+      **CI-automated** (`automated-test-strategy-plan.md` Phase 6 item 6.3):
+      `tests/integration/test_deb_packaged_lifecycle.py`'s `test_upgrade_in_place_preserves_user_
+      state` closes the exact gap the note above left open -- it installs version N, applies a real
+      auto-accept rule change through the daemon's own MCP/approval round trip (not a hand-written
+      settings.yaml), installs a version N+1 built from the *same* PyInstaller bundle but relabeled
+      to a version `dpkg --compare-versions` orders strictly after N (see that test's
+      `_synthetic_next_version_deb` for why a version-string bump is sufficient here rather than a
+      second full PyInstaller build), and confirms the state survived and the upgraded binary still
+      starts and serves. Runs in `build.yml`'s `build-deb` job alongside P7.1's test, above.
 
 ---
 

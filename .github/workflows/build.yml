@@ -352,13 +352,16 @@ jobs:
         with:
           python-version: '3.12'
 
+      # desktop-file-utils (desktop-file-validate): docs/automated-test-strategy-plan.md Phase 6
+      # item 6.3's own packaged-lifecycle test (below, after the build) validates the installed
+      # /etc/xdg/autostart/privacyfence.desktop with it.
       - name: Install system dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq dpkg-dev lintian
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq dpkg-dev lintian desktop-file-utils
 
       - name: Install Python dependencies
-        # [test] alongside [dev]: needed for the org-mode Ubuntu release
-        # smoke test below (pytest, pytest-timeout, mcp's test-side client
-        # helpers) -- not otherwise required by this job's own .deb build.
+        # [test] alongside [dev]: needed for the org-mode Ubuntu release smoke test below (pytest,
+        # pytest-timeout, mcp's test-side client helpers) and for the packaged .deb lifecycle test
+        # after the build -- not otherwise required by this job's own .deb build.
         run: pip install -e ".[dev,test]" pyinstaller
 
       # TST-16 (docs/security-remediation-plan.md Phase 3 item 3.11): the
@@ -398,6 +401,18 @@ jobs:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: bash scripts/build_deb.sh
+
+      # docs/automated-test-strategy-plan.md Phase 6 item 6.3 (docs/linux-local-deb-packaging-
+      # plan.md P7.1/P7.3): the one place the actual packaged artifact -- not a source checkout,
+      # not the --target install the org-mode smoke test above uses -- gets exercised at all.
+      # Real `dpkg -i`, `desktop-file-validate` on the installed autostart entry, the real
+      # installed daemon started and driven through a daemon/MCP/approval/audit round trip, real
+      # `dpkg -r`/`dpkg -P` with `$HOME` state checked at each step, and a real version-upgrade
+      # install-over-install. Needs root for dpkg -- `ubuntu-latest`'s default `runner` user has
+      # passwordless sudo (see that test module's own `_can_install_packages` skip condition). A
+      # failure here fails this job before the .deb reaches R2/GitHub Releases below.
+      - name: Run packaged .deb lifecycle test (Phase 6.3)
+        run: pytest tests/integration/test_deb_packaged_lifecycle.py -v
 
       - name: Upload .deb as artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
