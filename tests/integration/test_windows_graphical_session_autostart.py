@@ -155,6 +155,24 @@ def _graphical_diagnostics(request):
     (dest / "logs" / "schtasks-query.txt").write_text(task_info.stdout + task_info.stderr, encoding="utf-8")
 
 
+def _install_log_tail(log_path: Path, *, max_chars: int = 8000) -> str:
+    """The last *max_chars* of Inno's own ``/LOG=`` output, or a plain
+    ``(missing)``/``(empty)`` marker. Never the whole file: this onedir
+    bundle's own [Files] copy log alone runs to tens of thousands of
+    lines, and CurStepChanged(ssPostInstall)'s own RegisterAutostartTask
+    call -- the part actually worth seeing on a registration failure --
+    is logged only after every one of those file-copy lines, so returning
+    the whole file risks it never actually reaching whatever captured
+    this assertion's own output (a CI log viewer's own size limit,
+    included)."""
+    if not log_path.exists():
+        return "(missing)"
+    text = log_path.read_text(errors="replace")
+    if not text:
+        return "(empty)"
+    return text[-max_chars:]
+
+
 def _is_admin() -> bool:
     """Cross-platform-safe by construction (like ``test_deb_packaged_
     lifecycle.py``'s own ``_can_install_packages``): this is called from a
@@ -410,17 +428,23 @@ async def test_installer_autostart_activates_daemon_via_real_logon_session(
     )
     assert install_result.returncode == 0, (
         f"installer failed (exit {install_result.returncode}):\n{install_result.stdout}{install_result.stderr}\n"
-        f"---- install log ----\n{log_path.read_text(errors='replace') if log_path.exists() else '(missing)'}"
+        f"---- install log (tail) ----\n{_install_log_tail(log_path)}"
     )
     # RegisterAutostartTask (installer/privacyfence.iss's [Code] section)
     # doesn't abort Setup on its own failure, so a silent install can still
     # exit 0 with no task actually registered -- the install log (Inno's
     # own /LOG= output, which records every [Code] Exec call and its
     # result) is the only way to see why, short of downloading this test's
-    # own diagnostics artifact by hand.
+    # own diagnostics artifact by hand. Only the *tail* -- this onedir
+    # bundle's own per-file [Files] copy log alone runs to tens of
+    # thousands of lines, which previously pushed the actually useful part
+    # (CurStepChanged(ssPostInstall)'s own RegisterAutostartTask call,
+    # logged only after every file is already copied) past what a CI log
+    # viewer -- or this test's own captured stdout -- keeps readily
+    # available.
     assert _task_exists(), (
         f"Task Scheduler task {TASK_NAME!r} missing after install\n"
-        f"---- install log ----\n{log_path.read_text(errors='replace') if log_path.exists() else '(missing)'}"
+        f"---- install log (tail) ----\n{_install_log_tail(log_path)}"
     )
 
     # A silent install's own [Run] "launch now" step is skipifsilent -- it
