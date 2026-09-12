@@ -157,6 +157,38 @@ def _graphical_diagnostics(request):
     (dest / "logs" / "schtasks-query.txt").write_text(task_info.stdout + task_info.stderr, encoding="utf-8")
 
 
+def _task_state_summary() -> str:
+    """The registered task's own view of what happened, as ``schtasks
+    /query /v`` reports it.
+
+    Registration succeeding and the trigger actually firing are two
+    different things, and the assertion below can only observe the second
+    one indirectly (no daemon process turned up). Task Scheduler knows
+    which of them failed: "Last Run Time" and "Last Result" say whether it
+    ever tried to run the action at all, and "Scheduled Task State" /
+    "Status" say whether the task is even enabled and ready. Putting those
+    lines straight into the failure message is the same move that turned
+    the registration failure underneath this one from eight opaque runs
+    into a single readable error -- the schtasks output was always there,
+    it just was not anywhere a failing run could show it.
+    """
+    result = subprocess.run(
+        ["schtasks", "/query", "/tn", TASK_NAME, "/v", "/fo", "list"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        return f"(schtasks /query failed, exit {result.returncode}): {result.stdout}{result.stderr}"
+    wanted = (
+        "Status:", "Last Run Time:", "Last Result:", "Next Run Time:",
+        "Scheduled Task State:", "Run As User:", "Task To Run:",
+    )
+    lines = [
+        line.strip() for line in result.stdout.splitlines()
+        if line.strip().startswith(wanted)
+    ]
+    return "\n".join(lines) if lines else result.stdout
+
+
 def _install_log_tail(log_path: Path, *, max_chars: int = 8000) -> str:
     """The last *max_chars* of Inno's own ``/LOG=`` output, or a plain
     ``(missing)``/``(empty)`` marker. Never the whole file: this onedir
@@ -472,7 +504,8 @@ async def test_installer_autostart_activates_daemon_via_real_logon_session(
         time.sleep(0.5)
     assert found, (
         f"{alias_exe_path} never appeared as a running process within 30s of {username}'s logon -- "
-        f"the ONLOGON task trigger never fired"
+        f"the ONLOGON task trigger never fired\n"
+        f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}"
     )
     pid, owner = found
     assert username.lower() in owner.lower(), (
