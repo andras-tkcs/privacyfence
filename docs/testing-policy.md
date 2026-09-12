@@ -24,7 +24,7 @@ this repo, present or planned, is exactly one of:
 | 4 | Browser system | JS/CSP/rendering in a real browser | Done. `tests/integration/test_browser_smoke.py` (§1 below) drives real Chromium via Playwright on every PR — login, approval decisions (including "Always allow," live SSE refresh with multiple pending cards, and double-decision idempotency, Phase 4.1), PDF preview, CSP, org-mode WebAuthn UI, PII banner/confirmation-dialog behavior, responsive layout at three named viewports, and structural light/dark assertions (Phase 4.2–4.5, `automated-test-strategy-plan.md`). §2.2's `qa_web_smoke.py` still covers what a pytest-collected browser test structurally can't — subjective visual judgment (contrast, "does this look right" in light vs. dark, at a phone width) — and still only runs by hand; that's the genuinely layer-7 sliver Phase 4 deliberately left manual, not a residual automation gap. | `browser` (registered; not yet applied — `test_browser_smoke.py` predates this marker work, see the note below) |
 | 5 | Live connector | Provider API drift | §0 below — `connector-live-check.yml`, self-hosted runner, scheduled. Done. | `live` (registered; nothing in the pytest suite carries it today, since this tier is a standalone script invocation, `qa_fixture_recorder.py --check`/`--record`, not a pytest-collected test — see §0/§2.1) |
 | 6 | Packaged-artifact | Installer/package correctness | Done. `test_macos_packaged_smoke.py` (Phase 6.1, done) runs in `build.yml`'s tag-triggered release path — a real DMG mount/install, daemon→MCP→approval round trip, code-signature/notarization chain (`codesign --verify`, `spctl --assess`), and a state-outside-package check (deleting the installed `.app` never touches `$HOME/.privacyfence`); `test_deb_packaged_lifecycle.py` (Phase 6.3, done) runs the Linux `.deb` install/validate/remove/purge and upgrade-in-place lifecycles (`linux-local-deb-packaging-plan.md` P7.1/P7.3) the same way, in `build.yml`'s `build-deb` job; `test_windows_packaged_smoke.py` (Phase 6.2, done) runs a real silent install/autostart-task-registration/uninstall lifecycle against the Windows installer the same way, in `build.yml`'s `build-windows` job. Upgrade/state-preservation testing across all three platforms is also done (item 20) — macOS/Windows each got their own version-N→N+1 upgrade test, Linux's own having already landed inside Phase 6.3. `publish-pypi.yml` additionally gates every one of its own publish steps (TestPyPI/PyPI/R2) on `build.yml`'s run for the same commit actually succeeding (Phase 6.4) — a broken packaged artifact on any platform now blocks the whole tag's release, not just its own platform's upload. Linux's own graphical-session/autostart verification (`automated-test-strategy-plan.md` Phase 7 item 1, `linux-local-deb-packaging-plan.md` P7.2) is also done — `test_linux_graphical_session_autostart.py` brings up a real `systemd --user` login-equivalent session and starts `xdg-desktop-autostart.target` (standing in for the missing physical login), then confirms the real `systemd-xdg-autostart-generator`-produced unit actually launches the packaged daemon and that "Quit PrivacyFence" stops the real unit; a second test in the same module proves the real (unmocked) OAuth loopback browser-opening flow under a genuine Xvfb `$DISPLAY`. Deliberately scheduled in its own `linux-graphical-session.yml` workflow (packaging-related `main` pushes, weekly, on demand), not per-PR or wired into `build.yml`'s release pipeline — the most expensive, flakiest tier here, so a flaky run must never block a release. Windows' equivalent (`automated-test-strategy-plan.md` Phase 7 item 2, `windows-support-plan.md` 8.2) is also done — `test_windows_graphical_session_autostart.py` drives a real interactive Windows logon (`Start-Process -Credential`, the same primitive `runas.exe` is built on) for a throwaway local account standing in for "someone signs in," confirms the real installed Task Scheduler `ONLOGON` trigger actually launches the packaged `privacyfence-app.exe` alias under that account (via `Win32_Process`'s `GetOwner`, not assumed), runs the same daemon/MCP/approval/audit round trip, and confirms "Quit PrivacyFence" ends the real process — scheduled the same way, in its own `windows-graphical-session.yml` workflow. | `packaged` (registered; applied to all three packaged-artifact modules — `test_macos_packaged_smoke.py` picked it up as part of Phase 6.1 — and to `test_linux_graphical_session_autostart.py`/`test_windows_graphical_session_autostart.py`) |
-| 7 | Manual exploratory/UX | Subjective judgment, first-time auth/consent flows | §3 below, [`connector-qa-testing.md`](connector-qa-testing.md), [`manual-pre-release-test-plan.md`](manual-pre-release-test-plan.md) | — (never automated, by definition — see the governing rule below) |
+| 7 | Manual exploratory/UX | Subjective judgment, first-time auth/consent flows | §3 below, [`connector-qa-testing.md`](connector-qa-testing.md), [`manual-pre-release-test-plan.md`](manual-pre-release-test-plan.md), [`release-testing.md`](release-testing.md) | — (never automated, by definition — see the governing rule below) |
 
 **Governing rule for what stays manual:** a test stays manual only when automated observation
 cannot reliably determine pass/fail. In this project that bar is met by exactly two recurring
@@ -73,24 +73,29 @@ hasn't landed yet, not that the failure type is inherently manual.
 
 ### Checked against `manual-pre-release-test-plan.md`
 
-Cross-checking that document's five sections against the table above (per
-`automated-test-strategy-plan.md` Phase 0 item 4) — every item there maps to exactly one layer;
-where it doesn't yet have automated coverage at that layer, that's the corresponding phase's open
-work, not a reason to remove the manual step yet:
+`automated-test-strategy-plan.md` Phase 0 cross-checked that document's (then five-section) manual
+checklist against the table above and found every item mapped to exactly one layer, each with a
+named phase that would close its remaining manual surface. Phase 9 is that closure: with Phases 1–8
+landed, `manual-pre-release-test-plan.md` was rewritten from a half-day, five-section walkthrough
+into a short "confirm CI is green" checklist plus the genuinely layer-7 remainder. What each old
+section became:
 
-| `manual-pre-release-test-plan.md` section | Layer(s) | Automated today? |
+| Old section | Layer(s) | Where it lives now |
 |---|---|---|
-| §0 Before you start (`pre_release_check.py`, environment/fixture sanity) | 1–2 (it reruns the CI suite) | Yes, for the parts it reruns; the human confirmation steps (account, fixture file present) aren't a "test" in the layer sense |
-| §1 Fixture recording/refresh check | 5. Live connector | Yes — the `--check`/`--record` pass itself (§0 above, weekly), plus freshness/age reporting (`< 60`/`60–90`/`> 90` days) in that same report, and the `--lifecycle` create/read/update/delete pass (`automated-test-strategy-plan.md` Phase 1's residual items 1.8/1.9, both done) |
-| §2 QA web smoke test | 4. Browser system, with a layer-7 sliver | The 5-scenario `qa_web_smoke.py` run: the structural ground it used to be the only coverage for (PII, responsive layout, light/dark wiring) is now also covered by `test_browser_smoke.py` in CI (Phase 4, done); what's left here, deliberately not folded into CI because it can't be, is the genuinely layer-7 sliver — light/dark contrast and phone-width visual judgment ("does this look right") |
-| §3 "QA prompt" manual test (live popups via Cowork/Desktop) | 2. Integration + 5. Live connector, with a layer-7 sliver | The deterministic gate-state assertions this exercises by hand (gate selected, popup vs. silent, audit entry) are exactly `test_gate.py`'s job — Phase 5 audited that coverage and confirmed it (see that phase's own status note), so this is no longer the way gate correctness gets proven. The live-account, live-popup, human-clicking-the-button part is layer 5 already for connector-CI purposes but stays layer 7 for "did the popup actually render for a human" regardless of Phase 4's own (now done) PII/approval-flow browser coverage |
-| §4 Dev vs. live mode switching (build, install, exercise, uninstall) | 6. Packaged-artifact, with a layer-7 sliver | macOS: CI-automated, `build.yml`'s `build` job (Phase 6.1, done — including signature/notarization validation and the state-outside-package check). Linux: CI-automated, `build.yml`'s `build-deb` job (Phase 6.3, done). Windows: CI-automated, `build.yml`'s `build-windows` job (Phase 6.2, done). Gatekeeper/SmartScreen/UAC presentation itself stays layer 7 per "What deliberately remains manual" in `automated-test-strategy-plan.md` |
-| §5 Tag and release | none — this is release mechanics (see `CLAUDE.md`'s "Releasing" section), not a test | N/A |
+| §0 Before you start (`pre_release_check.py`, environment/fixture sanity) | 1–2 (it reruns the CI suite) | Folded away — the same suite already ran as this commit's merge gate; §1's "confirm CI is green" checklist supersedes re-running it locally |
+| §1 Fixture recording/refresh check | 5. Live connector | Folded into §1's "confirm `connector-live-check.yml`'s last scheduled run is green and recent, and no fixture-drift PR is sitting open" bullet — the recorder itself already runs weekly (§0 above), so there's nothing left to run by hand except as a fallback if that schedule looks stale |
+| §2 QA web smoke test | 4. Browser system, with a layer-7 sliver | The structural half stays covered by `test_browser_smoke.py` in CI (Phase 4); the genuine layer-7 sliver (light/dark contrast, phone-width judgment) is now §2's "Visual UI sanity" bullet, gated on whether the release actually touched the web surface |
+| §3 "QA prompt" manual test (live popups via Cowork/Desktop) | 2. Integration + 5. Live connector, with a layer-7 sliver | The deterministic gate-state part is `test_gate.py`'s job (Phase 5, confirmed exhaustive) and no longer re-run here at all. What's left — a real third-party MCP client's own compatibility, which no automated test in this repo attempts — is now §2's "One real MCP-client compatibility smoke" bullet, unconditional (every release), rather than a shortened live-account connector pass |
+| §4 Dev vs. live mode switching (build, install, exercise, uninstall) | 6. Packaged-artifact, with a layer-7 sliver | The build/install/exercise/uninstall mechanics are CI-automated on all three platforms (Phase 6) and gate `build.yml`'s own upload steps directly — nothing left to reproduce by hand. Only the OS-owned trust-prompt presentation (Gatekeeper/SmartScreen/UAC) remains, as §2's conditional "OS-native UX smoke" bullet |
+| §5 Tag and release | none — release mechanics, not a test | Unchanged, now §3 |
 
-This is left as a cross-check, not a rewrite: `automated-test-strategy-plan.md` Phase 9 is where
-`manual-pre-release-test-plan.md` itself gets rewritten, once the phases above actually land
-automation for the gaps this table found — removing a manual step ahead of that would leave a real
-release-time check with no coverage at all.
+`connector-qa-testing.md` itself was reframed the same way (Phase 9 item 2): it now opens with an
+explicit "When to use this" section naming the narrow cases (new connector, material connector/gate
+change, unexplained regression) it's for, and states plainly that a routine release needs none of
+it. [`release-testing.md`](release-testing.md) is the evergreen standing reference for what stays
+manual and why (no phase numbers or job names, per `docs/README.md`'s documentation rules);
+`manual-pre-release-test-plan.md` is its operational counterpart, naming the actual jobs/scripts to
+check, until `automated-test-strategy-plan.md` Phase 12 retires it.
 
 ## 0. Runner-local live tier (scheduled, not per-PR)
 
@@ -396,9 +401,11 @@ the route to catch a connector's tool wired to the wrong gate/metadata in the fi
 before a release, or after any change to `gate.py`/`auto_accept.py`/`resource_grants.py`/the web
 approval UI broadly, not on every PR.
 
-Before a release specifically, run tiers 1 and 2 across every connector too, not just the ones a
-recent PR touched — see [manual-pre-release-test-plan.md](manual-pre-release-test-plan.md) for the
-full release-time checklist tying all three tiers together.
+Per `automated-test-strategy-plan.md` Phase 9, a routine release no longer runs §2.1/§2.2 across
+every connector on principle — [manual-pre-release-test-plan.md](manual-pre-release-test-plan.md)'s
+own automated-prerequisites checklist just confirms §0's scheduled fixture check is recent and
+green, and reserves this full manual pass for the same trigger as above: a broad gate/auto-accept/
+approval-UI change since the last release, not the mere fact that a release is happening.
 
 ## Quick reference
 
@@ -416,7 +423,7 @@ full release-time checklist tying all three tiers together.
 | `qa_web_smoke.py` | 4 | No | PR touches `web_shell.py`, `approval_list_html.py`, web routes' JS, `resources/sw.js`, or the CSP |
 | `test_linux_graphical_session_autostart.py` (`linux-graphical-session.yml`) | 6 | Yes, but its own dedicated workflow — never `pull_request`, never `build.yml`'s release pipeline | Packaging-related `main` pushes + weekly schedule + manual dispatch |
 | `test_windows_graphical_session_autostart.py` (`windows-graphical-session.yml`) | 6 | Yes, but its own dedicated workflow — never `pull_request`, never `build.yml`'s release pipeline | Packaging-related `main` pushes + weekly schedule + manual dispatch |
-| `connector-qa-testing.md`'s live Cowork pass | 7 | No | Before a release, or a broad gate/auto-accept change |
+| `connector-qa-testing.md`'s live Cowork pass | 7 | No | A new connector, a material connector/gate change, an unexplained regression, or a broad gate/auto-accept/approval-UI change — not routine releases (Phase 9) |
 
 Layer 3 (cross-platform system) is now fully settled here (the two rows above) — `tests/platform/`
 gives it a real, named subset of its own, and the canonical daemon/MCP/approval/audit scenario on

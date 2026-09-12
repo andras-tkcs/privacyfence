@@ -1,6 +1,20 @@
-# Connector QA testing
+# Connector QA testing (Extended Connector/Gate Exploratory QA)
 
-Use this guide for focused exploratory testing of connector behavior against dedicated QA accounts. Routine correctness is covered by automated unit/integration/live-provider tests; this guide is for new connectors, material connector changes, provider regressions, or investigations that need a real provider/account.
+## When to use this
+
+This is exploratory QA, not a routine release checklist. `docs/automated-test-strategy-plan.md`
+Phase 9 made that explicit: as of Phases 1–8, routine correctness — provider parsing, gate/policy
+state coverage, the approval UI's structural behavior, cross-platform and org-mode system behavior —
+is proven automatically, on every PR or on a self-hosted weekly schedule, and no longer needs a human
+repeating it by hand before an ordinary release. Reach for this guide only for:
+
+- a new connector, before its first release;
+- a material change to a connector's client, tool surface, or gate wiring;
+- an unexplained integration regression a live account is needed to reproduce; or
+- a broad change to `gate.py`, `auto_accept.py`, `resource_grants.py`, or the web approval UI, per
+  `docs/testing-policy.md` §3 — the one case `manual-pre-release-test-plan.md` still points here for.
+
+Routine releases that touched none of the above do not need this guide at all.
 
 ## Prerequisites
 

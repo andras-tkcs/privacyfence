@@ -303,13 +303,14 @@ shipped, versus what was originally planned here:
 ### Residual work
 
 1. **Apps Script fixture coverage** — genuinely still open. Add `apps_script` to both
-   `CONNECTOR_CHECKS` and `EXPECTED_FIXTURES` in `scripts/qa_fixture_recorder.py`, record its first
-   fixture once a QA Apps Script project exists, and update `manual-pre-release-test-plan.md` §1's
-   connector count accordingly. Small, standalone follow-up — no dependency on anything else in
-   this plan. Blocked on a live QA Apps Script project existing to record against (both edits have
-   to land together — `EXPECTED_FIXTURES`/`CONNECTOR_CHECKS` self-check at import time, so adding
-   `apps_script` to one without a fixture already committed for the other fails every PR, not just
-   this connector's).
+   `CONNECTOR_CHECKS` and `EXPECTED_FIXTURES` in `scripts/qa_fixture_recorder.py` and record its
+   first fixture once a QA Apps Script project exists. Small, standalone follow-up — no dependency
+   on anything else in this plan. Blocked on a live QA Apps Script project existing to record
+   against (both edits have to land together — `EXPECTED_FIXTURES`/`CONNECTOR_CHECKS` self-check at
+   import time, so adding `apps_script` to one without a fixture already committed for the other
+   fails every PR, not just this connector's). Since Phase 9's rewrite of
+   `manual-pre-release-test-plan.md` no longer enumerates connectors by name or count, this item no
+   longer needs a matching doc edit there.
 2. **1.8 — bounded lifecycle tests for write-capable providers** (create/read/update/delete a
    uniquely-tagged QA object, verify cleanup) — done. `scripts/qa_fixture_recorder.py`'s
    `--lifecycle` mode (`LIFECYCLE_CHECKS`) covers `calendar`, `confluence`, `jira`, and `tasks` — the
@@ -1205,28 +1206,39 @@ Google/Microsoft identity login required for routine coverage.
 Shrink manual release validation to minutes, now that Phases 0–8 have replaced most of what
 `manual-pre-release-test-plan.md` and `connector-qa-testing.md` currently ask a human to do by hand.
 
-### Remaining work
+### Status: done
 
-Do this only after Phases 1–8 actually ship — rewriting these documents first would leave them
-describing automation that doesn't exist yet.
+1. **`manual-pre-release-test-plan.md`**: rewritten from a five-section, half-day walkthrough into a
+   three-section, minutes-long checklist — §1 "Automated prerequisites" (confirm `tests.yml`'s
+   merge-gate jobs and `connector-live-check.yml`'s scheduled run are green/recent, no unresolved
+   `chore/connector-live-fixture-drift` PR, no open gate/auto-accept/approval-UI PR that skipped the
+   required full `connector-qa-testing.md` pass, nothing known-broken in `build.yml`'s
+   packaged-artifact path), §2 "Human QA" (visual UI sanity if the web surface changed, one real
+   MCP-client compatibility smoke — unconditional, since no automated test in this repo drives a
+   real third-party MCP client — OS-native UX smoke if packaging/autostart changed, a drift-PR
+   re-skim), and §3 "Tag and release" (unchanged release mechanics). The old §0's
+   `pre_release_check.py` step is gone outright, not just folded — that script's own docstring
+   already dropped its version-consistency check once `setuptools_scm` replaced the hand-bumped
+   scheme (see this repo's `CLAUDE.md`), so by this phase it reran nothing the merge gate hadn't
+   already run on the same commit; §1 points at confirming that merge gate directly instead. The old
+   §1 fixture-recording walkthrough folded into a single §1 bullet, since Phase 1's scheduled
+   recorder (`connector-live-check.yml`) already does this weekly. The old §3 live-Cowork prompt
+   folded away entirely — Phase 5 confirmed `test_gate.py` already proves gate-state coverage
+   deterministically, so re-proving it by hand added nothing; what survives from that section is
+   only the genuinely unautomatable part (a real MCP client's compatibility), generalized rather than
+   run as a connector-specific popup script.
+2. **`connector-qa-testing.md`**: reframed. Its title now parenthesizes "Extended Connector/Gate
+   Exploratory QA," and it opens with a "When to use this" section stating outright that routine
+   releases need none of it, naming the four cases that do (new connector, material connector/gate
+   change, unexplained regression, or the broad gate/auto-accept/approval-UI change
+   `testing-policy.md` §3 already required this for).
+3. **`testing-policy.md`**: consistency pass done. The "Checked against `manual-pre-release-test-plan.md`"
+   section (Phase 0) now maps each *old* section to where its coverage lives post-rewrite instead of
+   describing a still-pending rewrite; §3's closing paragraph and the Quick-reference table's
+   `connector-qa-testing.md` row both dropped their "before a release" framing in favor of the same
+   four trigger conditions as item 2 above.
 
-1. **`manual-pre-release-test-plan.md`**: reduce to an automated-prerequisites checklist (PR CI
-   green, cross-platform system CI green, connector live CI recent and green, packaged-artifact
-   tests green, no unresolved provider-drift PR) plus a short human-QA section (visual UI sanity if
-   UI changed, one real MCP-client compatibility smoke, OS-native UX smoke if packaging/autostart
-   changed, review of any provider/fixture drift). Its current §0 (`pre_release_check.py`) and the
-   fixture-recording section fold into the automated-prerequisites list once Phase 1 lands the
-   scheduled recorder; its live-Cowork sections fold away once Phase 5's gate matrix and Phase 1's
-   connector CI cover what they currently prove by hand.
-2. **`connector-qa-testing.md`**: reframe from a routine release checklist to "Extended
-   Connector/Gate Exploratory QA," used only for a new connector, a major gate/approval
-   architecture change, or an unexplained integration regression — its opening "When to use this"
-   section already gestures at this; make it explicit that routine releases no longer require it.
-3. **`testing-policy.md`**: by this point it should already describe all seven layers, both CI trust
-   tiers, and which checks are release-blocking versus manual (Phases 0, 1, 2–8 each touch it
-   incrementally) — this step is a final consistency pass, not new content.
-
-### Exit criteria
+### Exit criteria (met)
 
 Routine manual release validation takes minutes, not hours; both documents above accurately
 describe a *reduced*, not aspirational, manual surface.
@@ -1395,8 +1407,12 @@ Phase 7  Graphical-session/autostart                              (Done for both
 Phase 8  Org-mode system CI                                       (DONE — audit/extend of
    ↓                                                               test_org_ubuntu_release_smoke.py,
    ↓                                                               promoted to a permanent per-PR job)
-Phase 9  Retire obsolete manual QA
-   ↓
+Phase 9  Retire obsolete manual QA                                (DONE — manual-pre-release-
+   ↓                                                                test-plan.md rewritten to a
+   ↓                                                                minutes-long checklist,
+   ↓                                                                connector-qa-testing.md reframed
+   ↓                                                                as exploratory-only, testing-
+   ↓                                                                policy.md consistency pass)
 Phase 10 Observability and maintenance polish
    ↓
 Phase 11 Update branch-protection required checks                (incremental — starts as soon as
@@ -1471,7 +1487,9 @@ plan's grounding pass found the work already done, and a note on which remain ge
 23. ~~Org-mode system test audit/extension~~ — **done** (Phase 8): closed the four-scenario gap,
     promoted `test_org_ubuntu_release_smoke.py` to a permanent `org-mode-smoke` per-PR job, and
     updated `org-mode-operational-readiness.md`
-24. Manual QA documentation reduction (Phase 9)
+24. ~~Manual QA documentation reduction~~ — **done** (Phase 9): `manual-pre-release-test-plan.md`
+    rewritten to a three-section checklist, `connector-qa-testing.md` reframed as exploratory-only,
+    `testing-policy.md` consistency pass
 25. CI diagnostic/observability polish (Phase 10)
 26. Update branch-protection required status checks (Phase 11) — not one PR but a small addition
     riding alongside each of PRs 12, 17-18, 13, 23 above as their job proves stable, plus a final
@@ -1514,8 +1532,8 @@ combination.
   macOS deliberately not built).
 - Org mode executes an authenticated synthetic end-to-end request in CI, on every PR (Phase 8,
   done).
-- `connector-qa-testing.md` is exploratory, not mandatory, for routine releases (Phase 9).
-- Routine manual release validation takes minutes, not hours (Phase 9).
+- `connector-qa-testing.md` is exploratory, not mandatory, for routine releases (Phase 9, done).
+- Routine manual release validation takes minutes, not hours (Phase 9, done).
 - PrivacyFence can be confidently released without owning physical Windows, Linux, or macOS
   development machines.
 - GitHub's required-status-checks list on `main` names every blocking per-PR job, not just `test` —

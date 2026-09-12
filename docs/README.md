@@ -20,7 +20,7 @@ This directory documents PrivacyFence as it works in the current source tree. Ru
 - [`linux-local-deb-packaging-plan.md`](linux-local-deb-packaging-plan.md) — remaining work on the Debian/Ubuntu local-mode `.deb`.
 - [`dev-vs-live-setup.md`](dev-vs-live-setup.md) — isolate source-development and packaged installations.
 - [`release-testing.md`](release-testing.md) — current release validation that still requires a human.
-- [`manual-pre-release-test-plan.md`](manual-pre-release-test-plan.md) — remaining manual pre-release checklist, being folded into automated coverage.
+- [`manual-pre-release-test-plan.md`](manual-pre-release-test-plan.md) — operational pre-release checklist (confirm CI is green, then the short human-QA remainder); slated for retirement once `automated-test-strategy-plan.md` Phase 12 lands, in favor of `release-testing.md`.
 
 ## Approval, policy, and data handling
 
