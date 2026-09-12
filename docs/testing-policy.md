@@ -137,18 +137,23 @@ raises coverage on one of those modules should bump its floor in the same PR; a 
 output is uploaded as a `coverage-report` CI artifact on every run (pass or fail) so a regression
 can be inspected without re-running locally.
 
-`tests.yml` runs six jobs on every PR, and `main`'s branch protection rule requires all of them to
-pass before a PR can merge: this `test` job; `platform-windows`/`platform-macos` (the full core
-suite again on real Windows/macOS runners — see §3's system-layer row above for what these add);
-`test-python-compat` (the same core suite, Node-free, against Python 3.11 and 3.12 — reported as
-two separate checks, one per Python version, since each matrix leg is its own GitHub check);
-`org-mode-smoke` (`test_org_ubuntu_release_smoke.py`, see §3's row above); and `static-analysis`'s
-blocking `ruff check .` step (its `mypy`/`bandit` steps are `continue-on-error` and stay
-informational — see `coding-and-testing-guidelines.md`). `scripts/update_branch_protection.py`
-is the reviewable, applied-the-same-way-every-time record of exactly that set
-(`docs/automated-test-strategy-plan.md` Phase 11) — update its `REQUIRED_STATUS_CHECKS` list, in
-the same PR, whenever a job here is added, renamed, or removed, then have a repo admin run
-`apply` against the live branch protection rule.
+`tests.yml` runs six jobs on every PR: this `test` job; `platform-windows`/`platform-macos` (the
+full core suite again on real Windows/macOS runners — see §3's system-layer row above for what
+these add); `test-python-compat` (the same core suite, Node-free, against Python 3.11 and 3.12 —
+reported as two separate checks, one per Python version, since each matrix leg is its own GitHub
+check); `org-mode-smoke` (`test_org_ubuntu_release_smoke.py`, see §3's row above); and
+`static-analysis`'s blocking `ruff check .` step (its `mypy`/`bandit` steps are `continue-on-error`
+and stay informational — see `coding-and-testing-guidelines.md`). `scripts/update_branch_protection.py`'s
+`REQUIRED_STATUS_CHECKS` is the reviewable record of exactly which of those checks are *meant* to
+be required (`docs/automated-test-strategy-plan.md` Phase 11) — update it in the same PR whenever
+a job here is added, renamed, or removed.
+
+Whether `main`'s live branch protection rule actually requires all six today is a separate fact
+this repo doesn't track as a file, no CI job enforces, and nothing in a checkout can confirm.
+Applying `REQUIRED_STATUS_CHECKS` to the live setting is a deliberate, unautomated step a repo
+admin takes by running `scripts/update_branch_protection.py apply` against GitHub directly — see
+that script's own docstring for why this is intentionally not wired into CI. Treat this section as
+describing the *intended* gate, not a verified guarantee that it is currently enforced.
 
 Through P9 this ran on `macos-latest` instead, and a second, non-blocking `test-linux` job carried
 the platform-independent subset (everything under `web/`, `web_approval_ui.py`, `card_builder.py`,
