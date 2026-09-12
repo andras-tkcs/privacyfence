@@ -788,7 +788,11 @@ Prove what users actually download.
   remove/purge lifecycle (P7.1) and upgrade-in-place test (P7.3), both previously only manually
   verified, into a repeatable `build.yml` CI job. P7.2 (graphical-session autostart) is explicitly
   still open there and belongs to this plan's Phase 7, not here.
-- **Windows**: no packaged-installer smoke harness found in this repo or its plans.
+- **Windows**: done as of this phase's own §6.2 below — `tests/integration/test_windows_packaged_
+  smoke.py` runs a real silent install (autostart Task Scheduler registration included) of
+  `dist/PrivacyFence-*-setup.exe`, the daemon → MCP → approval → audit round trip against the real
+  installed daemon, and a real silent uninstall (package removal + scheduled-task removal + untouched
+  user state), wired into `build.yml`'s `build-windows` job right after `scripts/build_installer.ps1`.
 
 ### 6.1 macOS — close remaining gaps only
 
@@ -797,14 +801,43 @@ docstring says is out of scope (e.g. explicit signature/notarization assertions 
 present, package cleanup/removal if not already exercised). Gatekeeper UX itself stays manual per
 the source strategy.
 
-### 6.2 Windows — new packaged installer smoke
+### 6.2 Windows — new packaged installer smoke — done
 
-Build the installer, perform a silent install, verify: installed executable exists at the expected
-path, autostart/startup registration exists, the daemon starts, `/settings` responds, MCP discovery
-works, an Allow/Deny round trip passes, audit is written. Silently uninstall; verify package-owned
-files are removed and user state (`%APPDATA%`-equivalent config/tokens) is preserved. Add an
-upgrade test (install N, create state, install N+1, verify state survives) once the base smoke is
-green — don't build both in one PR.
+`tests/integration/test_windows_packaged_smoke.py` landed, marked `packaged`, collected wherever the
+rest of `tests/integration/` is but self-skipping unless it finds a real Windows host and a built
+`dist/PrivacyFence-*-setup.exe` — the same posture `test_macos_packaged_smoke.py`/`test_deb_
+packaged_lifecycle.py` already established for the DMG/`.deb` — so it never runs in `tests.yml`'s
+per-PR jobs, only in `build.yml`'s `build-windows` job right after `scripts/build_installer.ps1`
+(that job's own new "Run packaged installer smoke test" step, gating the installer's upload/R2/
+release steps the same way the DMG/`.deb` are already gated in the `build`/`build-deb` jobs).
+
+One test, exactly the base-smoke scenario this item named:
+
+- **`test_windows_install_validate_scenario_uninstall_lifecycle`**: a real silent install
+  (`Setup.exe /VERYSILENT /SUPPRESSMSGBOXES`, `/DIR=` overridden to a scratch directory this test's
+  own user already owns — `installer/privacyfence.iss`'s `PrivilegesRequired=lowest` is what lets
+  that skip admin elevation entirely) → asserts `PrivacyFenceApp.exe`/`privacyfence-app.exe`/the
+  bundled `.mcpb` all exist at the installed path → asserts the autostart Task Scheduler task
+  (`schtasks /query`) the `.iss`'s `[Run]` section registers → starts the real installed
+  `privacyfence-app.exe` alias (not the main exe directly — proving the alias itself resolves,
+  same reasoning the `.deb`'s wrapper-script assertion gives) with an isolated `%USERPROFILE%` and
+  runs the shared Phase 3 daemon→MCP→approval→audit contract shape against it → a real silent
+  uninstall (`unins000.exe /VERYSILENT /SUPPRESSMSGBOXES`) → asserts the install directory and the
+  Task Scheduler task are both gone, and that the isolated `%USERPROFILE%\.privacyfence\` user state
+  (the auto-accept rule the scenario just applied) survived untouched, per the `.iss`'s own
+  `[UninstallDelete]` scoping comment.
+
+**The same deliberate substitution** `test_macos_packaged_smoke.py`/`test_deb_packaged_lifecycle.py`
+already made, for the same reason: this module drives `privacyfence_propose_auto_accept_rule_
+change`, the one built-in meta-tool that always blocks on a confirmation dialog with no connector/
+credential behind it, and resolves the pending card via a direct HTTP POST to
+`/api/approvals/<id>/decide` with the bootstrap-minted session cookie as CSRF — same as the `.deb`
+module, so this job needs no Node/Playwright dependency beyond what `scripts/build_installer.ps1`
+itself already needs.
+
+Upgrade/state-preservation testing (install N, create state, install N+1, verify state survives) is
+explicitly deferred, per this item's own "don't build both in one PR" — see Phase 6 item 20 in the
+PR-boundary list below, which covers all three platforms together.
 
 ### 6.3 Linux `.deb` — automate the already-manually-proven lifecycle — done
 
@@ -1193,7 +1226,8 @@ plan's grounding pass found the work already done, and a note on which remain ge
 16. ~~Gate matrix audit + close any real gap found~~ — **done** (Phase 5): two narrow gaps closed
     in `test_gate.py`; the matrix was already mostly there, as expected
 17. Linux packaged lifecycle — automate the already-manually-proven P7.1/P7.3 (Phase 6.3)
-18. Windows packaged lifecycle — new work (Phase 6.2)
+18. ~~Windows packaged lifecycle~~ — **done** (Phase 6.2): new `test_windows_packaged_smoke.py`,
+    wired into `build.yml`'s `build-windows` job
 19. macOS packaged additions — close small gaps only (Phase 6.1)
 20. Package upgrade/state-preservation testing, where not already covered by 17–19
 21. Linux graphical-session/autostart CI — closes the already-tracked P7.2 (Phase 7)
