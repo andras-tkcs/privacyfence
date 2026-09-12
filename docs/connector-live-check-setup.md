@@ -56,7 +56,10 @@ On each scheduled/manual run the workflow:
 5. re-records fixtures when provider response drift is detected;
 6. runs `scripts/qa_fixture_recorder.py --lifecycle` for supported write-capable providers;
 7. opens/updates a fixture-drift PR when committed fixture files changed;
-8. uploads the run reports as artifacts.
+8. copies any refreshed OAuth credential files back from the checkout into the persistent `~/privacyfence/credentials/` (always, regardless of the outcome of the steps above);
+9. uploads the run reports as artifacts.
+
+Step 8 exists because some providers (Atlassian) rotate the refresh token on every use: the client already persists the refreshed token to disk when it refreshes, but that write only reaches the persistent store because of this step. Without it, every run after the first would refresh with an already-spent token and start failing with an authorization error — a token/grant rotated in step 6 or step 4 must survive the ephemeral checkout being discarded, or the very next run breaks. Google's refresh tokens aren't single-use, so this step is a no-op for calendar/tasks/contacts/drive/gmail; it matters for Jira/Confluence and any future OAuth-based connector whose provider rotates refresh tokens the same way.
 
 The job runs on its configured schedule and through `workflow_dispatch`; it is not a pull-request job.
 
@@ -83,6 +86,8 @@ Do not copy QA credentials into GitHub Actions secrets as a workaround.
 **Required QA file not found** — verify the runner service's home directory and the exact `~/privacyfence` tree above.
 
 **Provider authorization failure** — refresh only the affected dedicated QA connector credential, then rerun.
+
+**Atlassian (Jira/Confluence) `401`/`403 Forbidden` refreshing the token, especially right after a fresh reconnect** — the workflow copies any refreshed credential file back to `~/privacyfence/credentials/` after every run specifically so this doesn't happen (see "Workflow behavior" step 8); if it still does, confirm that write-back step actually ran (check the run's log) and that the runner user can write to `~/privacyfence/credentials/`. Atlassian rotates the refresh token on every use — reusing a stale one is a hard failure, not a retryable one, so this needs a fresh reconnect, not just a rerun.
 
 **Seed resource not found/tag mismatch** — repair/recreate the dedicated resource and update `qa_environment.yaml` using [`qa-environment-setup.md`](qa-environment-setup.md).
 
