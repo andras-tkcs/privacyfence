@@ -82,6 +82,10 @@ Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 ; comment). Kept at its versioned filename so a user who's kept an older
 ; installer's copy doesn't collide with it.
 Source: "{#McpbPath}"; DestDir: "{app}"; Flags: ignoreversion
+; The autostart task-definition template (see [Code]'s RegisterAutostartTask
+; below) -- dontcopy means Setup extracts it to {tmp} for [Code] to read at
+; install time, but it's never actually installed into {app}.
+Source: "privacyfence-task.xml.tmpl"; Flags: dontcopy
 
 [Icons]
 ; Points at the web settings UI in the default browser, not at the daemon
@@ -92,56 +96,20 @@ Name: "{group}\{#AppName}"; Filename: "{#SettingsUrl}"; IconFilename: "{app}\{#A
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
 [Run]
-; Register the autostart Task Scheduler task at install time (Phase 3.1),
-; not from the app itself at runtime, so it's visible/removable through
-; normal Windows install/uninstall UI. Logon trigger + limited run level
-; (no elevation) -- the direct analogue of the macOS LaunchAgent's
-; RunAtLoad and the Linux .deb plan's own XDG autostart entry.
+; The autostart Task Scheduler task itself (Phase 3.1) is registered from
+; [Code]'s RegisterAutostartTask below, via CurStepChanged(ssPostInstall)
+; -- not a [Run] entry -- see that function's own comment and
+; privacyfence-task.xml.tmpl's header comment for what actually gets
+; registered and why this needs a real Task Scheduler XML task definition
+; rather than a plain `schtasks /create` CLI call (short version: two
+; independent CLI-flag attempts at this were each found broken by a real
+; windows-graphical-session.yml run -- invalid /ri/du flags for an ONLOGON
+; schedule, then a trigger that only fired for the installing account
+; instead of any interactive logon -- and the capability this task
+; actually needs, "run for whichever user just logged on, in their own
+; session, restarting on crash," has no equivalent exposed through
+; schtasks.exe's plain flags at all).
 ;
-; Deliberately NOT /RI/DU: an earlier version of this line added
-; "/ri 1 /du 9999:59" trying to get crash-restart behavior (the macOS
-; LaunchAgent's KeepAlive/SuccessfulExit=false, the Linux .deb plan's own
-; systemd restart policy) out of schtasks.exe's CLI flags. Per Microsoft's
-; own schtasks /create documentation, /ri and /du are "not applicable" to
-; an ONLOGON schedule (/ri is valid only for MINUTE/HOURLY/DAILY/WEEKLY/
-; MONTHLY/ONCE; /du only for MINUTE/HOURLY) -- schtasks.exe rejects the
-; combination outright, so this whole /create call was failing on every
-; install ("Task Scheduler task 'PrivacyFence' missing after install",
-; a confirmed root cause of windows-graphical-session.yml's failures --
-; see platform-support.md's "Known open items"), silently, because an
-; Inno [Run] entry's own nonzero exit code doesn't abort Setup by
-; default. There is no equivalent restart-on-failure knob exposed
-; through schtasks.exe's plain flags at all -- Task Scheduler only
-; exposes it via a task's own <RestartOnFailure> XML settings
-; (schtasks /create /xml), which needs a real Windows host to get the
-; file encoding/schema right and isn't implemented here yet; tracked as
-; docs/automated-test-strategy-plan.md Phase 13. Until then this task is
-; logon-triggered only, same single-shot-at-login behavior a plain
-; Startup-folder shortcut would have given -- strictly less than the
-; crash-restart parity Phase 3's own decision wanted, but a working
-; autostart beats a task that was never actually being created.
-;
-; /RU "BUILTIN\Users": a second, independent bug in this same line, found
-; once the /ri/du fix above let registration itself succeed for the first
-; time. Omitting /RU entirely (as this line used to) does NOT make the
-; ONLOGON trigger fire for any interactive logon -- per Microsoft's own
-; schtasks /create documentation, "By default, the task runs with the
-; permissions of the current user" -- so the task was scoped to whichever
-; account ran the installer only, never firing for a different account's
-; later logon. A real end-to-end run (windows-graphical-session.yml's own
-; throwaway-account logon, a different account from the one that ran the
-; installer) caught this: task registration succeeded, but the trigger
-; never fired within 30s of that account's logon. `/ru "BUILTIN\Users"`
-; targets the built-in Users group rather than one specific account, the
-; standard technique for "run once per interactive logon, in that user's
-; own session, whoever they are" (no password needed or accepted for a
-; well-known built-in group, same as `/ru System` needing none) -- the
-; actual "whichever account is at the keyboard" scope this task always
-; intended, now for real rather than by an incorrect assumption about the
-; unqualified default.
-Filename: "{sys}\schtasks.exe"; \
-    Parameters: "/create /tn ""{#TaskName}"" /tr ""'{app}\{#AliasExeName}'"" /sc onlogon /ru ""BUILTIN\Users"" /rl limited /f"; \
-    Flags: runhidden; StatusMsg: "Registering startup task..."
 ; Start the daemon immediately after install, same as the macOS DMG's
 ; LaunchAgent starting the app right after a drag-install's first login --
 ; without this, a user would otherwise have to log out/in before
@@ -166,3 +134,42 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""{#TaskName}"" /f"; \
 ; (UninstallRun, above) only -- there is deliberately no [UninstallDelete]
 ; entry naming %USERPROFILE%\.privacyfence, unlike the entries a "clean
 ; uninstall" for a typical app might add.
+
+[Code]
+{ Registers the autostart Task Scheduler task (Phase 3.1) via a real Task
+  Scheduler XML task definition (privacyfence-task.xml.tmpl, extracted to
+  {tmp} by the [Files] "dontcopy" entry above), not schtasks.exe's plain
+  /create flags -- see [Run]'s own comment and that template's own header
+  comment for why. Substitutes the real installed AliasExeName path for
+  the template's __EXEC_PATH__ placeholder, writes the result to a scratch
+  file under {tmp}, then runs `schtasks /create /xml <file> /f` against
+  it. Called from CurStepChanged(ssPostInstall) below, i.e. after {app}'s
+  files are already in place (Files copy happens during ssInstall, before
+  ssPostInstall) but before this file's own [Run] entries execute, so the
+  path it substitutes in always exists by the time schtasks reads it. }
+function RegisterAutostartTask(): Boolean;
+var
+  TemplateFile, XmlFile, XmlContent, ExecPath: AnsiString;
+  ResultCode: Integer;
+begin
+  ExtractTemporaryFile('privacyfence-task.xml.tmpl');
+  TemplateFile := ExpandConstant('{tmp}\privacyfence-task.xml.tmpl');
+  Result := LoadStringFromFile(TemplateFile, XmlContent);
+  if not Result then
+    Exit;
+  ExecPath := ExpandConstant('{app}\{#AliasExeName}');
+  StringChangeEx(XmlContent, '__EXEC_PATH__', ExecPath, False);
+  XmlFile := ExpandConstant('{tmp}\privacyfence-task.xml');
+  Result := SaveStringToFile(XmlFile, XmlContent, False);
+  if not Result then
+    Exit;
+  Result := Exec(ExpandConstant('{sys}\schtasks.exe'),
+    '/create /tn "{#TaskName}" /xml "' + XmlFile + '" /f',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    RegisterAutostartTask();
+end;
