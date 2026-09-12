@@ -30,7 +30,9 @@ deployment_id
 tests/fixtures/qa_environment.yaml
 
 # Claude Code
-.claude/
+.claude/*
+# ...except the shared project settings (hooks, permissions) checked in for the whole team.
+!.claude/settings.json
 
 # Lock files
 *.lock
