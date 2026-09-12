@@ -3,6 +3,12 @@ name: Publish to PyPI
 # Same trigger as build.yml (see CLAUDE.md's "Releasing" section) -- one tag
 # push does everything: builds and signs the DMG (build.yml) *and* builds
 # and publishes the sdist/wheel (this workflow), with no separate step.
+# Independently triggered, but no longer independently *gated*: the
+# `wait_for_build` job below (docs/automated-test-strategy-plan.md Phase 6.4)
+# blocks every publish step here on build.yml's own run for this exact commit
+# actually succeeding -- packaged-artifact test failures (macOS/Windows/Linux)
+# block PyPI/TestPyPI/R2 publication too, not just their own platform's DMG/
+# installer/.deb.
 #
 # Publishing itself uses PyPI's OIDC "Trusted Publisher" flow
 # (pypa/gh-action-pypi-publish), not a stored API token: GitHub mints a
@@ -28,6 +34,76 @@ permissions:
   contents: read
 
 jobs:
+  # Phase 6.4 (docs/automated-test-strategy-plan.md): "Wire all three [macOS/Windows/Linux
+  # packaged-artifact tests] into the release build workflows (build.yml, publish-pypi.yml) ahead
+  # of the publish step... A failed packaged-artifact test blocks publication."
+  #
+  # GitHub Actions has no native `needs:` across separate workflow files -- build.yml and this
+  # workflow are two independent listeners on the same `push: tags: ['v*']` event, so there's no
+  # job graph connecting them the way `needs:` connects jobs within one file. This job is the
+  # closest equivalent: it polls the REST API for build.yml's *own* run against this exact commit
+  # (not "the latest run of build.yml," which could be a different tag or a stray
+  # workflow_dispatch) and blocks every job below on that run actually succeeding, via an ordinary
+  # `needs:` edge inside this workflow. `build` (the sdist/wheel) still runs immediately in
+  # parallel -- it's cheap, side-effect-free, and needed either way -- only the three `publish-*`
+  # jobs actually wait on this one.
+  #
+  # A `workflow_dispatch` rerun (e.g. after a transient publish failure) is gated the same way: if
+  # build.yml's original run for that tag's commit already succeeded, this job finds that same
+  # result immediately (the API query is keyed on commit SHA, not run recency) and the rerun
+  # proceeds; if build.yml never succeeded for that commit, the rerun blocks here until someone
+  # fixes and reruns "Build & Release" for that tag.
+  wait_for_build:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read   # only permission this job needs -- it never checks out the repo
+    steps:
+      - name: Wait for build.yml's run on this commit to succeed
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const workflowId = "build.yml";
+            const pollIntervalMs = 30_000;
+            // build.yml's `build` job alone (DMG + notarization + TST-15) has run well past ten
+            // minutes before; leave real headroom rather than risk a flaky timeout on release day.
+            const maxWaitMs = 60 * 60_000;
+            const start = Date.now();
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+
+            core.info(`Waiting for ${workflowId}'s own run against commit ${sha}...`);
+
+            for (;;) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: workflowId, head_sha: sha, per_page: 10,
+              });
+              if (data.workflow_runs.length > 0) {
+                // Most recent attempt for this exact commit, in case of a manual re-run.
+                const run = data.workflow_runs.sort((a, b) => b.id - a.id)[0];
+                core.info(`Found ${run.html_url} (status=${run.status}, conclusion=${run.conclusion})`);
+                if (run.status === "completed") {
+                  if (run.conclusion === "success") {
+                    core.info("build.yml succeeded for this commit -- proceeding to publish.");
+                    return;
+                  }
+                  core.setFailed(
+                    `build.yml's own run for this commit did not succeed ` +
+                    `(conclusion=${run.conclusion}): ${run.html_url}. Fix and re-run ` +
+                    `"Build & Release" for this tag, then re-run "Publish to PyPI".`,
+                  );
+                  return;
+                }
+              }
+              if (Date.now() - start > maxWaitMs) {
+                core.setFailed(
+                  `Timed out after ${Math.round(maxWaitMs / 60_000)} minutes waiting for ` +
+                  `${workflowId}'s run against ${sha} to complete.`,
+                );
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+            }
+
   build:
     runs-on: ubuntu-latest   # pure Python sdist/wheel -- no macOS-only step needed
     outputs:
@@ -77,7 +153,7 @@ jobs:
   # SBOMs in build.yml, which still get a public, asset-less GitHub Release entry for every
   # channel); the publish-r2 job below is where every channel's sdist/wheel actually lands.
   publish-testpypi:
-    needs: build
+    needs: [build, wait_for_build]
     if: needs.build.outputs.channel == 'stable'
     runs-on: ubuntu-latest
     environment: testpypi   # must match the Environment name on TestPyPI's
@@ -131,9 +207,12 @@ jobs:
   # Independent of the two PyPI jobs above (doesn't `needs:` either one, and isn't gated on
   # channel) -- this is where *every* channel's sdist/wheel actually lands, stable included: R2 is
   # the one archive that has everything, same as build.yml's DMG/SBOM uploads. It only needs the
-  # `build` job's artifact and version/channel output, not a successful PyPI publish.
+  # `build` job's artifact and version/channel output, not a successful PyPI publish. It does,
+  # like the two PyPI jobs, still wait on `wait_for_build` (Phase 6.4): R2 is meant to be a
+  # complete record of what a tag actually shipped, not a place a broken build's bits land anyway
+  # just because nothing public depends on them.
   publish-r2:
-    needs: build
+    needs: [build, wait_for_build]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:

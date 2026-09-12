@@ -28,9 +28,14 @@ git push origin <tag>
 ```
 
 That tag push is what `.github/workflows/build.yml` **and** `.github/workflows/publish-pypi.yml`
-both trigger on (`on: push: tags: ['v*']`) — the former builds and signs the DMG and generates the
-SBOMs, the latter builds the sdist/wheel from the same tag. Every one of those artifacts always
-uploads to the private Cloudflare R2 release archive (see "Cloudflare R2 release archive" below);
+both trigger on (`on: push: tags: ['v*']`) — the former builds and signs the DMG/Windows installer/
+`.deb` (running each one's own packaged-artifact smoke test, see "Packaged-artifact release gating"
+below) and generates the SBOMs, the latter builds the sdist/wheel from the same tag. The two
+workflows trigger independently but no longer publish independently: `publish-pypi.yml`'s
+`wait_for_build` job blocks every one of its own publish steps on `build.yml`'s run for that same
+commit actually succeeding — see "Packaged-artifact release gating" below. Every one of those
+artifacts always uploads to the private Cloudflare R2 release archive (see "Cloudflare R2 release
+archive" below);
 whether it *also* reaches a public GitHub Release / PyPI/TestPyPI depends on the tag's channel
 (`a`/`b`/`rc` suffix, or none for stable — same PEP 440 short-form scheme `update_checker.py`'s
 beta channel already ranks by): only a stable tag's DMG/SBOMs get attached to a public GitHub
@@ -58,6 +63,30 @@ the original bridge it replaced (retired at P5, see `docs/https-connector-refact
 there's nothing here for the real version to be injected into at build time. `scripts/
 build_mcpb.sh` reads the real version only to stamp the `.mcpb` manifest itself
 (`mcpb/manifest.json.tmpl`'s `__VERSION__`), not anything inside the bundled `shim.js`.
+
+### Packaged-artifact release gating
+
+`docs/automated-test-strategy-plan.md` Phase 6.4: every published DMG/installer/`.deb` is started
+and exercised, automatically, before it (or anything else from the same tag) actually ships.
+
+Within `build.yml`, this needs no cross-workflow trickery — each of the `build` (macOS),
+`build-windows`, and `build-deb` jobs runs its own packaged-artifact test
+(`tests/integration/test_macos_packaged_smoke.py`, `test_windows_packaged_smoke.py`,
+`test_deb_packaged_lifecycle.py` — all `pytest.mark.packaged`) as an ordinary step, right after
+that job builds its own artifact and before that same job's own R2-upload/GitHub-Release-attach
+steps. An ordinary failed step stops the job there, so a broken DMG/installer/`.deb` never reaches
+its own upload steps — no `needs:` needed for this part, since it's all sequencing within one job.
+
+Getting the same guarantee into `publish-pypi.yml` is the part that actually needs wiring: that
+workflow's sdist/wheel has no packaged-artifact test of its own to gate on, but a broken macOS/
+Windows/Linux build should still block *its* publish too — a release isn't good just because the
+one artifact this workflow happens to build is fine. GitHub Actions has no `needs:` across separate
+workflow files, so `publish-pypi.yml`'s `wait_for_build` job (its own first job, gating
+`publish-testpypi`/`publish-pypi`/`publish-r2`) polls the REST API for `build.yml`'s own run against
+the exact same commit and fails loudly, without publishing anything, unless that run completed
+successfully. See that job's own comment for the reasoning, including how a `workflow_dispatch`
+rerun is gated the same way (keyed on commit SHA, not run recency, so a rerun after a fixed and
+re-run `build.yml` finds the new result immediately).
 
 ### Publishing to PyPI
 

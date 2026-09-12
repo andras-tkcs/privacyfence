@@ -41,7 +41,17 @@ also now done — the audit this phase asked for (rather than a from-scratch bui
 resource-grant/rule-mismatch case on both the review and popup gate branches) and confirmed one
 matrix item that architecturally belongs to `tests/unit/connectors/*.py` instead of this file; see
 that phase's own status note for the detail and the resulting `testing-policy.md`/
-`connector-qa-testing.md` framing updates. Phases 6–10 are unaffected by any of these merges and
+`connector-qa-testing.md` framing updates.
+[Phase 6](#phase-6--packaged-artifact-lifecycle-tests) (packaged-artifact lifecycle tests) is also
+now done, across several PRs (6.1 macOS gap-closing, 6.2 Windows, 6.3 Linux `.deb`, plus a final PR
+closing both of the two items that were left open across all of 6.1–6.3: item 20's macOS/Windows
+upgrade-in-place tests — Linux's own had already landed as part of 6.3 — and 6.4's cross-workflow
+release gating) — see that phase's own status note and its new "Upgrade/state-preservation testing
+(item 20)" subsection for what shipped and where it deviated from the original design (macOS/Windows
+each get their own synthetically-relabeled "version N+1" built from the same already-built artifact
+rather than a second real build, the same substitution 6.3's own Linux upgrade test already made;
+6.4 landed as a same-repo REST-API polling job rather than a `needs:` edge, since GitHub Actions has
+no such edge across separate workflow files). Phases 7–10 are unaffected by any of these merges and
 reflect this plan's original grounding pass.
 Phase 11 (update branch-protection required checks) is new in this revision — added once this plan
 was checked against `testing-policy.md`'s own "one job to merge" language and found not to close
@@ -776,6 +786,15 @@ landed in Phases 1–4 since); `tests/unit/test_gate.py` alone runs its 144 case
 
 Prove what users actually download.
 
+### Status note (2026-09-12)
+
+6.1 (macOS), 6.2 (Windows), and 6.3 (Linux `.deb`) all landed as their own PRs and are done, per
+their own subsections below. The two items left open across all three of those PRs are now also
+closed: item 20 (upgrade/state-preservation testing for macOS and Windows — Linux's own landed
+inside 6.3 itself, see that subsection) has its own new subsection below, and 6.4 (release gating)
+is done as a same-repo REST-API polling job, not literal cross-workflow `needs:` (GitHub Actions has
+no such thing) — see that subsection's own text for why. Phase 6 as a whole is now done.
+
 ### Already in this repo
 
 - **macOS**: done as of this phase's own §6.1 below — `tests/integration/test_macos_packaged_smoke.py`
@@ -832,6 +851,20 @@ round trip's own steps 1–5:
 Gatekeeper UX itself — the interactive dialog a human actually clicks through — stays manual per the
 source strategy; nothing in this item automates that.
 
+**A latent test-ordering bug found while adding item 20's own upgrade test (below), not part of
+6.1's original scope**: the round-trip test's own "state lives outside the package" step deletes
+the shared, module-scoped `installed_app` fixture's copy of the bundle — which meant
+`test_packaged_app_signature_and_notarization`, running after it in pytest's default
+file-definition order, always found nothing on disk and silently *skipped* (`codesign` against a
+missing path exits non-zero the same way an unsigned bundle does, and the skip logic couldn't tell
+the two apart) rather than actually verifying anything. Fixed by decoupling that test onto its own
+private `signed_app_copy` fixture (a second, independent extraction from the DMG) instead of
+sharing `installed_app` with the round-trip test — the round-trip test's own deletion step is
+otherwise unchanged, including deleting the exact copy its own daemon process is still running
+from. `_copy_app_from_dmg()` (the DMG-mount-and-extract logic, previously inlined in the
+`installed_app` fixture) is now a standalone helper both fixtures — and item 20's own upgrade test —
+share.
+
 ### 6.2 Windows — new packaged installer smoke — done
 
 `tests/integration/test_windows_packaged_smoke.py` landed, marked `packaged`, collected wherever the
@@ -866,9 +899,9 @@ credential behind it, and resolves the pending card via a direct HTTP POST to
 module, so this job needs no Node/Playwright dependency beyond what `scripts/build_installer.ps1`
 itself already needs.
 
-Upgrade/state-preservation testing (install N, create state, install N+1, verify state survives) is
-explicitly deferred, per this item's own "don't build both in one PR" — see Phase 6 item 20 in the
-PR-boundary list below, which covers all three platforms together.
+Upgrade/state-preservation testing (install N, create state, install N+1, verify state survives) was
+explicitly deferred here, per this item's own "don't build both in one PR" — now closed, see
+"Upgrade/state-preservation testing (item 20)" below.
 
 ### 6.3 Linux `.deb` — automate the already-manually-proven lifecycle — done
 
@@ -916,17 +949,95 @@ itself already needs.
 `docs/linux-local-deb-packaging-plan.md`'s P7.1 and P7.3 are marked CI-automated (not just
 manually-verified-once); P7.2 (graphical-session autostart) stays open, per this plan's own Phase 7.
 
-### 6.4 Release gating
+### Upgrade/state-preservation testing (item 20) — done
+
+Linux's own upgrade test landed inside 6.3 already (`test_upgrade_in_place_preserves_user_state`,
+above). macOS and Windows each get the analogous test now, in the same shape 6.3 already
+established — install version N, apply real state through the daemon's own MCP surface (not a
+hand-written `settings.yaml`), replace it with a synthetically-relabeled version N+1 built from the
+*same* already-built artifact (never a second genuine PyInstaller/build pass — see each test's own
+docstring for why that would only add cost, not coverage, for what this item needs proven), confirm
+the state survived and the upgraded binary still starts and serves:
+
+- **macOS** (`test_macos_upgrade_preserves_user_state` in `test_macos_packaged_smoke.py`) — macOS
+  has no installer/uninstaller pair at all (6.1's own §6: "uninstalling" is deleting the `.app`
+  bundle), so "upgrading" here is just deleting the old bundle and copying in a fresh extraction
+  from the same DMG, relabeled via a rewritten `Contents/Info.plist` `CFBundleShortVersionString`
+  (`_bump_bundle_version`) — the macOS analogue of 6.3's own `_synthetic_next_version_deb`. Unlike
+  the primary round-trip test in this same module, this test's own state-creation step doesn't use
+  the real Node shim or a real browser click — it calls the daemon's `/mcp` endpoint directly and
+  resolves the pending card with a raw HTTP POST, the same lighter substitution the Linux/Windows
+  modules already use for their own scenarios (the shim artifact itself is already proven by the
+  primary round-trip test; this test's own job is proving state survival across a bundle swap, not
+  re-proving the shim a second time). Landed alongside a real fix to a latent bug this addition
+  surfaced in 6.1's own code — see 6.1's own text above for the `signed_app_copy` fixture and why it
+  exists.
+- **Windows** (`test_windows_upgrade_in_place_preserves_user_state` in
+  `test_windows_packaged_smoke.py`) — a second, standalone `iscc.exe` invocation against the *same*
+  already-built `dist/PrivacyFenceApp` onedir output, `.mcpb`, and icon 6.2's own installer build
+  already produced, with a bumped `/DAppVersion` and a scratch `/DOutputDir`
+  (`_synthetic_next_version_installer`) — not a second PyInstaller build, same reasoning as the
+  macOS/Linux cases. Unlike `dpkg --compare-versions`, Inno Setup's own upgrade detection keys off
+  `AppId` (fixed in `installer/privacyfence.iss`), not a version-string comparison, so the relabeled
+  version doesn't need to be *orderable*, only different. The second silent install targets the same
+  `/DIR=` as the first, and `installer/privacyfence.iss`'s `[Run]` section (unconditional on every
+  install, upgrades included) re-registers the Task Scheduler task, which this test asserts is still
+  present afterward. This addition also fixed a real, if narrower, bug of its own:
+  `test_windows_packaged_smoke.py`'s `_prepare_home` unconditionally overwrote `settings.yaml` on
+  every boot (fine for the original single-boot test, silently fatal for a test that needs to boot
+  the same `$HOME` twice) — fixed to match `test_deb_packaged_lifecycle.py`'s own
+  load-existing-then-patch-two-fields pattern, the same fix 6.1's own `signed_app_copy` addendum
+  above made for a different reason in the macOS module.
+
+Both additions carry the module's own `packaged` marker (inherited from each module's
+`pytestmark`) and run wherever their respective test 1 already does — no new CI wiring: `build.yml`'s
+existing `pytest tests/integration/test_macos_packaged_smoke.py -v` /
+`pytest tests/integration/test_windows_packaged_smoke.py -v` steps already collect every test in
+each file, this addition included.
+
+### 6.4 Release gating — done
 
 Wire all three into the release build workflows (`build.yml`, `publish-pypi.yml`) ahead of the
 publish step — build → package smoke → signature/notarization validation → publish. A failed
-packaged-artifact test blocks publication; this is a change to those workflows' job dependencies,
-not new test logic beyond 6.1–6.3.
+packaged-artifact test blocks publication.
 
-### Exit criteria
+Within `build.yml` this was already true before this item — each of the `build` (macOS),
+`build-windows`, and `build-deb` jobs already ran its own packaged-artifact test as an ordinary step
+between building its own artifact and that same job's own R2-upload/GitHub-Release-attach steps (6.1
+predates this whole plan; 6.2/6.3 built it in from the start), so an ordinary failed step already
+stopped each job before its own publish steps could run — no `needs:` edge needed for that part,
+since it's all sequencing within one job. Confirmed rather than re-built.
 
-Every published DMG/EXE/DEB has been started and exercised on its native OS, automatically, before
-release.
+The genuinely open part was `publish-pypi.yml`: its sdist/wheel has no packaged-artifact test of its
+own to sequence after, and — since `build.yml`/`publish-pypi.yml` are two independent listeners on
+the same `push: tags: ['v*']` event, not one workflow — nothing connected a failure in `build.yml`
+(a broken DMG/installer/`.deb`) to whether `publish-pypi.yml` still went ahead and published. This
+landed differently than the original wording ("a change to those workflows' job dependencies")
+literally implied: GitHub Actions has no `needs:` across separate workflow files at all, so instead
+`publish-pypi.yml` gained its own new first job, `wait_for_build`, which polls the REST API for
+`build.yml`'s own run against the exact same commit SHA and fails (blocking every `publish-*` job
+below it — `publish-testpypi`, `publish-pypi`, and `publish-r2`, via an ordinary same-workflow
+`needs:` edge onto this new job) unless that run completed successfully. A `workflow_run`-triggered
+redesign (having `publish-pypi.yml` fire only after `build.yml` finishes, instead of independently on
+the same tag push) was considered and rejected: it would have silently broken every existing
+`startsWith(github.ref, 'refs/tags/')`/`GITHUB_REF` check already in that workflow, since a
+`workflow_run`-triggered run's own `github.ref` refers to the *triggering* workflow's default-branch
+context, not the tag — the polling job keeps the original trigger (and therefore every existing
+ref-based check) completely unchanged. See `publish-pypi.yml`'s own `wait_for_build` job comment and
+this repo's `CLAUDE.md` ("Packaged-artifact release gating") for the full reasoning, including how a
+`workflow_dispatch` rerun is gated the same way (keyed on commit SHA, not run recency).
+`publish-r2` — not originally named in this item's own wording, but "publication" — is gated the
+same way as the two PyPI jobs: R2 is meant to be a complete record of what a tag actually shipped,
+not a place a broken build's bits land anyway just because nothing public depends on them.
+
+### Exit criteria (met)
+
+- ✅ Every published DMG/EXE/DEB has been started and exercised on its native OS, automatically,
+  before release.
+- ✅ Package upgrade tests prove user state survives, on all three platforms (item 20).
+- ✅ A failed packaged-artifact test blocks publication on every channel this plan publishes to
+  (GitHub Release, PyPI/TestPyPI, the private R2 archive), not just its own platform's artifact
+  (6.4).
 
 ---
 
@@ -1190,10 +1301,11 @@ Phase 5  Gate/policy matrix                                       (DONE — audi
    ↓                                                               closed two narrow gaps; one matrix
    ↓                                                               item confirmed to live in the
    ↓                                                               connector tests instead)
-Phase 6  Packaged-artifact lifecycle                              (macOS: close small gaps.
-   ↓                                                               Linux: automate an already-
-   ↓                                                               manually-proven lifecycle.
-   ↓                                                               Windows: new work.)
+Phase 6  Packaged-artifact lifecycle                              (DONE — macOS gap-closing, Linux
+   ↓                                                               .deb lifecycle, Windows installer
+   ↓                                                               smoke, macOS/Windows upgrade tests
+   ↓                                                               (item 20), and publish-pypi.yml's
+   ↓                                                               cross-workflow release gating (6.4))
 Phase 7  Graphical-session/autostart                              (Linux has a tracked open item
    ↓                                                               already, P7.2; Windows is new.)
 Phase 8  Org-mode system CI                                       (mostly an audit/extend of
@@ -1256,11 +1368,16 @@ plan's grounding pass found the work already done, and a note on which remain ge
     status note)
 16. ~~Gate matrix audit + close any real gap found~~ — **done** (Phase 5): two narrow gaps closed
     in `test_gate.py`; the matrix was already mostly there, as expected
-17. Linux packaged lifecycle — automate the already-manually-proven P7.1/P7.3 (Phase 6.3)
+17. ~~Linux packaged lifecycle~~ — **done** (Phase 6.3): automated the already-manually-proven
+    P7.1/P7.3, `test_deb_packaged_lifecycle.py`, wired into `build.yml`'s `build-deb` job
 18. ~~Windows packaged lifecycle~~ — **done** (Phase 6.2): new `test_windows_packaged_smoke.py`,
     wired into `build.yml`'s `build-windows` job
-19. macOS packaged additions — close small gaps only (Phase 6.1)
-20. Package upgrade/state-preservation testing, where not already covered by 17–19
+19. ~~macOS packaged additions~~ — **done** (Phase 6.1): closed the two gaps this phase's audit
+    found (signature/notarization, state-outside-package)
+20. ~~Package upgrade/state-preservation testing, where not already covered by 17–19~~ — **done**:
+    macOS/Windows upgrade tests (Linux's own already landed inside 6.3/item 17 above), plus 6.4's
+    `publish-pypi.yml` cross-workflow release gating, landed together in one PR — see Phase 6's own
+    "Upgrade/state-preservation testing (item 20)" and "6.4 Release gating" subsections
 21. Linux graphical-session/autostart CI — closes the already-tracked P7.2 (Phase 7)
 22. Windows graphical-session/autostart CI — new work (Phase 7)
 23. Org-mode system test audit/extension — likely small (Phase 8)
@@ -1299,8 +1416,10 @@ combination.
 - The Security & Quality Remediation Plan's Phase 3.12 is complete and the overall plan is closed
   (Phase 1, done — the plan document itself was removed from `docs/` rather than left
   marked-complete in place).
-- Every published DMG/EXE/DEB is exercised before publication (Phase 6).
-- Package upgrade tests prove user state survives, on all three platforms (Phase 6).
+- Every published DMG/EXE/DEB is exercised before publication, and a failed packaged-artifact test
+  blocks publication on every channel this plan publishes to, not just its own platform's artifact
+  (Phase 6, done).
+- Package upgrade tests prove user state survives, on all three platforms (Phase 6, done).
 - Local-mode autostart has automated platform-specific coverage (Phase 7).
 - Org mode executes an authenticated synthetic end-to-end request in CI (Phase 8, mostly already
   true — confirm and close remaining gaps).
