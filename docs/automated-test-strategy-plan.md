@@ -783,11 +783,11 @@ Prove what users actually download.
   built `mcpb/shim/dist/shim.js`, drives a headless-Chromium approval round trip, and (per its own
   docstring) covers most of what §6.1 below asks for. Confirm it also asserts signature/notarization
   validation and state-outside-package — extend narrowly if either is missing rather than assuming.
-- **Linux**: `docs/linux-local-deb-packaging-plan.md` Phase 7 already has a manually-verified
-  install/autostart-file/remove/purge lifecycle (P7.1, checked off) and a partially-checked upgrade
-  test (P7.3) — but it ran once, by hand, on the environment available while implementing that plan,
-  not as a repeatable CI job. P7.2 (graphical-session autostart) is explicitly still open there and
-  belongs to this plan's Phase 7, not here.
+- **Linux**: done as of this phase's own §6.3 below — `tests/integration/test_deb_packaged_
+  lifecycle.py` turns `docs/linux-local-deb-packaging-plan.md` Phase 7's install/autostart-file/
+  remove/purge lifecycle (P7.1) and upgrade-in-place test (P7.3), both previously only manually
+  verified, into a repeatable `build.yml` CI job. P7.2 (graphical-session autostart) is explicitly
+  still open there and belongs to this plan's Phase 7, not here.
 - **Windows**: no packaged-installer smoke harness found in this repo or its plans.
 
 ### 6.1 macOS — close remaining gaps only
@@ -806,14 +806,51 @@ files are removed and user state (`%APPDATA%`-equivalent config/tokens) is prese
 upgrade test (install N, create state, install N+1, verify state survives) once the base smoke is
 green — don't build both in one PR.
 
-### 6.3 Linux `.deb` — automate the already-manually-proven lifecycle
+### 6.3 Linux `.deb` — automate the already-manually-proven lifecycle — done
 
-Turn `linux-local-deb-packaging-plan.md` P7.1's manual container run into a CI job:
-`dpkg -i` → `desktop-file-validate` → start daemon → the shared system smoke scenario from Phase 3
-→ `dpkg -r` (verify user state remains) → `dpkg -P` (verify expected purge behavior). Add the
-upgrade test P7.3 already partially checked, made repeatable: install N, create state, install N+1,
-verify state survives. Mark P7.1 and P7.3 as CI-automated (not just manually-verified-once) in
-`linux-local-deb-packaging-plan.md` once this lands.
+`tests/integration/test_deb_packaged_lifecycle.py` landed, marked `packaged` (the first module to
+actually apply that marker — `testing-policy.md`'s own table update below), collected wherever the
+rest of `tests/integration/` is but self-skipping unless it finds a real Linux host, a built
+`dist/privacyfence_*.deb`, `dpkg`/`dpkg-deb`/`desktop-file-validate` on `PATH`, and passwordless
+root — the same posture `test_macos_packaged_smoke.py` already established for the DMG, so it never
+runs in `tests.yml`'s per-PR jobs, only in `build.yml`'s `build-deb` job right after
+`scripts/build_deb.sh` (that job's own new "Run packaged .deb lifecycle test" step, gating the
+`.deb`'s upload/R2/release steps the same way `test_macos_packaged_smoke.py` already gates the DMG's
+in the `build` job).
+
+Two tests, exactly the two lifecycles P7.1/P7.3 named:
+
+- **`test_deb_install_validate_scenario_remove_purge_lifecycle`**: real `dpkg -i` → asserts
+  `/usr/bin/privacyfence-app`/`/opt/privacyfence/PrivacyFenceApp`/the autostart `.desktop` file all
+  exist → `desktop-file-validate` against the installed `.desktop` file → starts the real installed
+  daemon (the wrapper script, not the PyInstaller binary directly) with an isolated `$HOME` and runs
+  the shared Phase 3 daemon→MCP→approval→audit contract shape against it → `dpkg -r` (package files
+  gone, the autostart file — a conffile — correctly survives a plain remove, `$HOME` untouched) →
+  `dpkg -P` (conffile now gone too, `$HOME` still untouched).
+- **`test_upgrade_in_place_preserves_user_state`**: installs version N, applies a real auto-accept
+  rule change through the daemon's own MCP/approval round trip (not a hand-written settings.yaml),
+  installs a version N+1 — the identical PyInstaller bundle, relabeled to a version
+  `dpkg --compare-versions` orders strictly after N (a second genuine PyInstaller build would
+  multiply this module's already-heavy setup cost for no coverage the file-level `$HOME` isolation
+  claim actually needs — see that test's `_synthetic_next_version_deb` docstring) — over it, and
+  confirms the state survived and the upgraded binary still starts and serves. Closes the exact gap
+  P7.3's own "partially checked" note left open: a real version transition, not a same-version
+  reinstall.
+
+**One deliberate substitution from Phase 3's own scenario**, for the same reason
+`test_macos_packaged_smoke.py` already made it: Phase 3's `SystemTestConnector` is injected by
+monkeypatching `daemon_main.build_connectors` *before* `daemon_main` is imported — only possible
+when the test controls the Python import itself, which a packaged, frozen daemon started as its own
+binary never does. This module instead drives `privacyfence_propose_auto_accept_rule_change`, the
+one built-in meta-tool that always blocks on a confirmation dialog with no connector/credential
+behind it — same tool, same reasoning, `test_macos_packaged_smoke.py` already uses. Unlike that
+module (a real headless-Chromium click), this one resolves the pending card the same way Phase 3
+itself does — a direct HTTP POST to `/api/approvals/<id>/decide` with the bootstrap-minted session
+cookie as CSRF — so this job needs no Node/Playwright dependency, only what `scripts/build_deb.sh`
+itself already needs.
+
+`docs/linux-local-deb-packaging-plan.md`'s P7.1 and P7.3 are marked CI-automated (not just
+manually-verified-once); P7.2 (graphical-session autostart) stays open, per this plan's own Phase 7.
 
 ### 6.4 Release gating
 
