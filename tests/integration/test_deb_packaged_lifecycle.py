@@ -103,6 +103,8 @@ mcp_client = pytest.importorskip(
 from mcp import ClientSession  # noqa: E402
 from mcp.client.streamable_http import streamable_http_client  # noqa: E402
 
+from tests.diagnostics import failure_dir, suite_name_for  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DIST_DIR = REPO_ROOT / "dist"
 SETTINGS_EXAMPLE = REPO_ROOT / "src" / "privacyfence" / "resources" / "settings.yaml.example"
@@ -189,14 +191,43 @@ def _purge_if_present() -> None:
         _dpkg("-P", PACKAGE_NAME, check=False)
 
 
+def _capture_installed_file_manifest(request) -> None:
+    """docs/automated-test-strategy-plan.md Phase 10 item 1's "an
+    installed-file manifest (packaged tests)" -- unlike
+    test_windows_packaged_smoke.py's own install directory (already under
+    that test's own ``tmp_path``, so tests/diagnostics.py's generic
+    per-``tmp_path`` manifest already covers it for free), a real
+    ``dpkg -i`` installs into real system paths (``/opt/privacyfence``,
+    ``/usr/bin``, ``/etc/xdg/autostart``) no ``tmp_path`` isolates -- this
+    is the one packaged-artifact module that needs its own capture call for
+    that reason. ``dpkg -L``/``dpkg -s`` are already exactly the manifest a
+    human would reach for by hand, so this doesn't invent a new format."""
+    rep_call = getattr(request.node, "rep_call", None)
+    if rep_call is None or not rep_call.failed:
+        return
+    status = subprocess.run(["dpkg", "-s", PACKAGE_NAME], capture_output=True, text=True)
+    if status.returncode != 0:
+        return   # package isn't installed at all right now -- nothing to list
+    listing = subprocess.run(["dpkg", "-L", PACKAGE_NAME], capture_output=True, text=True)
+    dest = failure_dir(request.node.nodeid, suite=suite_name_for(__file__))
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "dpkg-status.txt").write_text(status.stdout + status.stderr, encoding="utf-8")
+    (dest / "dpkg-installed-files.txt").write_text(listing.stdout + listing.stderr, encoding="utf-8")
+
+
 @pytest.fixture(autouse=True)
-def _clean_package_state():
+def _clean_package_state(request):
     """Every test in this module installs/removes/purges the real system
     package -- global machine state, not something ``tmp_path`` isolates.
     Guarantee a clean slate on both sides of each test so failures don't
-    cascade across tests or leave the runner with a stray install."""
+    cascade across tests or leave the runner with a stray install.
+
+    Captures the installed-file manifest (see
+    ``_capture_installed_file_manifest``) *before* the teardown purge below
+    -- otherwise there'd be nothing left installed to list."""
     _purge_if_present()
     yield
+    _capture_installed_file_manifest(request)
     _purge_if_present()
 
 

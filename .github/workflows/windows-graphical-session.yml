@@ -80,3 +80,17 @@ jobs:
       # assuming so, but this job still needs no separate elevation step.
       - name: Run Windows graphical-session/autostart test (Phase 7 item 2)
         run: pytest tests/integration/test_windows_graphical_session_autostart.py -v
+
+      # docs/automated-test-strategy-plan.md Phase 10: same tests/
+      # diagnostics.py capture as linux-graphical-session.yml's own step --
+      # same reasoning (a flaky/scheduled tier still needs to be diagnosable
+      # from CI, not just tellable apart from a real regression by re-running
+      # locally).
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-graphical-session-failure-diagnostics
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 30

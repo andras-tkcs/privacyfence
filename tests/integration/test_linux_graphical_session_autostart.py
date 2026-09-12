@@ -87,6 +87,12 @@ import pytest
 
 pytest.importorskip("mcp", reason="mcp (Python MCP client, test-only) not installed -- pip install -e '.[test]'")
 
+from tests.diagnostics import (  # noqa: E402
+    capture_directory_manifest,
+    failure_dir,
+    suite_name_for,
+    write_environment_info,
+)
 from tests.integration.test_deb_packaged_lifecycle import (  # noqa: E402
     MCP_TOKEN_FILE_NAME,
     OPT_DIR,
@@ -197,8 +203,34 @@ def _current_user() -> str:
 # $HOME under tmp_path.
 # --------------------------------------------------------------------------- #
 
+def _capture_real_home_diagnostics(request, real_home: Path, state_dir: Path) -> None:
+    """docs/automated-test-strategy-plan.md Phase 10: this module's own
+    tests/diagnostics.py capture call, since ``_real_home_state`` (unlike
+    every other packaged/system fixture in this repo) deliberately isolates
+    nothing under ``tmp_path`` -- see this fixture's own docstring for why.
+    Its own daemon never even logs to a file (`systemd --user` captures its
+    stdout/stderr into the real user journal, not `$HOME`), so this reaches
+    for the journal directly via `journalctl` rather than
+    tests/diagnostics.py's generic ``copy_named_logs``, which would find
+    nothing here."""
+    rep_call = getattr(request.node, "rep_call", None)
+    if rep_call is None or not rep_call.failed:
+        return
+    dest = failure_dir(request.node.nodeid, suite=suite_name_for(__file__))
+    write_environment_info(dest / "environment.txt")
+    capture_directory_manifest(state_dir, dest / "manifest.txt")
+    journal = subprocess.run(
+        ["journalctl", "--user", "-u", AUTOSTART_UNIT_NAME, "--no-pager"],
+        capture_output=True, text=True,
+    )
+    (dest / "logs").mkdir(parents=True, exist_ok=True)
+    (dest / "logs" / f"journalctl-{AUTOSTART_UNIT_NAME}.log").write_text(
+        journal.stdout + journal.stderr, encoding="utf-8",
+    )
+
+
 @pytest.fixture
-def _real_home_state():
+def _real_home_state(request):
     real_home = Path.home()
     state_dir = real_home / ".privacyfence"
     if state_dir.exists():
@@ -211,6 +243,7 @@ def _real_home_state():
     try:
         yield real_home
     finally:
+        _capture_real_home_diagnostics(request, real_home, state_dir)
         _purge_if_present()
         shutil.rmtree(state_dir, ignore_errors=True)
 

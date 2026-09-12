@@ -139,6 +139,21 @@ jobs:
       - name: Run packaged smoke test (TST-15)
         run: pytest tests/integration/test_macos_packaged_smoke.py -v
 
+      # docs/automated-test-strategy-plan.md Phase 10: tests/diagnostics.py's
+      # own capture (environment info, an installed-file manifest, and any
+      # daemon.log/*.jsonl audit logs found under the failing test's own
+      # tmp_path -- see test_macos_packaged_smoke.py's own `running_packaged_
+      # daemon` fixture) -- `if: failure()` since the step above is what
+      # actually stops the job here; nothing is written on a passing run.
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-packaged-smoke-failure-diagnostics
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Upload DMG as artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -302,6 +317,21 @@ jobs:
       - name: Run packaged installer smoke test (Phase 6.2)
         run: pytest tests/integration/test_windows_packaged_smoke.py -v
 
+      # docs/automated-test-strategy-plan.md Phase 10: same tests/
+      # diagnostics.py capture as the `build` job's identically-named step --
+      # this module's own install_dir/home already live under each test's
+      # own tmp_path, so the generic per-tmp_path manifest already covers
+      # the installed files here, no per-module capture code needed (unlike
+      # test_deb_packaged_lifecycle.py's real system install).
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-packaged-smoke-failure-diagnostics
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Upload installer as artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -426,6 +456,23 @@ jobs:
       # failure here fails this job before the .deb reaches R2/GitHub Releases below.
       - name: Run packaged .deb lifecycle test (Phase 6.3)
         run: pytest tests/integration/test_deb_packaged_lifecycle.py -v
+
+      # docs/automated-test-strategy-plan.md Phase 10: same tests/
+      # diagnostics.py capture as the `build`/`build-windows` jobs' own
+      # steps -- placed after both pytest steps above (not just the .deb
+      # lifecycle one) since `if: failure()` fires for either one; the
+      # org-mode smoke test's own `--target install` tmp_path and the .deb
+      # lifecycle test's own real-`dpkg`-install manifest
+      # (test_deb_packaged_lifecycle.py's own `_capture_installed_file_
+      # manifest`) both land under the same test-results/ tree either way.
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-deb-failure-diagnostics
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Upload .deb as artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

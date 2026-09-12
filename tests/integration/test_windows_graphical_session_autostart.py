@@ -85,6 +85,12 @@ import pytest
 
 pytest.importorskip("mcp", reason="mcp (Python MCP client, test-only) not installed -- pip install -e '.[test]'")
 
+from tests.diagnostics import (  # noqa: E402
+    capture_directory_manifest,
+    failure_dir,
+    suite_name_for,
+    write_environment_info,
+)
 from tests.integration.test_windows_packaged_smoke import (  # noqa: E402
     ALIAS_EXE_NAME,
     MCP_TOKEN_FILE_NAME,
@@ -101,6 +107,45 @@ from tests.integration.test_windows_packaged_smoke import (  # noqa: E402
     _task_exists,
     _wait_until_connectable,
 )
+
+
+@pytest.fixture
+def _graphical_diagnostics(request):
+    """docs/automated-test-strategy-plan.md Phase 10: this module's own
+    tests/diagnostics.py capture call. Unlike test_windows_packaged_
+    smoke.py's ``home`` (always under that test's own ``tmp_path``), this
+    module's daemon boots into a *real* throwaway user's Windows profile --
+    not known until the test body itself calls ``_wait_for_profile_dir`` --
+    so the test registers it into this fixture's own mutable ``state`` dict
+    once it's known, the same "register, then capture from teardown" shape
+    test_deb_packaged_lifecycle.py's own ``_capture_installed_file_
+    manifest``/``_clean_package_state`` pair uses for real installed system
+    state. There's no ``daemon.log`` here either -- a Scheduler-launched
+    process has no redirected stdout of its own -- so this reaches for
+    ``schtasks /query ... /v`` (the task's own last-run result code) instead
+    of a log file, same reasoning as test_linux_graphical_session_
+    autostart.py's own ``journalctl`` capture for its systemd-launched one."""
+    state: dict[str, Path] = {}
+    yield state
+    rep_call = getattr(request.node, "rep_call", None)
+    if rep_call is None or not rep_call.failed:
+        return
+    dest = failure_dir(request.node.nodeid, suite=suite_name_for(__file__))
+    write_environment_info(dest / "environment.txt")
+    home = state.get("home")
+    if home is not None:
+        # A different filename than the generic per-`tmp_path` capture's own
+        # `manifest.txt` (docs/automated-test-strategy-plan.md Phase 10's
+        # tests/conftest.py hook also fires for this test, since it directly
+        # takes `tmp_path` too, for `install_dir`) -- this is a second,
+        # separate manifest (the throwaway user's real profile, not
+        # `tmp_path`), not a replacement for it.
+        capture_directory_manifest(home / ".privacyfence", dest / "manifest-profile-home.txt")
+    task_info = subprocess.run(
+        ["schtasks", "/query", "/tn", TASK_NAME, "/v", "/fo", "list"], capture_output=True, text=True,
+    )
+    (dest / "logs").mkdir(parents=True, exist_ok=True)
+    (dest / "logs" / "schtasks-query.txt").write_text(task_info.stdout + task_info.stderr, encoding="utf-8")
 
 
 def _is_admin() -> bool:
@@ -302,7 +347,9 @@ def _wait_for_path_content(path: Path, *, timeout: float) -> str:
 # verify autostart, exercise the Phase 3 system contract.
 # --------------------------------------------------------------------------- #
 
-async def test_installer_autostart_activates_daemon_via_real_logon_session(_throwaway_user, tmp_path):
+async def test_installer_autostart_activates_daemon_via_real_logon_session(
+    _throwaway_user, tmp_path, _graphical_diagnostics,
+):
     username, password = _throwaway_user
     setup_exe = _built_installers()[-1]
     install_dir = tmp_path / "install"
@@ -314,6 +361,7 @@ async def test_installer_autostart_activates_daemon_via_real_logon_session(_thro
     # logon later is never this account's very first one at all. ───────────
     _run_as_user(username, password, "cmd.exe", "/c exit")
     home = _wait_for_profile_dir(username, timeout=30)
+    _graphical_diagnostics["home"] = home
 
     port = _free_port()
     _prepare_home(home, port=port)
