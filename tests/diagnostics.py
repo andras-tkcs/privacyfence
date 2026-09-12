@@ -100,6 +100,12 @@ def _write_text(dest: Path, content: str) -> None:
         try:
             dest.with_name(dest.name + ".capture-error.txt").write_text(str(exc), encoding="utf-8")
         except OSError:
+            # Deliberately swallowed, not just unhandled: this is already the
+            # fallback path for a failed diagnostics write, so a second
+            # failure here (e.g. the same missing/unwritable directory) has
+            # nowhere further to report to -- diagnostics capture must never
+            # raise and mask the test's own real failure (see this
+            # function's own docstring).
             pass
 
 
