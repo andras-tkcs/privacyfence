@@ -88,7 +88,7 @@ class TestCredentialStorage:
         assert [c.credential_id for c in wa.list_credentials(BOB)] == ["bob-cred"]
 
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, the now-removed windows-linux-support-plan.md's Track B3)",
     )
     def test_credentials_file_is_0600(self):
         wa.add_credential(ALICE, _credential())

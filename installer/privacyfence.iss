@@ -1,6 +1,6 @@
 ; PrivacyFence Windows installer (Inno Setup 6).
 ;
-; docs/windows-support-plan.md Phase 4 (B4 in docs/windows-linux-support-
+; The now-removed docs/windows-support-plan.md Phase 4 (B4 in the now-removed docs/windows-linux-support-
 ; plan.md) -- the Windows analogue of build_dmg.sh's DMG: one distributable
 ; carrying both the daemon and the Claude Desktop extension (.mcpb), plus
 ; (unlike the drag-to-Applications DMG) the autostart wiring a real installer

@@ -384,7 +384,7 @@ class TestDownloadAttachment:
         "verbatim via os.path.join(), which keeps the given POSIX-style root but appends "
         "with a native (backslash) separator on Windows -- a genuine finding from "
         "promoting this suite to Windows CI (docs/automated-test-strategy-plan.md "
-        "Phase 2.1), tracked in docs/windows-support-plan.md rather than guessed at here",
+        "Phase 2.1), tracked in the now-removed windows-support-plan.md rather than guessed at here",
     )
     async def test_preview_and_gate(self, gated_call_spy):
         # application/octet-stream -- a type is_prefetch_worthy() doesn't

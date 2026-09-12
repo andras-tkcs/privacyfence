@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build privacyfence_<version>_<arch>.deb — a `dpkg -i`-able Linux package wrapping a
 # self-contained PyInstaller build of the daemon, the Linux equivalent of scripts/build_dmg.sh's
-# macOS DMG. See docs/linux-local-deb-packaging-plan.md for the full design (why PyInstaller
+# macOS DMG. See the now-removed docs/linux-local-deb-packaging-plan.md for the full design (why PyInstaller
 # instead of a "proper" python3-* dependency package, why /opt + a /usr/bin wrapper, why XDG
 # autostart instead of the repo-root --user systemd unit).
 #
@@ -187,7 +187,7 @@ CHANGELOG_DATE="$(date -Ru)"
 # from its Package: stanza here: drop comment lines (not valid in a binary control file, only in
 # the source-package one dpkg-source parses) and dh substvar placeholders (nothing computes
 # ${misc:Depends} outside a real dh build -- an empty/absent Depends is exactly the "no python3-*
-# dependency requirements" property the key decision in docs/linux-local-deb-packaging-plan.md is
+# dependency requirements" property the key decision in the now-removed docs/linux-local-deb-packaging-plan.md is
 # built around), then fill in this build's Architecture/Version/Installed-Size.
 INSTALLED_SIZE_KB=$(find "$STAGE" -mindepth 1 -maxdepth 1 ! -name DEBIAN -exec du -sk {} + | awk '{sum+=$1} END {print sum+0}')
 

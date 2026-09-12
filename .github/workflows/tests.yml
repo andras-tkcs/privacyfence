@@ -216,7 +216,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # docs/windows-support-plan.md Phase 6.2 (B5 in docs/windows-linux-
+  # the now-removed windows-support-plan.md Phase 6.2 (B5 in the now-removed windows-linux-
   # support-plan.md): a real-Windows confirmation that nothing path-
   # separator- or Path-handling-related breaks that the `test` job above
   # (already proven platform-independent on a second POSIX platform via
@@ -230,7 +230,7 @@ jobs:
   # Deliberately still the full core suite, not narrowed to Phase 2.3's
   # targeted tests/platform/ subset -- Phase 2.4 considered narrowing and
   # decided against it: this job's own first real run found four genuine
-  # cross-platform bugs (docs/windows-support-plan.md Phase 6.3) in ordinary
+  # cross-platform bugs (the now-removed windows-support-plan.md Phase 6.3) in ordinary
   # modules with no platform marker (settings_controller.py, drive.py, a
   # shim-contract test, an audit-log test), none of which lived in
   # tests/platform/'s own subject matter -- a subset chosen ahead of time

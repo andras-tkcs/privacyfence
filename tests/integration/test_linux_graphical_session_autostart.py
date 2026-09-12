@@ -1,5 +1,5 @@
 """Real graphical-session autostart verification for the Linux ``.deb``
-(docs/automated-test-strategy-plan.md Phase 7 item 1; docs/linux-local-deb-
+(docs/automated-test-strategy-plan.md Phase 7 item 1; the now-removed linux-local-deb-
 packaging-plan.md P7.2).
 
 ``test_deb_packaged_lifecycle.py`` (Phase 6.3) already proves the install/
@@ -143,7 +143,7 @@ pytestmark = [
     pytest.mark.packaged,
     pytest.mark.skipif(
         platform.system() != "Linux",
-        reason="only meaningful on real Linux -- see docs/linux-local-deb-packaging-plan.md P7.2",
+        reason="only meaningful on real Linux -- see the now-removed linux-local-deb-packaging-plan.md P7.2",
     ),
     # Same heavy-setup timeout reasoning as test_deb_packaged_lifecycle.py:
     # a real dpkg install, a real systemd --user manager brought up from

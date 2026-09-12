@@ -1,6 +1,6 @@
 name: Linux graphical-session autostart
 
-# docs/automated-test-strategy-plan.md Phase 7 item 1 (docs/linux-local-deb-
+# docs/automated-test-strategy-plan.md Phase 7 item 1 (the now-removed linux-local-deb-
 # packaging-plan.md P7.2): a real systemd --user login-equivalent session
 # actually starting the packaged daemon via XDG autostart, plus (where
 # practical) the real OAuth loopback browser-opening flow under a real

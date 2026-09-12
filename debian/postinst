@@ -1,6 +1,6 @@
 #!/bin/sh
 # postinst for the privacyfence .deb. Keep this minimal and idempotent (safe to re-run on
-# upgrade) -- see docs/linux-local-deb-packaging-plan.md Phase 2/P3.3.
+# upgrade) -- see the now-removed docs/linux-local-deb-packaging-plan.md Phase 2/P3.3.
 set -e
 
 case "$1" in
@@ -26,6 +26,6 @@ esac
 # login -- correct DMG-parity behavior (the DMG doesn't launch the app immediately after a
 # drag-install either). postinst runs as root, which can neither correctly determine the
 # installing user's desktop session nor safely start a per-user daemon on their behalf --
-# see docs/linux-local-deb-packaging-plan.md P3.3.
+# see the now-removed docs/linux-local-deb-packaging-plan.md P3.3.
 
 exit 0

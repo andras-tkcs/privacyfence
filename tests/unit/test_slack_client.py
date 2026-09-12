@@ -188,7 +188,7 @@ class TestAuthorizeInteractive:
             authorize_interactive("cid", "csecret", str(tmp_path / "token.json"))
 
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, the now-removed windows-linux-support-plan.md's Track B3)",
     )
     def test_successful_flow_saves_token_with_restricted_permissions(self, monkeypatch, tmp_path):
         monkeypatch.setattr("privacyfence.slack_client.run_browser_oauth", _invoke_exchange)
@@ -279,7 +279,7 @@ class TestHoistedFunctions:
         }
 
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, the now-removed windows-linux-support-plan.md's Track B3)",
     )
     def test_save_token_record_writes_with_restricted_permissions(self, tmp_path):
         from privacyfence.slack_client import save_token_record

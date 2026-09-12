@@ -1,8 +1,8 @@
 """Packaged-artifact lifecycle test for the Linux ``.deb``
-(docs/automated-test-strategy-plan.md Phase 6 item 6.3; docs/linux-local-deb-
+(docs/automated-test-strategy-plan.md Phase 6 item 6.3; the now-removed linux-local-deb-
 packaging-plan.md P7.1/P7.3).
 
-``docs/linux-local-deb-packaging-plan.md`` Phase 7 already proved this
+the now-removed ``linux-local-deb-packaging-plan.md`` Phase 7 already proved this
 lifecycle by hand once (P7.1: install/validate/remove/purge; P7.3, partially:
 reinstalling the same build over itself leaves ``$HOME`` alone). This module
 turns that into a repeatable CI job, the same role
@@ -140,7 +140,7 @@ pytestmark = [
     pytest.mark.packaged,
     pytest.mark.skipif(
         platform.system() != "Linux",
-        reason="only meaningful against a real .deb -- see docs/linux-local-deb-packaging-plan.md P7.1",
+        reason="only meaningful against a real .deb -- see the now-removed linux-local-deb-packaging-plan.md P7.1",
     ),
     pytest.mark.skipif(
         not _built_debs(),

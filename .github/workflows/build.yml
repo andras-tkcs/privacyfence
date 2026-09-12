@@ -213,7 +213,7 @@ jobs:
         with:
           prerelease: true
 
-  # docs/windows-support-plan.md Phase 6 (B5 in docs/windows-linux-support-
+  # the now-removed windows-support-plan.md Phase 6 (B5 in the now-removed windows-linux-support-
   # plan.md): the Windows analogue of the `build` job above. Runs in
   # parallel with it (and with `build-deb`/`sbom`) rather than depending on
   # it -- same "independent, tagged-source-tree-only" reasoning the `sbom`
@@ -281,7 +281,7 @@ jobs:
       #                              (base64 -w0 cert.pfx | Set-Clipboard, or
       #                              on Windows: certutil -encode)
       #   WINDOWS_CERTIFICATE_PWD  — the .pfx export password
-      # docs/windows-support-plan.md Phase 5.1's default decision: start with
+      # the now-removed windows-support-plan.md Phase 5.1's default decision: start with
       # an OV cert via a portable .pfx (this step), revisit an EV/HSM-backed
       # signing service later only if SmartScreen friction on first run
       # turns out to matter for real users.
@@ -372,7 +372,7 @@ jobs:
         with:
           prerelease: true
 
-  # Linux `.deb` leg (docs/linux-local-deb-packaging-plan.md P5.1) -- the Linux equivalent of the
+  # Linux `.deb` leg (the now-removed linux-local-deb-packaging-plan.md P5.1) -- the Linux equivalent of the
   # `build` job above. Independent of it (doesn't need the macOS runner, code signing, or
   # notarization -- `.deb`s aren't gated on a trusted-publisher story the way Gatekeeper/
   # SmartScreen gate the DMG/Windows installer, per that plan's P5.2), so it runs in parallel
