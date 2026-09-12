@@ -150,6 +150,32 @@ jobs:
           body-path: /tmp/qa-record-report.md
           add-paths: tests/fixtures/live/**
 
+      # Mirrors the copy-in step above, reversed. Each *_client.py that
+      # refreshes an expired OAuth access token already persists the
+      # refreshed token back to disk in place (e.g. confluence_client.py's
+      # _try_refresh() -> save_token_file(), which even already handles
+      # Atlassian rotating the refresh token on use) -- but until now that
+      # write only ever landed inside this run's disposable checkout, never
+      # back in QA_SECRETS_DIR. Google's refresh tokens aren't single-use,
+      # so this silently didn't matter for calendar/tasks/contacts/drive/
+      # gmail, but Atlassian's are: every run after the first was refreshing
+      # Jira/Confluence with an already-spent seed token, which is exactly
+      # what broke run
+      # https://github.com/privacyfence/privacyfence/actions/runs/34639046673
+      # ("token refresh failed: ... 403 Forbidden") right after this
+      # runner's Atlassian credentials were freshly re-authenticated.
+      # `if: always()`: a token can be refreshed (and rotated) by an early
+      # step even when a later one fails -- losing that refreshed value
+      # here would just reproduce the same bug on the very next run.
+      - name: Copy any refreshed QA credentials back to this runner's persistent store
+        if: always()
+        run: |
+          set -euo pipefail
+          secrets_dir="$(eval echo "${QA_SECRETS_DIR}")"
+          if [ -d credentials ]; then
+            cp -a credentials/. "${secrets_dir}/credentials/"
+          fi
+
       - name: Upload report artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
