@@ -153,9 +153,9 @@ def build_authorize_url(
     client_id: str, redirect_uri: str, state: str, user_scopes: list[str] | None = None,
 ) -> str:
     """Slack's OAuth v2 authorize URL -- factored out of ``authorize_interactive``
-    (P8, docs/https-connector-refactor-plan.md §9.3) so ``web/routes_
-    connections.py``'s org-mode server-redirect flow can build the same URL
-    without going through ``oauth_loopback.run_browser_oauth``'s local
+    (P8) so ``web/routes_connections.py``'s org-mode server-redirect flow
+    can build the same URL without going through
+    ``oauth_loopback.run_browser_oauth``'s local
     listener. ``state`` is a CSRF token the caller generates and later
     verifies on the callback -- Slack's OAuth v2 has no PKCE support, so
     there is no ``code_challenge`` parameter here (unlike Salesforce/
@@ -1219,7 +1219,7 @@ class SlackClient:
         the actual re-sync onto a background thread instead of running it
         inline: a gated tool call must never sit behind a multi-page
         ``users.list`` walk just because the weekly TTL happened to expire
-        mid-session (see docs/slack-performance-review.md's R5). The one
+        mid-session. The one
         exception is when no snapshot has ever loaded at all (a fresh
         install, or on-disk load never having succeeded) -- there's nothing
         to serve while a background refresh runs, so that case still blocks,
@@ -1568,9 +1568,8 @@ class SlackClient:
         whole call to None rather than picking one arbitrarily or matching
         all of them -- letting a needle like "user 7" match every "User 7x"
         would turn one intended conversation into a fan-out of extra API
-        calls, the opposite of what this method exists to prevent (see
-        docs/slack-performance-review.md's bug #6). The old, unmodified
-        per-item path still applies that same loose substring matching when
+        calls, the opposite of what this method exists to prevent. The
+        old, unmodified per-item path still applies that same loose substring matching when
         this returns None, so nothing here narrows what a caller can find --
         only how cheaply the unambiguous, common case is found.
         """

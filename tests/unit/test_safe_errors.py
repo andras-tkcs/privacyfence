@@ -1,6 +1,5 @@
-"""Unit tests for safe_errors.py (SEC-10, docs/security-remediation-plan.md
-Phase 1.7) -- the typed public-message allowlist and the token-shaped-
-string redaction used both there and by the log formatter.
+"""Unit tests for safe_errors.py -- the typed public-message allowlist and
+the token-shaped-string redaction used both there and by the log formatter.
 
 See tests/unit/abuse/test_abuse_mcp_error_taxonomy.py for the full-chain
 version of this: real exceptions carrying fake secrets, round-tripped

@@ -47,7 +47,7 @@ import json
 import secrets
 from pathlib import Path
 
-# docs/https-connector-refactor-plan.md §16.2.3: the settings page's own
+# The settings page's own
 # palette is restyled onto the same tokens the approval card already
 # defines (resources/tokens.css, extracted from resources/approval_window/
 # styles.css's own :root block -- see that file's own docstring for why it
@@ -1199,7 +1199,7 @@ def build_html(state: dict, *, nonce: str | None = None) -> str:
     docstring for the bridge protocol Python's re-renders (``window.
     __pfRender``) follow afterwards.
 
-    ``nonce`` (SEC-08, docs/security-remediation-plan.md Phase 3.1): the
+    ``nonce``: the
     current response's CSP nonce (``request.state.csp_nonce``) -- this
     fragment is rendered fresh on every ``GET /settings`` and dropped into
     web/routes_settings.py's own web_shell.wrap() call, which must be given

@@ -154,8 +154,8 @@ class TestCall:
         assert len(connector.calls) == 1
 
     async def test_dedupe_is_scoped_per_principal_not_shared_across_them(self):
-        # P7, docs/https-connector-refactor-plan.md §9: McpDispatcher is one
-        # shared instance for the whole process, so its dedupe cache has to
+        # P7: McpDispatcher is one shared instance for the whole process,
+        # so its dedupe cache has to
         # key on the current principal too -- otherwise a second principal
         # calling the exact same tool with the exact same arguments within
         # the dedupe TTL would be handed the FIRST principal's actual
@@ -181,8 +181,8 @@ class TestCall:
         assert len(connector.calls) == 1
 
     async def test_a_pending_approval_result_is_never_cached_for_reuse(self):
-        # P3 (docs/https-connector-refactor-plan.md §5.2 point 6): a gated
-        # call that returned {"status": "approval_pending", ...} must be
+        # P3: a gated call that returned {"status": "approval_pending", ...}
+        # must be
         # re-runnable immediately -- Claude re-issuing the identical call
         # is exactly how it collects the real decision from gate.py's
         # ledger, and that re-issue has to actually reach the connector

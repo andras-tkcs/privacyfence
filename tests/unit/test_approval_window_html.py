@@ -338,8 +338,7 @@ class TestLayoutShapes:
         assert html.index("Preview (~2 sec read)") > html.index("What Claude already knows")
 
     def test_neither_layout_leaves_a_duplicate_class_attribute(self):
-        # The one silent-failure trap named in
-        # docs/https-connector-refactor-plan.md §7.3: leaving the original
+        # The one silent-failure trap: leaving the original
         # class="pf-scroll" in place while separately adding a second
         # class="..." attribute produces a duplicate attribute that no-ops
         # the override without raising anything. Every element opened with
@@ -352,10 +351,9 @@ class TestLayoutShapes:
 
 
 class TestResponsiveBreakpoint:
-    """§7.3's phone-viewport pass: below a fixed breakpoint the document
-    stops assuming it's inside a fixed-height native window frame. See
-    docs/https-connector-refactor-plan.md §7.3 for the two layout traps
-    this avoids (flex:0 0 420px becoming a height once the row goes
+    """The phone-viewport pass: below a fixed breakpoint the document
+    stops assuming it's inside a fixed-height native window frame, avoiding
+    two layout traps (flex:0 0 420px becoming a height once the row goes
     vertical; two independently-scrolling flex:1 panes fighting over a
     height neither needs once body itself isn't 100vh)."""
 
@@ -745,8 +743,7 @@ class TestEscapingAndNoNetwork:
 
 class TestCardStackIsAPureFunction:
     def test_same_input_same_output(self):
-        # SEC-08 (docs/security-remediation-plan.md Phase 3.1): ``nonce``
-        # defaults to a fresh random value per call by design (it's a CSP
+        # ``nonce`` defaults to a fresh random value per call by design (it's a CSP
         # nonce -- see build_card_stack_html's own docstring), so two calls
         # with otherwise-identical arguments are deliberately *not* required
         # to produce identical output unless the nonce is pinned explicitly,
@@ -763,7 +760,7 @@ class TestCardStackIsAPureFunction:
 
 
 class TestCspNonce:
-    """SEC-08 (docs/security-remediation-plan.md Phase 3.1)."""
+    """Each render gets its own random CSP nonce."""
 
     def test_each_call_gets_its_own_random_nonce(self):
         a = build_card_stack_html(**_minimal_kwargs())

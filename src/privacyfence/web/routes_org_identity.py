@@ -1,5 +1,4 @@
-"""Browser login for org mode (P7, docs/https-connector-refactor-plan.md
-§9.4) -- PrivacyFence acting as its own OIDC relying party against the
+"""Browser login for org mode (P7) -- PrivacyFence acting as its own OIDC relying party against the
 org's IdP, for a human visiting the web approval/settings surface
 directly. This is a *separate* IdP-facing redirect_uri from web/
 oauth_provider.py's ``OrgOAuthProvider`` (which does the same IdP dance,
@@ -126,7 +125,7 @@ def build_routes(
     presents to the IdP has to be this fixed, pre-registered value, never
     derived from a request's own (spoofable) Host header.
 
-    ``default_next_path`` (P8, docs/https-connector-refactor-plan.md §9.3)
+    ``default_next_path`` (P8)
     is where a sign-in with no explicit ``?next=`` lands -- ``DEFAULT_
     NEXT_PATH`` ("/approvals") was never reachable in org mode to begin
     with (``/approvals`` isn't mounted there at all, see web/server.py's

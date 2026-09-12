@@ -1,8 +1,7 @@
 """Domain/business logic behind the web settings page (web/routes_settings.py).
 
 Through P9 this also backed a native macOS webview settings window
-(settings_window.py); P10 (docs/https-connector-refactor-plan.md §12, D6)
-deleted that host along with the rest of the AppKit UI layer, leaving the
+(settings_window.py); P10 (D6) deleted that host along with the rest of the AppKit UI layer, leaving the
 web settings page (when ``web.settings.enabled`` is set) as the only way to
 drive this controller interactively -- editing ``config/settings.yaml`` by
 hand remains the headless path either way. This module itself was already
@@ -454,7 +453,7 @@ def _google_client_config(org_config: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------- #
-# §16.2.1's dispatcher seam (docs/https-connector-refactor-plan.md): every
+# The dispatcher seam: every
 # background-thread callback in this module needs to marshal back onto "the
 # main thread" before touching ``self`` again -- ``self.on_change``/the
 # change listeners are expected to push into a live web page, and doing that
@@ -879,8 +878,7 @@ class SettingsController:
         # AppKit UI layer. The web settings page's own in-page banner
         # (renderGeneral's g.update_available, driven by _general_state
         # below, with skip_update/remind_later_update as its two dismiss
-        # actions) is this surface's only notification now -- see
-        # docs/https-connector-refactor-plan.md §16.2.4.
+        # actions) is this surface's only notification now.
 
     def skip_update(self) -> dict[str, Any]:
         """The web General page's banner "Skip" button."""

@@ -65,8 +65,7 @@ from .markdown_to_html import markdown_to_html
 _STYLES_PATH = Path(__file__).parent / "resources" / "approval_window" / "styles.css"
 _STYLES_CSS = _STYLES_PATH.read_text(encoding="utf-8")
 
-# SEC-08 (docs/security-remediation-plan.md, Phase 3.1): this document is
-# rendered exactly once, at approval-creation time (card_builder.py's
+# This document is rendered exactly once, at approval-creation time (card_builder.py's
 # build_card_html, called from gate.py's own thread, long before any
 # browser request/response for it exists) and then served byte-for-byte
 # from PendingApproval.html on every GET of /approvals/{id} -- possibly
@@ -786,8 +785,7 @@ def build_card_stack_html(
         # inline style="..." any more -- see styles.css) are what make each
         # its own shared scroll region, and what the responsive @media block
         # there overrides below the phone-viewport breakpoint (see module
-        # docstring and docs/https-connector-refactor-plan.md §7.3) -- an
-        # inline style can't carry a @media query at all.
+        # docstring) -- an inline style can't carry a @media query at all.
         left_column = f'<div class="pf-scroll pf-wide-left">{left_column_content}</div>'
         # The outer row is flex:1;min-height:0 (fills the real 100vh body
         # below temp_accept_text, if present -- see the returned document's
@@ -865,9 +863,9 @@ body {{
 }}
 /* Below this width the document is assumed to be embedded somewhere that
    isn't a fixed-height native window frame (a browser tab, an expandable
-   row in a phone-width list -- see docs/https-connector-refactor-plan.md
-   §7.3), so it scrolls like an ordinary page instead of clipping to a
-   viewport-height frame. Kept here rather than in styles.css's own
+   row in a phone-width list), so it scrolls like an ordinary page instead
+   of clipping to a viewport-height frame. Kept here rather than in
+   styles.css's own
    .pf-wide-row/.pf-wide-left/.pf-wide-right @media block (see that block's
    comment) because it has to come *after* the unconditional `height: 100vh`
    rule directly above for the cascade to actually override it -- same

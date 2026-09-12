@@ -1,7 +1,6 @@
 """Sanitization at the boundary between an internal exception and anything
 that leaves the process -- an MCP tool-call error result handed back to the
-client, or a line written to the local log file (SEC-10,
-docs/security-remediation-plan.md Phase 1.7).
+client, or a line written to the local log file (SEC-10).
 
 Today (pre-SEC-10) ``routes_mcp.py``'s ``handle_call_tool`` and
 ``idp_callback`` both do the equivalent of ``str(exc)`` straight into a

@@ -6,9 +6,8 @@
  *
  * Deliberately *not* built on the SDK's ``Client``/``Server`` classes: those
  * re-run the initialize handshake and cache tool schemas on this process,
- * which is exactly the "protocol/manifest/tool-schema knowledge" D11
- * (docs/https-connector-refactor-plan.md §12) says the shim must not carry
- * -- it is what keeps the class of bug bridge/test/manifest.test.ts and
+ * which is exactly the "protocol/manifest/tool-schema knowledge" the shim
+ * must not carry -- it is what keeps the class of bug bridge/test/manifest.test.ts and
  * tests/integration/test_bridge_daemon_contract.py exist to catch (one
  * side's wire format drifting from the other's) structurally impossible for
  * this transport, rather than something the shim also has to get right.

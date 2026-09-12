@@ -1,5 +1,5 @@
-"""Tests that the /mcp endpoint's own principal_scope() entry point (P6,
-docs/https-connector-refactor-plan.md §9.1) actually scopes each tool call --
+"""Tests that the /mcp endpoint's own principal_scope() entry point (P6)
+actually scopes each tool call --
 see test_routes_mcp.py for the wire-protocol tests this borrows its fixture
 shape from.
 """

@@ -275,9 +275,8 @@ _OPTIONAL_CATEGORIES: dict[str, str] = {
 class _PiiState:
     """Everything below used to be four bare module globals (_enabled,
     _changed_listener, _audit_match_details_enabled, _disabled_categories)
-    -- one PII-detection posture per *process*. P6 (docs/
-    https-connector-refactor-plan.md §9.2) makes it one per *principal*
-    instead: each user's own PII settings, isolated the same way their
+    -- one PII-detection posture per *process*. P6 makes it one per
+    *principal* instead: each user's own PII settings, isolated the same way their
     auto-accept rules already are."""
 
     def __init__(self) -> None:

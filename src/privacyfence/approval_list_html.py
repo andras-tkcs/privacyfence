@@ -260,8 +260,7 @@ def build_list_html(rows: list[dict[str, Any]], *, csrf: str, nonce: str | None 
     newest first (same order approvals.PendingApprovalRegistry.
     list_pending() already returns).
 
-    ``nonce`` (SEC-08, docs/security-remediation-plan.md Phase 3.1): the
-    caller's current per-response CSP nonce (web/server.py's
+    ``nonce``: the caller's current per-response CSP nonce (web/server.py's
     ``_SecurityHeadersMiddleware``, via ``request.state.csp_nonce``) --
     unlike approval_window_html.py's card documents, this fragment is
     rendered fresh on every ``GET /approvals``, so it takes the request's

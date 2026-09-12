@@ -1,7 +1,6 @@
-"""Tests for connector_registry.py's ConnectorRegistry (P6, docs/
-https-connector-refactor-plan.md §9.2's "Connectors become per-principal
-too" paragraph -- the lazy, bounded, principal-keyed cache of
-ConnectorHosts).
+"""Tests for connector_registry.py's ConnectorRegistry -- connectors are
+per-principal too: the lazy, bounded, principal-keyed cache of
+ConnectorHosts.
 """
 from __future__ import annotations
 

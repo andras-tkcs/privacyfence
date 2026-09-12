@@ -1,5 +1,4 @@
-"""Tests for webauthn_stepup.py (P9, docs/https-connector-refactor-plan.md
-§10.6, §15 D7).
+"""Tests for webauthn_stepup.py.
 
 The ``webauthn`` package's own CBOR/COSE attestation parsing and signature
 verification is not re-tested here (D2's own reasoning: it's a maintained

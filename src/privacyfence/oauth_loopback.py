@@ -10,18 +10,18 @@ Slack/Salesforce/Atlassian all require an exact-match redirect URI in their app'
 allow-list, so callers must pass a fixed port (unlike Google's "Desktop app" OAuth
 clients, which accept any loopback port).
 
-§16.2.7 of docs/https-connector-refactor-plan.md: ``run_browser_oauth()`` calls
+``run_browser_oauth()`` calls
 ``webbrowser.open()`` on **the machine running the PrivacyFence daemon**, not on
 whatever device the person clicking "Authenticate…" is holding. In ``local`` mode
 that's the same machine by construction (this is the whole assumption `local`
-mode makes -- see docs/https-connector-refactor-plan.md §4), so it works as-is;
+mode makes), so it works as-is;
 it stops being true the moment a browser tab reaches a `local`-mode daemon from
 a different device (a phone tunneled to a laptop, say). ``local`` mode's web
 settings page says so in its own copy next to a connector's Authenticate button
 (settings_window_html.py's `renderConnectors`) rather than leaving it implicit
 -- a cheap, honest statement of a real limitation beats a silent one.
 
-P8 (docs/https-connector-refactor-plan.md §9.3) built the "next step" this
+P8 built the "next step" this
 docstring used to describe here: ``org`` mode doesn't use this module's
 loopback listener at all. ``web/routes_connect.py``'s ``GET /oauth/start/
 {service}``/``GET /oauth/callback/{service}`` build the same authorize

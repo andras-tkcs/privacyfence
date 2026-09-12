@@ -113,9 +113,8 @@ class TestStepUpConfigFromOrgConfig:
 
 
 class TestDownloadDeliveryConfigFromOrgConfig:
-    """docs/org-mode-download-delivery-plan.md, Phase 1: an existing org
-    install with no "download_delivery" section keeps working exactly as
-    before this phase (inline-first, 8MB cap, staging allowed)."""
+    """An existing org install with no "download_delivery" section keeps
+    working exactly as before (inline-first, 8MB cap, staging allowed)."""
 
     def test_absent_section_uses_defaults(self):
         config = org_mode.DownloadDeliveryConfig.from_org_config({})
@@ -152,8 +151,7 @@ class TestDownloadDeliveryConfigFromOrgConfig:
 
 
 class TestAuditForwardingConfigFromOrgConfig:
-    """SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6): org
-    mode's centralized audit-log forwarding destination. An existing org
+    """Org mode's centralized audit-log forwarding destination. An existing org
     install with no "audit_forwarding" section keeps working exactly as
     before this phase (forwarding off)."""
 
@@ -253,8 +251,7 @@ class TestAuditForwardingConfigFromOrgConfig:
 
 
 class TestAuthzPolicyConfigFromOrgConfig:
-    """SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7): an
-    existing org install with no "authz" section keeps admitting every
+    """An existing org install with no "authz" section keeps admitting every
     IdP-authenticated principal exactly as before this landed."""
 
     def test_absent_section_is_disabled_with_defaults(self):

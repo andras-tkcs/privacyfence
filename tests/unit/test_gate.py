@@ -294,8 +294,8 @@ class TestReviewGateDecisions:
 
 
 class TestDeliveryAuditField:
-    """docs/org-mode-download-delivery-plan.md, Phase 3: gated_call's own
-    ``delivery`` kwarg (default "") reaches the audit entry unchanged --
+    """gated_call's own ``delivery`` kwarg (default "") reaches the audit
+    entry unchanged --
     the fact that drive_download_file/gmail_download_attachment/
     confluence_download_attachment carry a delivery path is itself worth
     auditing, distinct from the ordinary accept/deny decision."""
@@ -2023,8 +2023,8 @@ class TestPiiScanText:
 
 
 class TestConcurrentApprovals:
-    """P3 retires _popup_lock (docs/https-connector-refactor-plan.md §6):
-    "Job 1 -- one dialog at a time" is obsolete, not preserved by some other
+    """_popup_lock is retired: "one dialog at a time" is obsolete, not
+    preserved by some other
     mechanism -- several genuinely different gated calls now run their
     interactions concurrently, bounded only by _popup_executor's own worker
     count. This holds even with no deferred registry active (a plain
@@ -2097,8 +2097,8 @@ class TestCoalescing:
 
 
 class TestDeferredApprovalProtocol:
-    """docs/https-connector-refactor-plan.md §5.2: a call that doesn't get a
-    human decision within the registry's hold window returns a structured
+    """A call that doesn't get a human decision within the registry's hold
+    window returns a structured
     "approval_pending" result instead of continuing to block; a later,
     identical call finds the decision in the ledger and releases without a
     second prompt."""
@@ -2582,8 +2582,8 @@ class TestDefaultDetails:
 
 
 class TestPiiAndAuditWorkOffTheEventLoop:
-    """R9 (docs/slack-performance-review.md): detect_pii_categories/
-    scan_pii_for_audit and AuditLogger.recent_matches used to run inline on
+    """detect_pii_categories/scan_pii_for_audit and AuditLogger.recent_matches
+    used to run inline on
     gated_call's own coroutine -- synchronous, CPU-bound-ish work that
     blocked every other concurrently-dispatched request on the IPC server's
     single event loop for however long it took. Proven here the standard
@@ -2645,7 +2645,7 @@ class TestCancellation:
         monkeypatch.setattr(gate, "get_auto_accept_evaluator", lambda: FakeEvaluator((False, "")))
         monkeypatch.setattr(gate, "suggest_rule_choices", lambda *a, **k: [])
         release = threading.Event()
-        # TST-11 (docs/security-remediation-plan.md Phase 3.12): started is
+        # TST-11: started is
         # set by slow_popup itself, the actual event this test needs to
         # synchronize on -- a fixed sleep here was only ever guessing how
         # long _run_in_popup_executor takes to actually reach slow_popup.
@@ -2690,7 +2690,7 @@ class TestCancellation:
         driver = asyncio.create_task(gate.gated_call(**base_kwargs(gate="review")))
         assert await wait_until_async(lambda: bool(registry.list_pending()), timeout=2.0)
 
-        # TST-11 (docs/security-remediation-plan.md Phase 3.12): a spy on
+        # TST-11: a spy on
         # the real registry.wait_async -- called only after the coalesced
         # call has found the existing approval and started waiting on it --
         # replaces a fixed sleep that was only ever guessing when the event
@@ -2726,9 +2726,8 @@ class TestCancellation:
 
 class TestRunInPopupExecutor:
     """gate._run_in_popup_executor -- the dedicated single-thread executor
-    every native dialog call runs on (see docs/slack-performance-review.md's
-    R6), instead of asyncio.to_thread's default pool shared with every
-    connector's own blocking I/O.
+    every native dialog call runs on, instead of asyncio.to_thread's default
+    pool shared with every connector's own blocking I/O.
     """
 
     async def test_runs_the_call_and_returns_its_result(self):
@@ -2758,7 +2757,7 @@ class TestRunInPopupExecutor:
         # not queue behind them.
         default_pool_size = min(32, (__import__("os").cpu_count() or 1) + 4)
         release = threading.Event()
-        # TST-11 (docs/security-remediation-plan.md Phase 3.12): all_started
+        # TST-11: all_started
         # fires only once every occupier has actually begun running (not
         # merely been submitted to the pool) -- a fixed sleep here was only
         # ever guessing how long the default pool takes to schedule all of

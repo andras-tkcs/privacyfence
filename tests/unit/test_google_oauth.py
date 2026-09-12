@@ -1,6 +1,5 @@
-"""Tests for the shared Google OAuth 2.0 server-redirect helper (P8, docs/
-https-connector-refactor-plan.md §9.3) -- used only by web/routes_connect.py's
-org-mode routes. Local mode's own InstalledAppFlow-based authorize_interactive
+"""Tests for the shared Google OAuth 2.0 server-redirect helper -- used only
+by web/routes_connect.py's org-mode routes. Local mode's own InstalledAppFlow-based authorize_interactive
 methods on GmailClient/DriveClient/etc. are untouched by this module and keep
 their own existing test coverage.
 

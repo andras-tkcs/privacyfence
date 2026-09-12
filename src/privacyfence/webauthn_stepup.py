@@ -1,5 +1,4 @@
-"""WebAuthn step-up (P9, docs/https-connector-refactor-plan.md §10.6, §15
-D7): platform-authenticator proof (Face ID / Touch ID / Android fingerprint
+"""WebAuthn step-up (P9, D7): platform-authenticator proof (Face ID / Touch ID / Android fingerprint
 / Windows Hello) that a human -- not merely a possessed, stolen session
 cookie -- is the one approving a gated *write*, in org mode. §10.6's own
 framing: "a borrowed or stolen unlocked phone with a live session becomes a

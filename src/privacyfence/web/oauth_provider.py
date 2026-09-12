@@ -1,6 +1,5 @@
 """``OrgOAuthProvider`` -- PrivacyFence's own minimal OAuth 2.1 authorization
-server (P7, docs/https-connector-refactor-plan.md §9.4, §15's decision B),
-implementing the official MCP SDK's ``OAuthAuthorizationServerProvider``
+server (P7), implementing the official MCP SDK's ``OAuthAuthorizationServerProvider``
 protocol. Wired into web/routes_mcp.py's ``/mcp`` (via ``verify_token``,
 satisfying the SDK's separate ``TokenVerifier`` protocol too) and into
 ``mcp.server.auth.routes.create_auth_routes`` (which builds ``/authorize``,
@@ -20,7 +19,7 @@ under a fresh state value of PrivacyFence's own. ``handle_idp_callback()``
 protocol) is where the IdP's answer comes back: it verifies the ID token,
 resolves a ``Principal`` (org_identity.principal_from_claims -- the exact
 same function web/routes_org_identity.py's browser login uses, which is
-what makes §9.4's "the browser session and the MCP token are then provably
+what makes "the browser session and the MCP token are then provably
 the same identity" true by construction), and only then mints
 PrivacyFence's *own* authorization code, bound to that principal, and
 redirects the browser on to the original client's own redirect_uri.
@@ -34,8 +33,7 @@ short-lived by design (§5.4's decision-ledger precedent: state that's
 supposed to expire soon anyway doesn't need to survive a restart), so
 losing them on restart just means signing in again, not a security gap.
 
-Resource controls (SEC-16, docs/security-remediation-plan.md Phase 3 item
-3.3): ``/register`` is unauthenticated by design -- that's what "dynamic"
+Resource controls (SEC-16): ``/register`` is unauthenticated by design -- that's what "dynamic"
 means in DCR -- so this class, not the reverse proxy in front of it, is
 the only thing standing between an anonymous POST loop and an unbounded
 ``oauth_clients.json``. ``register_client`` enforces a total-client cap
@@ -87,7 +85,7 @@ _AUTHORIZATION_CODE_TTL_SECONDS = 5 * 60
 _ACCESS_TOKEN_TTL_SECONDS = 60 * 60
 _PENDING_AUTHORIZATION_TTL_SECONDS = 5 * 60
 
-# SEC-16 (docs/security-remediation-plan.md, Phase 3 item 3.3): DCR's
+# SEC-16: DCR's
 # ``/register`` endpoint is unauthenticated by design (RFC 7591 -- that's
 # the whole point of *dynamic* registration) and, before this fix, had no
 # resource controls at all: no cap on how many clients could pile up in
@@ -130,7 +128,7 @@ _STALE_CLIENT_TTL_SECONDS = 180 * 24 * 60 * 60
 # for up to _PENDING_AUTHORIZATION_TTL_SECONDS before the next prune.
 _MAX_PENDING_AUTHORIZATIONS = 1000
 
-# SEC-12 (docs/security-remediation-plan.md, Phase 1 item 1.6): a hard cap
+# SEC-12: a hard cap
 # on how long one continuous refresh-token *chain* may be used, regardless
 # of how many times it's rotated. Rotation alone (see _mint_tokens'
 # ``refresh_issued_at`` below) isn't an expiry -- a client that keeps
