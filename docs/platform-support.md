@@ -64,29 +64,29 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
 
 ## Known open items
 
-- **Windows Task Scheduler autostart registration is not currently confirmed working.**
-  `.github/workflows/windows-graphical-session.yml` — a real silent install followed by an
-  interactive logon of a throwaway account — has failed on every run to date (including the run
-  against `main` after the graphical-session-test fixes in PR #315) with the installed task missing
-  immediately after a silent install that itself reports success (`schtasks /query` finds nothing
-  registered). `tests/integration/test_windows_packaged_smoke.py`'s own equivalent assertion has not
-  run against a real Windows runner recently either — it only runs in `build.yml`'s `build-windows`
-  job, which is tag/`workflow_dispatch`-triggered and has not run since this installer/autostart
-  work landed. `installer/privacyfence.iss` sets `PrivilegesRequired=lowest` so the installer (and
-  therefore its `[Run]` section's `schtasks /create` call) runs without UAC elevation; Task Scheduler
-  commonly refuses to register a task from a non-elevated process even when the caller is a member of
-  Administrators, and Inno Setup does not check `[Run]` entries' exit codes by default — a plausible,
-  not yet confirmed, explanation for a silently-failing task registration behind a green installer
-  exit code. Needs investigation and validation with real Windows access before Windows autostart can
-  be considered proven.
+- **Windows Task Scheduler autostart registration — root cause confirmed and fixed.** The
+  `PrivilegesRequired=lowest`/non-elevation theory this bullet previously carried was wrong:
+  `installer/privacyfence.iss`'s `schtasks /create` call passed `/ri 1 /du 9999:59`, trying to get
+  crash-restart behavior out of plain `schtasks.exe` CLI flags. Both are documented by Microsoft as
+  "not applicable" to an `ONLOGON` schedule (`/ri` is valid only for MINUTE/HOURLY/DAILY/WEEKLY/
+  MONTHLY/ONCE; `/du` only for MINUTE/HOURLY) — `schtasks.exe` rejected the whole `/create` call
+  outright, on every install, silently, since an Inno `[Run]` entry's nonzero exit code doesn't
+  abort Setup by default. This explains the installer reporting success while `schtasks /query`
+  found nothing registered, on every real run to date. Fixed by dropping the invalid flags;
+  re-validated via `workflow_dispatch` on `windows-graphical-session.yml` before merging that fix
+  (see that workflow's run history for the result). **This does not restore crash-restart
+  behavior** — the task is logon-triggered only now; real restart-on-failure needs the task's own
+  `<RestartOnFailure>` XML settings, not exposed through `schtasks.exe`'s plain flags at all, tracked
+  as [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13, not yet built.
 - **Windows hands-on QA before a signed release ships**: a real installer run on a clean Windows VM
   (confirm SmartScreen/Authenticode presentation), a real OAuth loopback + connector auth through the
   installed app, a simulated crash confirming the Task Scheduler restart-on-failure policy actually
-  restarts the daemon, an Add/Remove Programs uninstall confirming program files and the scheduled
-  task are gone while `%USERPROFILE%\.privacyfence\` is untouched, and installing the bundled `.mcpb`
-  into a real Claude Desktop against the installed daemon. None of this is automatable from CI.
-  [`TECHNICAL_REFERENCE.md`](TECHNICAL_REFERENCE.md) also still has no dedicated Windows installation
-  section parallel to its Linux one.
+  restarts the daemon (won't pass until Phase 13 above lands), an Add/Remove Programs uninstall
+  confirming program files and the scheduled task are gone while `%USERPROFILE%\.privacyfence\` is
+  untouched, and installing the bundled `.mcpb` into a real Claude Desktop against the installed
+  daemon. None of this is automatable from CI. `TECHNICAL_REFERENCE.md` now has a dedicated
+  "Windows" installation section parallel to its "Linux" one, but that documents the mechanism —
+  it doesn't substitute for actually running this checklist on real Windows.
 - **[privacyfence/privacyfence#121](https://github.com/privacyfence/privacyfence/issues/121)** (the
   Windows-support tracking issue) stays open until a real tagged release ships the signed Windows
   installer and the hands-on QA above has been run against that release build specifically — not an

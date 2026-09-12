@@ -979,6 +979,67 @@ Current packaging paths are documented in [`platform-support.md`](platform-suppo
 - Debian/Ubuntu self-contained `.deb` for local desktop mode;
 - Python package/system-service path for Linux/server deployments.
 
+### Windows
+
+`installer/privacyfence.iss` (built by `scripts/build_installer.ps1`) installs the PyInstaller
+onedir output under `%ProgramFiles%\PrivacyFence\` (or a per-user-writable location instead, when
+the installer runs without admin elevation — `PrivilegesRequired=lowest`), the bundled `.mcpb`
+alongside it, and a Start Menu entry pointing at the embedded web settings UI rather than at the
+daemon executable directly.
+
+Autostart is a Task Scheduler task (`PrivacyFence`), not a Startup-folder shortcut, registered by
+the installer's own `[Run]` section (`schtasks /create ... /sc onlogon /rl limited`) and removed by
+the uninstaller's `[UninstallRun]` section (`schtasks /delete`) — visible and removable through
+normal Windows install/uninstall UI, the same way the macOS LaunchAgent plist and the Linux `.deb`'s
+XDG autostart entry are. It fires on any interactive logon (the installer's `schtasks /create` call
+never passes `/RU`), runs the packaged `privacyfence-app.exe` alias at a non-elevated run level, and
+starts the daemon once, at logon — there is currently no crash-restart behavior analogous to the
+macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` or the Linux `.deb`'s systemd restart policy;
+that needs the task's own `<RestartOnFailure>` XML settings (`schtasks /create /xml`, not exposed
+through `schtasks.exe`'s plain flags), tracked as
+[`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13. See
+[`platform-support.md`](platform-support.md)'s "Known open items" for this mechanism's current
+verification status.
+
+Per-user state (credentials, settings, the audit log) lives under `%USERPROFILE%\.privacyfence\`,
+created by the app on first run — the installer never touches it, and uninstalling removes only the
+program files and the scheduled task.
+
+**File-permissions caveat, accepted for v1**: elsewhere on this codebase, credential/token files are
+written with `chmod(0o600/0o700)` to lock them down to the owning user. On Windows, `chmod` is a
+silent no-op — there is no POSIX permission bit to set — so those files rely on the default NTFS ACLs
+a per-user Windows profile already has (restricted to that user and Administrators) rather than an
+explicit lock-down step. This is a deliberate, accepted gap, not an oversight: a single-user Windows
+profile's own default ACLs already provide the same practical protection the `chmod` calls give on
+POSIX, and tightening it further (e.g. via `icacls`/`pywin32`) is out of scope unless a security
+review finds the default insufficient.
+
+### Linux
+
+Two distinct install paths, not one — see `platform-support.md`'s support matrix for the full
+comparison:
+
+- **Local desktop mode**: a self-contained `.deb` (`PrivacyFenceApp.linux.spec`,
+  `scripts/build_deb.sh`, `debian/`) installing the PyInstaller onedir output under
+  `/opt/privacyfence`, exposing `/usr/bin/privacyfence-app`, and registering an XDG autostart entry
+  under `/etc/xdg/autostart/` — the Linux analogue of the macOS LaunchAgent/Windows Task Scheduler
+  task. Package removal does not delete per-user state from the home directory. Currently `amd64`
+  only; `arm64` is a deliberate, undecided follow-up rather than a gap (see `platform-support.md`'s
+  "Architecture and CPU constraints").
+- **Org mode / server deployments**: `pip`/`pipx install privacyfence`, walked end to end by
+  [`org-mode-setup-guide.md`](org-mode-setup-guide.md) (dedicated system user, OIDC registration, org
+  config bundle, reverse proxy, a **system** systemd unit distinct from the repo-root
+  `privacyfence.service` below), or the repo-root `privacyfence.service` — a systemd **`--user`** unit
+  for a single-user Linux desktop install via the same `pip`/`pipx` path, requiring
+  `loginctl enable-linger` or a graphical session to autostart at login the way the `.deb`'s XDG entry
+  does. **Unverified on a real install, both paths**: nothing in `src/privacyfence/` imports a
+  platform-specific module any more, and the full suite runs headlessly on Linux CI on every PR
+  (`org-mode-smoke` exercises the daemon's own startup/authz/audit contract against a real subprocess
+  and a mocked IdP) — but neither a real `pip`/`pipx install privacyfence` nor a live third-party
+  IdP's actual OIDC round-trip has been run against a real server or desktop install yet. See
+  [`platform-support.md`](platform-support.md)'s "Known open items" and `privacyfence.service`'s own
+  header comment — the one place this status has stayed accurate throughout.
+
 ## Testing
 
 [`testing-policy.md`](testing-policy.md) describes the checks that currently run. [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) is the only plan document and tracks automation gaps that still exist.

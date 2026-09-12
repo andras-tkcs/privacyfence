@@ -1444,15 +1444,20 @@ claim did not actually account for:
 - **Windows**: closing [privacyfence/privacyfence#121](https://github.com/privacyfence/privacyfence/issues/121)
   stays gated on a real signed Windows release actually shipping (none has, since this packaging
   work landed), plus the inherently-manual Windows QA items (a real installer run, OAuth loopback
-  through the installed app, crash-restart, a clean uninstall, `.mcpb` in a real Claude Desktop) and
-  a still-missing `TECHNICAL_REFERENCE.md` Windows section. A new finding from this verification
-  pass, not previously known: `windows-graphical-session.yml` is not currently green — the
-  installed Task Scheduler autostart task is missing immediately after a real silent install
-  reporting success, on every real run to date, including the run against `main` after PR #315's
-  own fix (which addressed a different bug in the same test module). Plausibly
-  `installer/privacyfence.iss`'s `PrivilegesRequired=lowest` means its own `[Run]`-section
-  `schtasks /create` call runs unelevated, and Task Scheduler commonly refuses non-elevated
-  registration even from an Administrators-group account — not yet confirmed against real Windows.
+  through the installed app, crash-restart, a clean uninstall, `.mcpb` in a real Claude Desktop) —
+  `TECHNICAL_REFERENCE.md`'s missing Windows section is fixed as part of this same pass, see below.
+  A new finding from this verification pass, not previously known: `windows-graphical-session.yml`
+  was not green — the installed Task Scheduler autostart task was missing immediately after a real
+  silent install reporting success, on every real run to date, including the run against `main`
+  after PR #315's own fix (which addressed a different bug in the same test module). **Root cause
+  found and fixed, not just theorized**: the `PrivilegesRequired=lowest`/non-elevation guess this
+  note originally carried was wrong. The actual cause was `installer/privacyfence.iss`'s
+  `schtasks /create` call passing `/ri 1 /du 9999:59`, trying to get crash-restart behavior out of
+  plain CLI flags that Microsoft documents as "not applicable" to an `ONLOGON` schedule —
+  `schtasks.exe` rejected the whole call outright, silently, since an Inno `[Run]` entry's nonzero
+  exit code doesn't abort Setup by default. Fixed by dropping the invalid flags and confirmed via a
+  real `workflow_dispatch` run before merging. This does not restore crash-restart behavior, which
+  was never actually working — tracked as the new Phase 13 below.
 - **Linux**: a real end-to-end org-mode run against a live Ubuntu server with a real identity
   provider and a real live connector remains undone, distinct from `org-mode-smoke`'s synthetic,
   mocked-IdP CI coverage (Phase 8).
@@ -1472,6 +1477,62 @@ established, rather than left as a link to a deleted file.
 ### Exit criteria (met)
 
 `docs/` contains exactly one `*plan*.md`: this document.
+
+---
+
+## Phase 13 — Windows Task Scheduler real crash-restart-on-failure
+
+### Objective
+
+Give the installed Windows autostart task real crash-restart behavior — parity with the macOS
+LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and the Linux `.deb`'s systemd `Restart=on-failure`,
+which Phase 3's original design intent wanted but never actually shipped.
+
+### Already in this repo
+
+Phase 12's own verification pass found and fixed the reason `windows-graphical-session.yml` was red
+on every run: `installer/privacyfence.iss` registered the autostart task with `schtasks /create ...
+/ri 1 /du 9999:59`, trying to fake restart-on-failure through plain CLI flags that Microsoft
+documents as "not applicable" to an `ONLOGON` schedule — `schtasks.exe` rejected the whole call, so
+no task was ever registered at all. Fixed by dropping the invalid flags and re-validated via
+`workflow_dispatch`; the task now registers correctly, but it is logon-triggered only — no
+restart-on-failure of any kind, since there was never a working implementation of it to begin with.
+`platform-support.md`'s "Known open items" and `TECHNICAL_REFERENCE.md`'s "Windows" subsection both
+already name this as a known, expected-to-fail check.
+
+### Remaining work
+
+1. Author a Task Scheduler task-definition XML (`<Triggers><LogonTrigger>` with no `<UserId>`, same
+   "any interactive logon" scope the current flag-based registration has; `<Principals><Principal>`
+   with `<RunLevel>LeastPrivilege</RunLevel>`, matching today's `/rl limited`; `<Settings>` with
+   `<RestartOnFailure><Interval>PT1M</Interval><Count>...</Count></RestartOnFailure>`) with a
+   placeholder for the installed `privacyfence-app.exe` path.
+2. Wire it into `installer/privacyfence.iss`'s `[Code]` section: extract the template at install time
+   (`[Files]` with `Flags: dontcopy`), substitute the real `{app}` path, and register it via
+   `schtasks /create /tn "PrivacyFence" /xml <file> /f` from a `CurStepChanged(ssPostInstall)` hook,
+   replacing the current plain `[Run]` entry.
+3. **Get the task-definition XML's file encoding right.** `schtasks /create /xml` is documented to
+   require the file to actually be UTF-16-encoded, not just UTF-8 text with a matching `encoding=`
+   declaration — Inno Setup's stock Pascal-Script `SaveStringToFile` writes plain (ANSI/UTF-8) text,
+   not UTF-16, so this needs either a real UTF-16 write path in the `[Code]` section or writing the
+   template's placeholder-substitution step differently (e.g. baking the real path in at build time
+   in `scripts/build_installer.ps1`, which already has real PowerShell available to write a correctly
+   -encoded file, rather than doing the substitution in Pascal Script at all). This is exactly the
+   kind of byte-level detail that needs a real Windows host or a `workflow_dispatch` run to get
+   right — don't guess at it from a Linux dev loop, the same lesson Phase 12's own fix drew from
+   getting the `/ri`/`/du` root cause wrong on the first pass.
+4. Extend `tests/integration/test_windows_graphical_session_autostart.py` (or
+   `test_windows_packaged_smoke.py`) with a real crash-restart assertion: start the installed daemon,
+   kill its process, wait, and confirm Task Scheduler actually relaunched it.
+5. Validate via `workflow_dispatch` on `windows-graphical-session.yml` before merging, same as every
+   other Windows-flag change in this plan — this tier has already shown once that a flag/XML syntax
+   assumption can silently break autostart registration entirely.
+
+### Exit criteria
+
+The installed Windows autostart task actually restarts the daemon after a crash, proven by an
+automated CI test (not just a manual QA step), with the fix's own correctness confirmed on a real
+`windows-latest` runner before merging, not assumed from documentation alone.
 
 ---
 
@@ -1528,18 +1589,26 @@ Phase 11 Update branch-protection required checks                (policy/script/
    ↓                                                               repo-admin hand-off, see Phase
    ↓                                                               11's own status note)
 Phase 12 Retire the platform-specific plan docs                  (DONE — all four docs deleted;
-                                                                    their two still-real open items
-                                                                    (Windows issue #121 gating +
-                                                                    QA, a live Linux org-mode run)
-                                                                    live in platform-support.md now)
+   ↓                                                                their two still-real open items
+   ↓                                                                (Windows issue #121 gating +
+   ↓                                                                QA, a live Linux org-mode run)
+   ↓                                                                live in platform-support.md now;
+   ↓                                                                the verification pass also found
+   ↓                                                                and fixed a real regression --
+   ↓                                                                see Phase 13 below)
+Phase 13 Windows Task Scheduler real crash-restart-on-failure    (new, found by Phase 12's own
+                                                                    verification pass -- not yet built)
 ```
 
 Phases 4 and 5 may proceed in parallel once Phase 3 is stable, as in the source strategy. Phase 7
 stays last for the same infrastructure-cost reason the source strategy gives. Phase 11 landed once
 Phases 2, 3, 6, 7, and 8 (the jobs its target required-check set names) were all done — its own
 status note explains why the GitHub-side toggle itself is a separate repo-admin hand-off rather
-than something this PR's own merge can complete. Phase 12 stays last of all: it only deletes docs
-once every phase above it has actually shipped.
+than something this PR's own merge can complete. Phase 12 was meant to stay last, deleting docs only
+once every phase above it had actually shipped — and did, except that its own verification pass
+found a real, previously-unknown regression (Windows autostart registration silently broken) and
+fixed it, which is where Phase 13 came from: not a residual gap in the original plan, but new scope
+this pass's own audit surfaced.
 
 ## Suggested PR boundaries
 
@@ -1662,3 +1731,6 @@ combination.
   `windows-linux-support-plan.md`, `linux-local-deb-packaging-plan.md`, and
   `manual-pre-release-test-plan.md` are retired (Phase 12); their still-real open items live in
   `platform-support.md`'s "Known open items" instead.
+- The Windows autostart task actually survives a daemon crash, the same crash-restart parity Windows
+  has had on every other platform's own autostart mechanism from the start (Phase 13, new, not yet
+  done).

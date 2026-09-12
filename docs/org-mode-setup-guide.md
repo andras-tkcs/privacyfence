@@ -2,6 +2,8 @@
 
 Org mode runs PrivacyFence as a centralized Linux service for multiple authenticated users. The daemon serves the MCP endpoint and browser approval/settings surfaces, while identity comes from the organization's configured OIDC provider.
 
+**Unverified on a real install.** This guide is exercised in CI against a real daemon subprocess and a mocked IdP (`org-mode-smoke`, see `testing-policy.md`), but a real end-to-end run of the steps below — a live Ubuntu server, a real OIDC identity provider, a real connector authorized through it — has not been done yet (see `platform-support.md`'s "Known open items"). Treat this guide as ready to try, not yet a battle-tested path — same status as `privacyfence.service`'s own header comment for the single-user desktop variant of this install.
+
 ## Deployment model
 
 A typical deployment contains:

@@ -95,15 +95,33 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 ; Register the autostart Task Scheduler task at install time (Phase 3.1),
 ; not from the app itself at runtime, so it's visible/removable through
 ; normal Windows install/uninstall UI. Logon trigger + limited run level
-; (no elevation) + restart-on-failure, the direct analogue of the macOS
-; LaunchAgent's KeepAlive/SuccessfulExit=false and the Linux .deb plan's own
-; systemd restart policy.
+; (no elevation) -- the direct analogue of the macOS LaunchAgent's
+; RunAtLoad and the Linux .deb plan's own XDG autostart entry.
 ;
-; /RI 1 /DU (unlimited): restart every 1 minute, retrying indefinitely, if
-; the task's process exits on its own -- Task Scheduler's own restart-on-
-; failure settings, not a separate watchdog.
+; Deliberately NOT /RI/DU: an earlier version of this line added
+; "/ri 1 /du 9999:59" trying to get crash-restart behavior (the macOS
+; LaunchAgent's KeepAlive/SuccessfulExit=false, the Linux .deb plan's own
+; systemd restart policy) out of schtasks.exe's CLI flags. Per Microsoft's
+; own schtasks /create documentation, /ri and /du are "not applicable" to
+; an ONLOGON schedule (/ri is valid only for MINUTE/HOURLY/DAILY/WEEKLY/
+; MONTHLY/ONCE; /du only for MINUTE/HOURLY) -- schtasks.exe rejects the
+; combination outright, so this whole /create call was failing on every
+; install ("Task Scheduler task 'PrivacyFence' missing after install",
+; the confirmed root cause of windows-graphical-session.yml's failures --
+; see platform-support.md's "Known open items"), silently, because an
+; Inno [Run] entry's own nonzero exit code doesn't abort Setup by
+; default. There is no equivalent restart-on-failure knob exposed
+; through schtasks.exe's plain flags at all -- Task Scheduler only
+; exposes it via a task's own <RestartOnFailure> XML settings
+; (schtasks /create /xml), which needs a real Windows host to get the
+; file encoding/schema right and isn't implemented here yet; tracked as
+; docs/automated-test-strategy-plan.md Phase 13. Until then this task is
+; logon-triggered only, same single-shot-at-login behavior a plain
+; Startup-folder shortcut would have given -- strictly less than the
+; crash-restart parity Phase 3's own decision wanted, but a working
+; autostart beats a task that was never actually being created.
 Filename: "{sys}\schtasks.exe"; \
-    Parameters: "/create /tn ""{#TaskName}"" /tr ""'{app}\{#AliasExeName}'"" /sc onlogon /rl limited /ri 1 /du 9999:59 /f"; \
+    Parameters: "/create /tn ""{#TaskName}"" /tr ""'{app}\{#AliasExeName}'"" /sc onlogon /rl limited /f"; \
     Flags: runhidden; StatusMsg: "Registering startup task..."
 ; Start the daemon immediately after install, same as the macOS DMG's
 ; LaunchAgent starting the app right after a drag-install's first login --
