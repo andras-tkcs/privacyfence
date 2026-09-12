@@ -59,7 +59,7 @@ class TestCanonicalPayloadBytes:
 
 class TestGenerateSigningKey:
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, docs/windows-linux-support-plan.md Track B3)",
+        sys.platform == "win32", reason="chmod/stat permission bits are a POSIX-only security model -- Windows has none to assert on (known, accepted gap, the now-removed windows-linux-support-plan.md's Track B3)",
     )
     def test_writes_a_private_key_file_with_restrictive_permissions(self, tmp_path, capsys):
         key_path = tmp_path / "signing_key.pem"

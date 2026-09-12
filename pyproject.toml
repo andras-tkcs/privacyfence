@@ -89,8 +89,8 @@ dependencies = [
     # docstring.
     "webauthn>=3.0,<4.0",
     # Cross-platform single-instance file locking for daemon_main.py's
-    # _acquire_instance_lock()/_release_instance_lock() (docs/windows-
-    # support-plan.md Phase 1, B1 in docs/windows-linux-support-plan.md):
+    # _acquire_instance_lock()/_release_instance_lock() (the now-removed docs/windows-
+    # support-plan.md Phase 1, B1 in the now-removed docs/windows-linux-support-plan.md):
     # picks the right OS primitive itself (fcntl.flock on POSIX,
     # msvcrt/LockFileEx on Windows), the same "don't hand-roll a
     # platform-locking primitive" reasoning already given above for
@@ -142,7 +142,7 @@ dev = [
     "build>=1.2",
     "twine>=5.0",
     # Build-time-only PNG -> multi-resolution .ico conversion for the
-    # Windows build (docs/windows-support-plan.md Phase 2.3): unlike
+    # Windows build (the now-removed docs/windows-support-plan.md Phase 2.3): unlike
     # macOS's sips/iconutil (used by build_dmg.sh), there's no Windows-
     # native icon-conversion tool available cross-platform in CI, so
     # scripts/build_installer.ps1 does it with Pillow instead. Not a

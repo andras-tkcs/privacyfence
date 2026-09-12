@@ -1,6 +1,6 @@
 # PyInstaller `datas`/`hidden_imports` shared between PrivacyFenceApp.spec (macOS),
-# PrivacyFenceApp.linux.spec (Linux, docs/linux-local-deb-packaging-plan.md Phase 1), and
-# PrivacyFenceApp.win.spec (Windows, docs/windows-support-plan.md Phase 2.1). All three specs
+# PrivacyFenceApp.linux.spec (Linux, the now-removed linux-local-deb-packaging-plan.md Phase 1), and
+# PrivacyFenceApp.win.spec (Windows, the now-removed windows-support-plan.md Phase 2.1). All three specs
 # build the same daemon entry point (src/_daemon_entry.py) against the same dependency set --
 # the only things that differ between platforms are the packaging step around the PyInstaller
 # output (BUNDLE() + .icns + codesign on macOS; a bare onedir + `debian/` packaging on Linux; a
@@ -65,7 +65,7 @@ HIDDEN_IMPORTS = [
     "openpyxl",
     # telethon (optional – Telegram; bundled so the connector works)
     "telethon",
-    # portalocker (docs/windows-support-plan.md Phase 1): imported
+    # portalocker (the now-removed windows-support-plan.md Phase 1): imported
     # unconditionally by daemon_main.py, but its Windows/POSIX backends are
     # selected dynamically at import time inside the package itself, which
     # is exactly the shape PyInstaller's static analysis can miss.

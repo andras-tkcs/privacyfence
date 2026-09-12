@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Automated gate to run before starting `docs/manual-pre-release-test-plan.md`.
+"""Automated gate to run before starting `docs/release-testing.md`.
 
 This does not replace that plan -- it only covers the parts a release should
 never be blocked on discovering *manually*: the same automated suite CI runs
-(`docs/testing-policy.md` §1). Everything in `manual-pre-release-test-plan.md`
+(`docs/testing-policy.md` §1). Everything in `release-testing.md`
 -- live fixtures, popup smoke, real Cowork/Desktop prompts, DMG install --
 still needs a human, a screen, and real accounts, none of which this script
 has.
@@ -69,13 +69,13 @@ def main() -> int:
     if not all(results.values()):
         print(
             "\nFix the failures above before starting "
-            "docs/manual-pre-release-test-plan.md."
+            "docs/release-testing.md."
         )
         return 1
 
     print(
         "\nAll automated checks passed. Continue with "
-        "docs/manual-pre-release-test-plan.md for the manual sections "
+        "docs/release-testing.md for the manual sections "
         "(fixture freshness, popup smoke, live QA prompt, DMG install) "
         "before cutting the release."
     )

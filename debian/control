@@ -9,7 +9,7 @@ Homepage: https://github.com/privacyfence/privacyfence
 
 Package: privacyfence
 Architecture: amd64 arm64
-# arm64 is listed as a supported architecture (docs/linux-local-deb-packaging-plan.md P4.2), but
+# arm64 is listed as a supported architecture (the now-removed docs/linux-local-deb-packaging-plan.md P4.2), but
 # scripts/build_deb.sh only actually builds for the host it runs on, and CI (P5.1) currently runs
 # only an amd64 leg -- arm64 is a follow-up once there's a concrete request, not a build-script
 # code change (PyInstaller needs a real arm64 build host; it doesn't cross-compile).

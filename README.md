@@ -287,7 +287,7 @@ required beyond what a normal Debian/Ubuntu desktop already has. `apt remove`/`d
 your `~/.privacyfence` config, credentials, and audit log untouched; only `apt purge` is meant to
 also clean up anything package-owned, and there's no system-wide config here to purge either. See
 [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation) for the full details, and
-[`docs/linux-local-deb-packaging-plan.md`](docs/linux-local-deb-packaging-plan.md) for how the
+[Platform support](docs/platform-support.md#debianubuntu-local-mode) for how the
 package is built.
 
 Prefer a bare `pip`/`pipx install privacyfence` plus the repo-root `privacyfence.service`
@@ -332,7 +332,7 @@ Continue with the organization configuration and connector authentication steps 
 - [Org mode setup guide](docs/org-mode-setup-guide.md) — Ubuntu server, Caddy, Google identity (ahead of the Linux headless entrypoint landing — see the guide's own status note)
 - [Org mode operational readiness](docs/org-mode-operational-readiness.md) — support/readiness level, backup/restore, upgrade/rollback, persisted-state compatibility, restart and single-daemon availability behaviour
 - [Connector QA testing](docs/connector-qa-testing.md)
-- [Manual pre-release test plan](docs/manual-pre-release-test-plan.md)
+- [Release testing](docs/release-testing.md)
 - [Approval window content reference](docs/approval-window-content-reference.md) — what each approval dialog shows, grouped by dialog shape
 - ["Always allow" per-tool reference](docs/always-allow-rules-reference.md) — what clicking Always allow does, tool by tool
 - [What Claude knows before an approval prompt](docs/claude-knowledge-boundary.md)

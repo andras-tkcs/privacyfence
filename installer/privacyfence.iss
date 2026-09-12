@@ -1,6 +1,6 @@
 ; PrivacyFence Windows installer (Inno Setup 6).
 ;
-; docs/windows-support-plan.md Phase 4 (B4 in docs/windows-linux-support-
+; The now-removed docs/windows-support-plan.md Phase 4 (B4 in the now-removed docs/windows-linux-support-
 ; plan.md) -- the Windows analogue of build_dmg.sh's DMG: one distributable
 ; carrying both the daemon and the Claude Desktop extension (.mcpb), plus
 ; (unlike the drag-to-Applications DMG) the autostart wiring a real installer
@@ -82,6 +82,10 @@ Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 ; comment). Kept at its versioned filename so a user who's kept an older
 ; installer's copy doesn't collide with it.
 Source: "{#McpbPath}"; DestDir: "{app}"; Flags: ignoreversion
+; The autostart task-definition template (see [Code]'s RegisterAutostartTask
+; below) -- dontcopy means Setup extracts it to {tmp} for [Code] to read at
+; install time, but it's never actually installed into {app}.
+Source: "privacyfence-task.xml.tmpl"; Flags: dontcopy
 
 [Icons]
 ; Points at the web settings UI in the default browser, not at the daemon
@@ -92,19 +96,20 @@ Name: "{group}\{#AppName}"; Filename: "{#SettingsUrl}"; IconFilename: "{app}\{#A
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
 [Run]
-; Register the autostart Task Scheduler task at install time (Phase 3.1),
-; not from the app itself at runtime, so it's visible/removable through
-; normal Windows install/uninstall UI. Logon trigger + limited run level
-; (no elevation) + restart-on-failure, the direct analogue of the macOS
-; LaunchAgent's KeepAlive/SuccessfulExit=false and the Linux .deb plan's own
-; systemd restart policy.
+; The autostart Task Scheduler task itself (Phase 3.1) is registered from
+; [Code]'s RegisterAutostartTask below, via CurStepChanged(ssPostInstall)
+; -- not a [Run] entry -- see that function's own comment and
+; privacyfence-task.xml.tmpl's header comment for what actually gets
+; registered and why this needs a real Task Scheduler XML task definition
+; rather than a plain `schtasks /create` CLI call (short version: two
+; independent CLI-flag attempts at this were each found broken by a real
+; windows-graphical-session.yml run -- invalid /ri/du flags for an ONLOGON
+; schedule, then a trigger that only fired for the installing account
+; instead of any interactive logon -- and the capability this task
+; actually needs, "run for whichever user just logged on, in their own
+; session, restarting on crash," has no equivalent exposed through
+; schtasks.exe's plain flags at all).
 ;
-; /RI 1 /DU (unlimited): restart every 1 minute, retrying indefinitely, if
-; the task's process exits on its own -- Task Scheduler's own restart-on-
-; failure settings, not a separate watchdog.
-Filename: "{sys}\schtasks.exe"; \
-    Parameters: "/create /tn ""{#TaskName}"" /tr ""'{app}\{#AliasExeName}'"" /sc onlogon /rl limited /ri 1 /du 9999:59 /f"; \
-    Flags: runhidden; StatusMsg: "Registering startup task..."
 ; Start the daemon immediately after install, same as the macOS DMG's
 ; LaunchAgent starting the app right after a drag-install's first login --
 ; without this, a user would otherwise have to log out/in before
@@ -129,3 +134,58 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""{#TaskName}"" /f"; \
 ; (UninstallRun, above) only -- there is deliberately no [UninstallDelete]
 ; entry naming %USERPROFILE%\.privacyfence, unlike the entries a "clean
 ; uninstall" for a typical app might add.
+
+[Code]
+(* Registers the autostart Task Scheduler task (Phase 3.1) via a real Task
+   Scheduler XML task definition (privacyfence-task.xml.tmpl, extracted to
+   the temp directory by the [Files] "dontcopy" entry above), not
+   schtasks.exe's plain /create flags -- see [Run]'s own comment and that
+   template's own header comment for why. Substitutes the real installed
+   AliasExeName path for the template's __EXEC_PATH__ placeholder, writes
+   the result to a scratch file, then runs `schtasks /create /xml <file>
+   /f` against it. Called from CurStepChanged(ssPostInstall) below, i.e.
+   after the app's files are already in place (Files copy happens during
+   ssInstall, before ssPostInstall) but before this file's own [Run]
+   entries execute, so the path it substitutes in always exists by the
+   time schtasks reads it.
+
+   Deliberately using this parenthesis-asterisk comment style rather than
+   curly braces: Pascal's curly-brace comments don't nest, and the
+   {app}/{tmp}-style Inno constant references this comment needs to talk
+   about would otherwise close the comment early at their own closing
+   brace -- exactly the "'BEGIN' expected" compile error an earlier
+   version of this comment actually hit. *)
+function RegisterAutostartTask(): Boolean;
+var
+  TemplateFile, XmlFile, XmlContent, ExecPath: String;
+  RawContent: AnsiString;
+  ResultCode: Integer;
+begin
+  ExtractTemporaryFile('privacyfence-task.xml.tmpl');
+  TemplateFile := ExpandConstant('{tmp}\privacyfence-task.xml.tmpl');
+  { LoadStringFromFile's own "var S" output parameter is typed AnsiString,
+    not String -- passed as RawContent here and converted (a plain
+    assignment allows the AnsiString/String conversion that a var
+    parameter, like StringChangeEx's own first argument below, does not)
+    rather than declared as the var parameter's own type throughout, so
+    every other call in this function can use the ordinary String type. }
+  Result := LoadStringFromFile(TemplateFile, RawContent);
+  if not Result then
+    Exit;
+  XmlContent := RawContent;
+  ExecPath := ExpandConstant('{app}\{#AliasExeName}');
+  StringChangeEx(XmlContent, '__EXEC_PATH__', ExecPath, False);
+  XmlFile := ExpandConstant('{tmp}\privacyfence-task.xml');
+  Result := SaveStringToFile(XmlFile, XmlContent, False);
+  if not Result then
+    Exit;
+  Result := Exec(ExpandConstant('{sys}\schtasks.exe'),
+    '/create /tn "{#TaskName}" /xml "' + XmlFile + '" /f',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    RegisterAutostartTask();
+end;

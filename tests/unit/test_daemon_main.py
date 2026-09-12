@@ -117,13 +117,13 @@ def _no_ambient_google_clients(monkeypatch):
 
 class TestResolvePath:
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="_resolve_path()/os.path.join() give a different (and, for the absolute-path case, wrong-drive) result on Windows for a POSIX-style path literal like the ones this test hardcodes -- a genuine finding from promoting this suite to Windows CI (docs/automated-test-strategy-plan.md Phase 2.1), tracked in docs/windows-support-plan.md rather than guessed at here",
+        sys.platform == "win32", reason="_resolve_path()/os.path.join() give a different (and, for the absolute-path case, wrong-drive) result on Windows for a POSIX-style path literal like the ones this test hardcodes -- a genuine finding from promoting this suite to Windows CI (docs/automated-test-strategy-plan.md Phase 2.1), tracked in the now-removed windows-support-plan.md rather than guessed at here",
     )
     def test_absolute_path_is_returned_unchanged(self):
         assert daemon_main._resolve_path("/etc/hosts") == "/etc/hosts"
 
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="_resolve_path()/os.path.join() give a different (and, for the absolute-path case, wrong-drive) result on Windows for a POSIX-style path literal like the ones this test hardcodes -- a genuine finding from promoting this suite to Windows CI (docs/automated-test-strategy-plan.md Phase 2.1), tracked in docs/windows-support-plan.md rather than guessed at here",
+        sys.platform == "win32", reason="_resolve_path()/os.path.join() give a different (and, for the absolute-path case, wrong-drive) result on Windows for a POSIX-style path literal like the ones this test hardcodes -- a genuine finding from promoting this suite to Windows CI (docs/automated-test-strategy-plan.md Phase 2.1), tracked in the now-removed windows-support-plan.md rather than guessed at here",
     )
     def test_relative_path_is_joined_with_project_root(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "PROJECT_ROOT", "/tmp/pf-root")
@@ -472,7 +472,7 @@ class TestCheckStoragePermissions:
         monkeypatch.setattr(daemon_main, "user_dir", lambda: tmp_path)
 
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="secure_files.audit_directory_permissions() flags every directory as insecure here because chmod does not restrict access on Windows -- same known, accepted permission-bits gap as test_secure_files.py (docs/windows-linux-support-plan.md Track B3), just surfacing through the org-mode startup check instead of a direct stat() assertion",
+        sys.platform == "win32", reason="secure_files.audit_directory_permissions() flags every directory as insecure here because chmod does not restrict access on Windows -- same known, accepted permission-bits gap as test_secure_files.py (the now-removed windows-linux-support-plan.md's Track B3), just surfacing through the org-mode startup check instead of a direct stat() assertion",
     )
     def test_no_warning_when_directory_is_already_0700(self, tmp_path, monkeypatch, caplog):
         self._patch_dirs(monkeypatch, tmp_path)
@@ -503,7 +503,7 @@ class TestCheckStoragePermissions:
             daemon_main.check_storage_permissions(org_mode_active=True)
 
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="secure_files.audit_directory_permissions() flags every directory as insecure here because chmod does not restrict access on Windows -- same known, accepted permission-bits gap as test_secure_files.py (docs/windows-linux-support-plan.md Track B3), just surfacing through the org-mode startup check instead of a direct stat() assertion",
+        sys.platform == "win32", reason="secure_files.audit_directory_permissions() flags every directory as insecure here because chmod does not restrict access on Windows -- same known, accepted permission-bits gap as test_secure_files.py (the now-removed windows-linux-support-plan.md's Track B3), just surfacing through the org-mode startup check instead of a direct stat() assertion",
     )
     def test_org_mode_with_correct_permissions_does_not_raise(self, tmp_path, monkeypatch):
         self._patch_dirs(monkeypatch, tmp_path)
@@ -878,7 +878,7 @@ class TestBuildConnectorsTelegram:
             (tmp_path / "credentials" / "telegram.session").write_bytes(b"")
 
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="_resolve_path()/os.path.join() give a different (and, for the absolute-path case, wrong-drive) result on Windows for a POSIX-style path literal like the ones this test hardcodes -- a genuine finding from promoting this suite to Windows CI (docs/automated-test-strategy-plan.md Phase 2.1), tracked in docs/windows-support-plan.md rather than guessed at here",
+        sys.platform == "win32", reason="_resolve_path()/os.path.join() give a different (and, for the absolute-path case, wrong-drive) result on Windows for a POSIX-style path literal like the ones this test hardcodes -- a genuine finding from promoting this suite to Windows CI (docs/automated-test-strategy-plan.md Phase 2.1), tracked in the now-removed windows-support-plan.md rather than guessed at here",
     )
     def test_built_when_creds_and_session_present(self, monkeypatch, tmp_path):
         self._make_session(tmp_path, monkeypatch, exists=True)
@@ -2143,7 +2143,7 @@ class TestRunApp:
             daemon_main.run_app(config, "config.yaml")
 
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="secure_files.audit_directory_permissions() flags every directory as insecure here because chmod does not restrict access on Windows -- same known, accepted permission-bits gap as test_secure_files.py (docs/windows-linux-support-plan.md Track B3), just surfacing through the org-mode startup check instead of a direct stat() assertion",
+        sys.platform == "win32", reason="secure_files.audit_directory_permissions() flags every directory as insecure here because chmod does not restrict access on Windows -- same known, accepted permission-bits gap as test_secure_files.py (the now-removed windows-linux-support-plan.md's Track B3), just surfacing through the org-mode startup check instead of a direct stat() assertion",
     )
     def test_org_mode_passes_org_managed_through_to_privacy_filter(self, monkeypatch):
         # SEC-07: an org-managed install's genuinely-absent privacy groups
@@ -2367,7 +2367,7 @@ class TestAuditForwardingWiring:
         assert captured["forwarder"] is None
 
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="secure_files.audit_directory_permissions() flags every directory as insecure here because chmod does not restrict access on Windows -- same known, accepted permission-bits gap as test_secure_files.py (docs/windows-linux-support-plan.md Track B3), just surfacing through the org-mode startup check instead of a direct stat() assertion",
+        sys.platform == "win32", reason="secure_files.audit_directory_permissions() flags every directory as insecure here because chmod does not restrict access on Windows -- same known, accepted permission-bits gap as test_secure_files.py (the now-removed windows-linux-support-plan.md's Track B3), just surfacing through the org-mode startup check instead of a direct stat() assertion",
     )
     def test_enabled_org_mode_builds_a_forwarder(self, monkeypatch, tmp_path):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)
@@ -2396,7 +2396,7 @@ class TestAuditForwardingWiring:
         assert captured["forwarder"] is not None
 
     @pytest.mark.skipif(
-        sys.platform == "win32", reason="secure_files.audit_directory_permissions() flags every directory as insecure here because chmod does not restrict access on Windows -- same known, accepted permission-bits gap as test_secure_files.py (docs/windows-linux-support-plan.md Track B3), just surfacing through the org-mode startup check instead of a direct stat() assertion",
+        sys.platform == "win32", reason="secure_files.audit_directory_permissions() flags every directory as insecure here because chmod does not restrict access on Windows -- same known, accepted permission-bits gap as test_secure_files.py (the now-removed windows-linux-support-plan.md's Track B3), just surfacing through the org-mode startup check instead of a direct stat() assertion",
     )
     def test_enabled_org_mode_with_invalid_forwarding_config_does_not_crash_startup(self, monkeypatch, caplog, tmp_path):
         # kind="syslog" with no host at all -- audit_forwarding.build_sender()

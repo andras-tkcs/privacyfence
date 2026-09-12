@@ -22,15 +22,22 @@ in CI):
    the CI runner's own already-logged-on account.** This test has no way to
    learn that account's password (nor should it), so it can't make it log on
    a *second* time -- and ``installer/privacyfence.iss``'s own ``schtasks
-   /create`` call (see ``[Run]``) never passes ``/RU``, which per Microsoft's
-   documented default for ``/SC ONLOGON`` means the trigger fires for *any*
-   interactive logon, not just the installing user's. That's the same
-   "whichever account is at the keyboard" scope the macOS LaunchAgent (keyed
-   off the current console uid) and the Linux ``.deb``'s XDG autostart
-   (keyed off the current desktop session) already have -- so a brand-new
-   throwaway account, whose password this test mints and knows, is a valid
-   stand-in for "a user signs in", not a special case the real trigger
-   wouldn't also fire for.
+   /create`` call (see ``[Run]``) passes ``/ru "BUILTIN\\Users"``, the
+   built-in group rather than one specific account, so the trigger fires for
+   *any* interactive logon, not just the installing user's. (An earlier
+   version of this line omitted ``/RU`` entirely on the assumption that the
+   unqualified default already meant "any user" -- it doesn't: per
+   Microsoft's own documentation, omitting ``/RU`` scopes the task to
+   whichever account ran ``schtasks /create``, i.e. the installing user
+   only. This module's own first real run against a real Windows runner is
+   what caught that -- registration succeeded, but the throwaway account's
+   logon never fired the trigger -- fixed by the explicit
+   ``/ru "BUILTIN\\Users"`` above.) That's the same "whichever account is at
+   the keyboard" scope the macOS LaunchAgent (keyed off the current console
+   uid) and the Linux ``.deb``'s XDG autostart (keyed off the current
+   desktop session) already have -- so a brand-new throwaway account, whose
+   password this test mints and knows, is a valid stand-in for "a user
+   signs in", not a special case the real trigger wouldn't also fire for.
 2. **The throwaway account is a local Administrator**, even though the
    daemon it ends up running still runs at ``/rl limited`` (the scheduled
    task's own execution-level setting, independent of the account's own
@@ -148,6 +155,24 @@ def _graphical_diagnostics(request):
     (dest / "logs" / "schtasks-query.txt").write_text(task_info.stdout + task_info.stderr, encoding="utf-8")
 
 
+def _install_log_tail(log_path: Path, *, max_chars: int = 8000) -> str:
+    """The last *max_chars* of Inno's own ``/LOG=`` output, or a plain
+    ``(missing)``/``(empty)`` marker. Never the whole file: this onedir
+    bundle's own [Files] copy log alone runs to tens of thousands of
+    lines, and CurStepChanged(ssPostInstall)'s own RegisterAutostartTask
+    call -- the part actually worth seeing on a registration failure --
+    is logged only after every one of those file-copy lines, so returning
+    the whole file risks it never actually reaching whatever captured
+    this assertion's own output (a CI log viewer's own size limit,
+    included)."""
+    if not log_path.exists():
+        return "(missing)"
+    text = log_path.read_text(errors="replace")
+    if not text:
+        return "(empty)"
+    return text[-max_chars:]
+
+
 def _is_admin() -> bool:
     """Cross-platform-safe by construction (like ``test_deb_packaged_
     lifecycle.py``'s own ``_can_install_packages``): this is called from a
@@ -167,7 +192,7 @@ pytestmark = [
     pytest.mark.packaged,
     pytest.mark.skipif(
         platform.system() != "Windows",
-        reason="only meaningful against a real installer -- see docs/windows-support-plan.md 8.2",
+        reason="only meaningful against a real installer -- see the now-removed windows-support-plan.md 8.2",
     ),
     pytest.mark.skipif(
         not _built_installers(),
@@ -197,6 +222,31 @@ pytestmark = [
 # test_windows_packaged_smoke.py/test_deb_packaged_lifecycle.py).
 # --------------------------------------------------------------------------- #
 
+def _windows_powershell_env() -> dict[str, str]:
+    """Returns an environment for spawning Windows PowerShell (``powershell.exe``,
+    the 5.1 engine) that can actually autoload its own built-in modules.
+
+    This pytest process itself runs under a PowerShell *7* (``pwsh``) step in
+    CI (see this workflow's own ``shell:`` line), and pwsh sets ``$env:
+    PSModulePath`` to its own module search path -- one that doesn't include
+    Windows PowerShell 5.1's module directory. A nested ``powershell.exe``
+    process (spawned below) inherits that env var as plain process
+    environment and, unlike a real top-level 5.1 session, never recomputes
+    it -- so autoloading its own built-in cmdlets (``ConvertTo-SecureString``
+    from ``Microsoft.PowerShell.Security``, ``Get-CimInstance`` from
+    ``CimCmdlets``, etc.) fails with "the module could not be loaded", 100%
+    reproducibly, regardless of the throwaway account or password involved.
+    Prepending Windows PowerShell 5.1's own system module directory restores
+    the lookup those cmdlets need."""
+    env = dict(os.environ)
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    system_modules = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "Modules")
+    existing = env.get("PSModulePath", "")
+    if system_modules.lower() not in existing.lower():
+        env["PSModulePath"] = f"{system_modules};{existing}" if existing else system_modules
+    return env
+
+
 def _run_powershell(script: str, *, timeout: float = 60.0) -> subprocess.CompletedProcess:
     # -EncodedCommand (UTF-16LE, base64) sidesteps every bit of cmd/argv
     # quoting hazard a multi-line script with embedded single/double quotes
@@ -204,7 +254,7 @@ def _run_powershell(script: str, *, timeout: float = 60.0) -> subprocess.Complet
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     return subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, env=_windows_powershell_env(),
     )
 
 
@@ -367,16 +417,35 @@ async def test_installer_autostart_activates_daemon_via_real_logon_session(
     _prepare_home(home, port=port)
 
     # ── Install (as this test's own -- not the throwaway -- account; see
-    # module docstring point 1 for why the installer's own schtasks /create
-    # having no /RU makes this the exact real-world trigger scope) ─────────
+    # module docstring point 1 for why installer/privacyfence.iss's own
+    # RegisterAutostartTask (its Task Scheduler XML, not a plain schtasks
+    # /create flag) makes this the exact real-world trigger scope,
+    # regardless of which account runs the installer) ──────────────────────
+    log_path = tmp_path / "install.log"
     install_result = _run_installer(
         str(setup_exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/SP-", "/NORESTART",
-        f"/DIR={install_dir}", f"/LOG={tmp_path / 'install.log'}",
+        f"/DIR={install_dir}", f"/LOG={log_path}",
     )
     assert install_result.returncode == 0, (
-        f"installer failed (exit {install_result.returncode}):\n{install_result.stdout}{install_result.stderr}"
+        f"installer failed (exit {install_result.returncode}):\n{install_result.stdout}{install_result.stderr}\n"
+        f"---- install log (tail) ----\n{_install_log_tail(log_path)}"
     )
-    assert _task_exists(), f"Task Scheduler task {TASK_NAME!r} missing after install"
+    # RegisterAutostartTask (installer/privacyfence.iss's [Code] section)
+    # doesn't abort Setup on its own failure, so a silent install can still
+    # exit 0 with no task actually registered -- the install log (Inno's
+    # own /LOG= output, which records every [Code] Exec call and its
+    # result) is the only way to see why, short of downloading this test's
+    # own diagnostics artifact by hand. Only the *tail* -- this onedir
+    # bundle's own per-file [Files] copy log alone runs to tens of
+    # thousands of lines, which previously pushed the actually useful part
+    # (CurStepChanged(ssPostInstall)'s own RegisterAutostartTask call,
+    # logged only after every file is already copied) past what a CI log
+    # viewer -- or this test's own captured stdout -- keeps readily
+    # available.
+    assert _task_exists(), (
+        f"Task Scheduler task {TASK_NAME!r} missing after install\n"
+        f"---- install log (tail) ----\n{_install_log_tail(log_path)}"
+    )
 
     # A silent install's own [Run] "launch now" step is skipifsilent -- it
     # must never fire under /VERYSILENT (test_windows_packaged_smoke.py's
