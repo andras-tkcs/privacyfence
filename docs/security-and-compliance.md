@@ -15,6 +15,22 @@ The primary goals are:
 - fail closed on invalid security configuration;
 - preserve enough audit evidence to reconstruct policy/approval decisions.
 
+## Deployment model
+
+PrivacyFence runs in one of two deployment modes, chosen by IT when the daemon is configured — not
+something an individual user or the AI can switch. In **local mode** (the default), one instance
+runs on one employee's own machine, with a single implicit principal authorized by a random secret
+written to local state; there is no sign-in. In **org mode** (opt-in), IT operates a shared
+instance, typically on Ubuntu (see [`org-mode-setup-guide.md`](org-mode-setup-guide.md)), and each
+person authenticates via OIDC against the organization's own identity provider — a browser session
+and an MCP client's OAuth 2.1 token issued for the same sign-in resolve to the same principal.
+
+Neither mode runs on PrivacyFence-operated infrastructure: local mode runs entirely on the
+employee's device, and org mode runs on a server the organization itself provisions and controls.
+There is no multi-tenant service and no PrivacyFence API that connector traffic passes through —
+every tool call reaches the underlying provider (Google, Slack, Salesforce, Atlassian, Telegram)
+directly from that machine or server.
+
 ## Authentication boundaries
 
 ### Local web UI
@@ -61,6 +77,8 @@ Connector OAuth/session credentials are stored in PrivacyFence state, not return
 
 The self-hosted live-provider test runner keeps its real QA connector credentials outside GitHub-hosted runners and outside committed repository content. See [`connector-live-check-setup.md`](connector-live-check-setup.md).
 
+Each connector's OAuth client secret is shared across every user of a given deployment rather than issued per-user: it authenticates the PrivacyFence installation to the provider, not an individual end user. A leaked client secret should be rotated with the provider directly; PrivacyFence itself has no per-secret rotation schedule or automated rotation mechanism.
+
 ## Organization configuration trust
 
 Org-mode configuration is validated before use, including the configured trust/signature model for organization bundles. Startup should fail when required trust/configuration fields are absent or invalid rather than silently switching to a weaker mode.
@@ -74,6 +92,8 @@ The embedded web application applies security headers and CSP. Inline script/sty
 Browser sessions use HttpOnly cookies and same-origin/CSRF checks for state-changing operations. Sensitive bootstrap/bearer material is not intended to be carried in persistent browser URLs.
 
 Deploy org mode behind the configured HTTPS reverse proxy and preserve the Host/origin assumptions documented by the setup guide.
+
+Org mode's OAuth dynamic client registration (DCR) endpoint bounds its own resource usage: it caps the total number of registrations it will hold at once, validates registration metadata against a size limit, and prunes stale/expired registrations on an age-and-count basis rather than retaining them indefinitely.
 
 ## Download staging
 
@@ -95,6 +115,8 @@ Runtime/test/build dependencies are declared in `pyproject.toml`, with release/d
 
 CI includes dependency auditing and static analysis in addition to the normal test suite. Ruff is blocking in the test workflow; mypy and Bandit are informational there unless workflow configuration changes.
 
+Each tagged release build generates a CycloneDX software bill of materials (SBOM) alongside the packaged artifacts.
+
 Release artifacts use the platform signing/notarization paths described in [`platform-support.md`](platform-support.md).
 
 ## Operational security
@@ -112,6 +134,38 @@ See [`org-mode-operational-readiness.md`](org-mode-operational-readiness.md).
 Current automated security evidence includes unit/integration tests, browser/CSP tests, coverage-floor enforcement, static analysis, Python compatibility checks, scheduled live-provider checks, and release/platform smoke coverage described in [`testing-policy.md`](testing-policy.md).
 
 Remaining automation gaps are tracked only in [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md).
+
+## Vendor risk criteria
+
+PrivacyFence has no certified information security management framework (e.g. ISO 27001), no
+Business Continuity Plan, and no contractual risk-response process or SLA. This is a structural
+consequence of the deployment model above, not an oversight:
+
+- **Certified information security framework:** none — there is nothing to certify, since there is
+  no PrivacyFence-operated infrastructure (see Deployment model above). Such certifications attest
+  to controls around *operated* infrastructure, which doesn't exist here.
+- **Business continuity plan:** none — there is no PrivacyFence-operated service whose outage could
+  disrupt a deployment. If the maintainer became unreachable, already-installed copies keep running
+  exactly as before; the code being open source lets an organization audit, fork, or maintain a
+  pinned version independently of the original maintainer.
+- **Risk response process / SLA: None.** Reports are handled best-effort, not against a committed
+  response time — see [`SECURITY.md`](../SECURITY.md) for how to report and what to expect.
+
+None of this changes the technical risk profile described elsewhere in this document — no vendor
+infrastructure in the data path, no new data processor, human-in-the-loop enforcement on sensitive
+calls, and a local audit trail. Organizations evaluating PrivacyFence against a standard
+vendor-risk questionnaire should treat the absence above as a risk-acceptance decision, not a
+security gap: approve it through a risk-acceptance/exception process rather than a standard
+vendor-security sign-off, pin deployments to a specific reviewed release rather than auto-updating,
+and assign an internal owner to track new releases and patch or roll back if a report doesn't land
+in time.
+
+## Vulnerability reporting
+
+Report suspected vulnerabilities to **info@privacyfence.eu**, or use GitHub's private vulnerability
+reporting from this repository's Security tab, rather than a public issue. See
+[`SECURITY.md`](../SECURITY.md) for the full disclosure process, what to include in a report, and
+scope.
 
 ## Compliance positioning
 

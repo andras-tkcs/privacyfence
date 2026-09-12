@@ -1,6 +1,5 @@
 """``GET /downloads/{token}`` -- the browser-facing half of org-mode
-download staging (docs/org-mode-download-delivery-plan.md, Phase 1). A
-staged download's token (download_staging.DownloadStagingStore.stage's
+download staging. A staged download's token (download_staging.DownloadStagingStore.stage's
 return value, base64url-encoded into the URL) is a one-time bearer
 credential for a single file: whoever holds the link and is currently
 signed in as the principal it was staged for can claim it exactly once.
@@ -106,8 +105,7 @@ def build_routes(*, sessions: OrgSessionStore, store: DownloadStagingStore | Non
             # Missing, expired, wrong-principal, or already-claimed --
             # deliberately indistinguishable (download_staging.claim's own
             # docstring), so this endpoint never discloses which case
-            # applies to an attacker guessing tokens. SEC-18 (docs/
-            # security-remediation-plan.md, Phase 3 item 3.5): no-store even
+            # applies to an attacker guessing tokens. SEC-18: no-store even
             # on this 404 -- a shared cache is free to key on the full path,
             # and this path (the token itself) is a one-time credential a
             # cache has no business retaining a response for either way.

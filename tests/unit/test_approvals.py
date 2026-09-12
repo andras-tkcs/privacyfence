@@ -580,8 +580,7 @@ class TestPrincipalDimension:
 
 
 class TestPerPrincipalApprovalCap:
-    """SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): one
-    principal issuing a burst of distinct gated calls must not be able to
+    """One principal issuing a burst of distinct gated calls must not be able to
     fill the whole shared registry and lock every other principal out with
     TooManyPendingApprovalsError. max_pending_per_principal is the fix;
     max_pending (exercised by TestRegisterOrCoalesce above) stays in force

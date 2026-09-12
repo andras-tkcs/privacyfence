@@ -1329,9 +1329,9 @@ class TestFixtureFreshnessLines:
 
 
 # ---------------------------------------------------------------------------- #
-# Fixture presence -- the CI guard (TST-08, docs/security-remediation-plan.md
-# Phase 3.12): everything above runs against fakes/mocks and proves the
-# recorder's own logic, but nothing until this class ever looks at the
+# Fixture presence -- the CI guard: everything above runs against
+# fakes/mocks and proves the recorder's own logic, but nothing until this
+# class ever looks at the
 # actual tests/fixtures/live/ files on disk that
 # tests/unit/connectors/test_*_connector.py's TestFieldCompleteness-style
 # assertions (docs/coding-and-testing-guidelines.md §2.6 item 5) depend on.

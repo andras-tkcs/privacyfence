@@ -718,10 +718,9 @@ class TestDownloadAttachment:
 
 
 class TestOrgModeDownloadDelivery:
-    """docs/org-mode-download-delivery-plan.md, Phase 2: in org mode,
-    gmail_download_attachment never writes to this daemon's own disk -- a
-    small attachment's bytes come back inline, a larger one is staged
-    behind a one-time link."""
+    """In org mode, gmail_download_attachment never writes to this
+    daemon's own disk -- a small attachment's bytes come back inline, a
+    larger one is staged behind a one-time link."""
 
     def _message_with_attachment(self, **overrides):
         defaults = dict(name="report.pdf", mime_type="application/octet-stream", size=1024, attachment_id="att-1")

@@ -133,7 +133,7 @@ def _org_bridge_shim(*, decide_url: str, csrf: str, stepup_options_url: str, non
     server-side endpoint to design; today's flow never needs it because the
     first ``428`` already includes everything the client needs.
 
-    ``nonce`` (SEC-08, docs/security-remediation-plan.md Phase 3.1): same
+    ``nonce`` (SEC-08): same
     role as web/routes_approvals.py's own ``_bridge_shim`` -- this is a real
     ``<script>`` element injected into an already-rendered card document,
     so it must carry that document's own nonce (``show_approval`` below
@@ -263,7 +263,7 @@ def build_routes(
                 headers={"Cache-Control": "no-store"},
             )
         session_id = request.cookies.get(org_session.SESSION_COOKIE, "")
-        # SEC-08 (docs/security-remediation-plan.md Phase 3.1) -- see
+        # SEC-08 -- see
         # web/routes_approvals.py's own show_approval for why this document's
         # nonce has to be recovered from the body rather than taken fresh.
         nonce = approval_window_html.extract_csp_nonce(card.html) or _csp_nonce_for(request)

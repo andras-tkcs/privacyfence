@@ -49,7 +49,7 @@ def main() -> int:
         ],
         cwd=REPO_ROOT,
     )
-    # TST-03 (docs/security-remediation-plan.md Phase 2.1): same coverage
+    # TST-03: same coverage
     # ratchet CI enforces (.github/workflows/tests.yml) -- see
     # scripts/check_coverage_floor.py's module docstring for the floors.
     # Runs even if pytest itself failed above, same as the shim checks

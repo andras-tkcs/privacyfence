@@ -249,7 +249,7 @@ class TestAuthorizeInteractive:
 # ---------------------------------------------------------------------------- #
 # build_authorize_url / exchange_code / save_token_record -- called directly
 # (not through run_browser_oauth) by web/routes_connect.py's org-mode
-# server-redirect flow (P8, docs/https-connector-refactor-plan.md §9.3).
+# server-redirect flow.
 # ---------------------------------------------------------------------------- #
 
 class TestHoistedFunctions:
@@ -640,8 +640,8 @@ class TestListChannels:
         assert len(channels) == 5
 
     def test_participant_match_past_max_results_is_still_found(self):
-        # Regression for bug #1 in docs/slack-performance-review.md: a
-        # participant filter used to truncate to the first max_results raw
+        # Regression: a participant filter used to truncate to the first
+        # max_results raw
         # channels *before* filtering, so a match sitting past that cutoff
         # was silently invisible. Page 1 is 100 non-matching channels; the
         # one matching channel is on page 2 -- with max_results=100 this
@@ -978,7 +978,7 @@ class TestListGroupChats:
 # ---------------------------------------------------------------------------- #
 # Participant resolution helpers (the users.conversations fast path) and the
 # other small P0-performance pieces underneath list_channels/list_group_chats/
-# _search_by_participant -- see docs/slack-performance-review.md.
+# _search_by_participant.
 # ---------------------------------------------------------------------------- #
 
 class TestBuildUserNameIndex:
@@ -1146,9 +1146,8 @@ class TestResolveUserNameCached:
 
 class TestResolveMembersCache:
     def test_paginates_past_the_first_page(self):
-        # Regression for bug #2 in docs/slack-performance-review.md: a
-        # channel with more than 1000 members used to silently lose
-        # everyone past the first page.
+        # Regression: a channel with more than 1000 members used to
+        # silently lose everyone past the first page.
         web_client = MagicMock()
         web_client.conversations_members.side_effect = [
             {"members": [f"U{i:04d}" for i in range(1000)], "response_metadata": {"next_cursor": "page2"}},
@@ -1840,7 +1839,7 @@ class TestGetUserInfoWithDirectoryCache:
         # A snapshot that already loaded (even if stale) is never worth
         # blocking a gated tool call behind -- get_user_info returns the
         # existing value immediately and the refresh runs in the
-        # background instead (see docs/slack-performance-review.md's R5).
+        # background instead.
         cache_file = tmp_path / "slack_user_cache.json"
         stale = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
         cache_file.write_text(json.dumps({
@@ -2066,8 +2065,7 @@ class TestRefreshChannelDirectoryPagination:
         # actually finishes.
         assert client._channel_directory_fetched_at is None
         # But the merged-so-far snapshot and resume cursor ARE persisted --
-        # see docs/slack-performance-review.md's P1 item on a bounded walk
-        # surviving a daemon restart.
+        # a bounded walk must survive a daemon restart.
         cache_file = tmp_path / "slack_channel_cache.json"
         assert cache_file.exists()
         data = json.loads(cache_file.read_text(encoding="utf-8"))

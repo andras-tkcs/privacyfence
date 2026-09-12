@@ -1,18 +1,16 @@
-"""Cross-language contract test for the .mcpb shim (D11,
-docs/https-connector-refactor-plan.md §12): does the real Node shim
-(mcpb/shim/) actually speak Streamable HTTP to the real Python ``/mcp``
-endpoint?
+"""Cross-language contract test for the .mcpb shim (D11): does the real
+Node shim (mcpb/shim/) actually speak Streamable HTTP to the real Python
+``/mcp`` endpoint?
 
 This is the shim's counterpart to test_bridge_daemon_contract.py -- same
 reasoning, same shape (spawn the real built artifact, drive it with the
 official ``mcp`` Python client over real stdio, assert the round trip
-worked), a different transport underneath. §13 of that document names this
-test explicitly: "P4b's shim (D11) gets its own, much smaller Node-side
-test -- drive the shim's stdio transport with the mcp client against a real
-/mcp, assert one initialize and one tools/call make the round trip with the
-bearer header attached and the mcp_url file honoured. That is a passthrough
-test, not a schema test: the shim knows no schemas, so there is nothing
-else to assert."
+worked), a different transport underneath: a much smaller Node-side test
+that drives the shim's stdio transport with the mcp client against a real
+/mcp, asserting that one initialize and one tools/call make the round trip
+with the bearer header attached and the mcp_url file honoured. That is a
+passthrough test, not a schema test: the shim knows no schemas, so there is
+nothing else to assert.
 
 Requires Node on PATH; skipped automatically otherwise -- same posture as
 test_bridge_daemon_contract.py, and for the same reason this lives under

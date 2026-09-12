@@ -258,8 +258,7 @@ class TestMainSigningIntegration:
 
 
 class TestAuditForwardingFlags:
-    """SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6):
-    org_config.json's "audit_forwarding" section, built from
+    """org_config.json's "audit_forwarding" section, built from
     --audit-forwarding-* flags."""
 
     def _sign_key(self, tmp_path):

@@ -2,8 +2,8 @@
 ``privacyfence-bridge``'s four jobs (find/launch the daemon, fetch the
 manifest, register one MCP tool per ``ToolSpec``, forward calls) for a
 client that talks to PrivacyFence directly, no intermediate process
-required (docs/https-connector-refactor-plan.md §8.1). The bridge itself
-was retired at P5, once this transport had shipped a stable release.
+required. The bridge itself was retired at P5, once this transport had
+shipped a stable release.
 
 P2 scope only: this is a hosting change for the *transport*, not the
 approval protocol. A gated call reaching a connector here still blocks on
@@ -14,16 +14,14 @@ config key P10 removed along with the native implementation itself),
 exactly like a call arriving over the bridge's IPC socket used to before P5
 retired it. Deferred approvals, concurrent pending approvals, and
 ``privacyfence_await_approval`` are P3's ``_popup_lock`` retirement, not
-this module's -- see docs/https-connector-refactor-plan.md §12's phase
-table ("P2 before P3" is deliberate: the deferred protocol is written once,
-on the transport it ships on, instead of being added to the bridge/IPC
-protocol first and thrown away one phase later).
+this module's ("P2 before P3" is deliberate: the deferred protocol is
+written once, on the transport it ships on, instead of being added to the
+bridge/IPC protocol first and thrown away one phase later).
 
 Built on the official MCP Python SDK's low-level ``Server`` (dynamic tool
 registration -- the tool set depends on which connectors are currently
 built, so it can't be the decorator-per-tool ``FastMCP`` surface) plus
-``StreamableHTTPSessionManager`` (D2/D10 in
-docs/https-connector-refactor-plan.md §15).
+``StreamableHTTPSessionManager`` (D2/D10).
 """
 from __future__ import annotations
 
@@ -114,7 +112,7 @@ def build_mcp_server(dispatcher: McpDispatcher) -> MCPServer:
     async def handle_call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
         session_key = _session_key(server)
         # Entered once per tool call, in the one place this surface
-        # dispatches one (P6, docs/https-connector-refactor-plan.md §9.1) --
+        # dispatches one (P6) --
         # every per-principal registry downstream (auto_accept.py,
         # audit_log.py, pii_detector.py, privacy_filter.py,
         # resource_names.py) resolves against whatever this sets for the
@@ -264,7 +262,7 @@ def mount_mcp(
 
 def mount_org_oauth(provider: OrgOAuthProvider, *, issuer_url: str) -> list[Route]:
     """Org mode's OAuth 2.1 authorization-server + resource-metadata
-    surface (P7, docs/https-connector-refactor-plan.md §9.4): the SDK's own
+    surface (P7): the SDK's own
     ``create_auth_routes`` builds ``/.well-known/oauth-authorization-
     server``, ``/authorize``, ``/token``, ``/register`` (DCR) and
     ``/revoke`` against ``provider`` -- see that function's own module for

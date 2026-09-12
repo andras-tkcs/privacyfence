@@ -1,8 +1,8 @@
-"""Systemic per-call-site invariants (TST-13, docs/security-remediation-plan.md
-Phase 3.12): extends tests/unit/connectors/test_readme_manifest_alignment.py's
+"""Systemic per-call-site invariants: extends
+tests/unit/connectors/test_readme_manifest_alignment.py's
 own parameterized, source-scanning pattern -- one assertion per tool/site,
 generated from the real code rather than a hand-maintained list -- to three
-more properties the review names, none of which had a mechanical regression
+more properties, none of which had a mechanical regression
 guard before this module existed:
 
 - Every gated tool (``auto_accept.TOOL_TO_GATE[tool] != "auto"``) declares a
@@ -261,8 +261,8 @@ class TestTokenSitesUseTheSharedSecureWriteHelper:
         site = f"{module_name}.{(class_name + '.') if class_name else ''}{func_name}"
         assert "atomic_write_text(" in source or "atomic_write_json(" in source, (
             f"{site} no longer calls secure_files.atomic_write_text/atomic_write_json -- "
-            "SEC-09 (docs/security-remediation-plan.md Phase 1 item 1.4) requires every credential/token "
-            "writer to go through the shared atomic, 0600-permissioned helper, not a hand-rolled open()/write()."
+            "every credential/token writer must go through the shared atomic, 0600-permissioned "
+            "helper, not a hand-rolled open()/write()."
         )
 
     def test_sync_room_directory_script_still_carries_the_safe_atomic_write_pattern(self):

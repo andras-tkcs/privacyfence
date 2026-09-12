@@ -1,5 +1,5 @@
-"""SSE state-push channel (docs/https-connector-refactor-plan.md §16.3):
-``GET /api/state/stream``, one connection per open tab, carrying two
+"""SSE state-push channel: ``GET /api/state/stream``, one connection per
+open tab, carrying two
 independently-updating event types --
 
 - ``event: settings`` -- ``SettingsController.snapshot()``, pushed the

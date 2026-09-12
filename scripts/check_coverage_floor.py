@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Coverage ratchet (TST-03, docs/security-remediation-plan.md Phase 2.1).
+"""Coverage ratchet (TST-03).
 
 `pytest`'s own `--cov-report=term-missing` (docs/testing-policy.md §1) is
 informational only -- nothing before this script gated a merge on coverage
@@ -80,7 +80,7 @@ MODULE_FLOORS: dict[str, float] = {
     # finishing -- observed at both 93.18% (this floor's laptop/local runs)
     # and 92.87% (CI, same commit) across otherwise-identical runs. A real
     # fix is a deterministic wait on that thread rather than a wider floor
-    # (TST-11, docs/security-remediation-plan.md Phase 3.12); until then
+    # (TST-11); until then
     # this floor carries enough headroom not to flake red on that one line.
     "src/privacyfence/settings_controller.py": 91.0,
     # SEC-06/SEC-12/SEC-13: bootstrap flow, session and token lifetimes.

@@ -6,13 +6,12 @@ That test existed because the bridge (TypeScript) and the daemon (Python)
 were two independently hand-maintained implementations of one wire
 protocol, and nothing else in the suite proved they agreed with each
 other -- tests/unit/web/test_routes_mcp.py drives the real ASGI app, but
-over an in-process ``httpx.ASGITransport`` with no real socket
-(docs/https-connector-refactor-plan.md §13: "no real socket"), so a
+over an in-process ``httpx.ASGITransport`` with no real socket, so a
 real-network-stack bug (uvicorn startup, real TCP binding, real HTTP
 framing) could still slip through.
 
-P5 (§12 of that document) deleted the bridge and ``ipc_server.py`` once
-both had a stable release behind them. What is left to contract-test here
+P5 deleted the bridge and ``ipc_server.py`` once both had a stable release
+behind them. What is left to contract-test here
 is narrower, and needs no Node at all: does a real ``web/server.py``
 ``WebServer``, bound to a real loopback socket, actually speak Streamable
 HTTP correctly to the official ``mcp`` Python client -- the same client

@@ -49,7 +49,7 @@ time nothing yet selected on the marker; Phase 10's own CI-diagnostics capture
 targets. Consistent with Phase 0's own scope note, markers are *not* retroactively applied
 across every existing test — that would be churn with no payoff until something actually needs to
 select on the marker (e.g. `pytest -m "not live"`). The five modules that landed as part of closing
-out `security-remediation-plan.md`'s Phase 3.12 (`test_qa_fixture_recorder.py`'s
+out the remediation plan's Phase 3.12 (`test_qa_fixture_recorder.py`'s
 `TestFixturePresence`, `test_deferred_approval_round_trip.py`, `test_routes_security.py`'s
 `TestCrossPrincipalIsolation`, `test_parser_properties.py`, `test_systemic_gate_invariants.py`)
 landed before this marker work existed and were the first backfill; every module under
@@ -127,8 +127,7 @@ python scripts/check_coverage_floor.py coverage.json
 ```
 
 on an `ubuntu-latest` runner. A 100% pass rate is required to merge, for both suites. Coverage
-itself is a ratchet, not a specific percentage a PR must hit (TST-03, Phase 2.1 of the now-removed
-`docs/security-remediation-plan.md`): `scripts/check_coverage_floor.py` fails the build
+itself is a ratchet, not a specific percentage a PR must hit: `scripts/check_coverage_floor.py` fails the build
 if overall branch+line coverage, or the coverage of any module on its security-critical list (the
 URL-scheme allowlist, identity-matching, audit-export, org-config/bundle-trust, session/token-
 lifetime, privacy-filter, secure-write, OIDC-discovery-trust, and MCP-error-taxonomy code paths —
@@ -160,8 +159,7 @@ Through P9 this ran on `macos-latest` instead, and a second, non-blocking `test-
 the platform-independent subset (everything under `web/`, `web_approval_ui.py`, `card_builder.py`,
 and `approval_icons.py`) on `ubuntu-latest`, `--ignore`-ing the handful of test modules that imported
 an AppKit-tainted module (`approval_popup.py`/`approval_window.py`/`dialog_window.py`/`menu_bar.py`)
-directly at module scope. P10 (see `https-connector-refactor-plan.md` §12, decision D6, the design
-document that shipped this and was removed from `docs/` once fully implemented) deleted all
+directly at module scope. P10 deleted all
 of that — the native menu bar/approval dialogs/settings window — so nothing in this repo depends on
 real AppKit/PyObjC behavior any more, the whole suite is platform-independent, and the two-job split
 collapsed back into one.
@@ -196,17 +194,15 @@ manual steps. It includes:
   added at P1: `WebApprovalUI`'s blocking contract (the sole `ApprovalUI` implementation since P10 —
   see `approval_ui.py`'s ABC), the pure gate-args-to-card-HTML translation, shared icon-asset loading,
   and the approval routes themselves against an in-process ASGI test client (auth, CSRF, Host
-  allowlist, security headers, idempotent decisions — no real socket, see
-  `https-connector-refactor-plan.md` §13).
+  allowlist, security headers, idempotent decisions — no real socket).
 - `tests/unit/web/test_mcp_dispatch.py`, `tests/unit/web/test_routes_mcp.py` — the `/mcp` endpoint's
   own coverage, added at P2: `McpDispatcher`'s dedupe/staleness/gating dispatch and meta-tools
   (`test_mcp_dispatch.py`) and the wire-protocol/auth layer on top of it (`test_routes_mcp.py`),
   driven with the real official `mcp` Python client over an in-process ASGI transport — no real
   socket, same posture as the approval routes above. `TestAudienceSeparation` in
   `tests/unit/web/test_server.py` is the one required to fail loudly if the MCP bearer-token and
-  approval-surface session-cookie middleware are ever reordered (§10.3 of the refactor plan).
-- `tests/unit/web/test_mcp_tools.py` — added at the now-removed security-remediation-plan.md's
-  phase 1.9 (TST-02):
+  approval-surface session-cookie middleware are ever reordered.
+- `tests/unit/web/test_mcp_tools.py` — added at phase 1.9 (TST-02):
   `mcp_tools.py`'s own `ToolSpec`-to-`Tool`/`CallToolResult` schema translation (untested by either
   file above, which exercise dispatch and wire framing, not this mapping layer), plus end-to-end
   coverage over the real `/mcp` transport for three narrow behaviors: an unattended session denying
@@ -215,8 +211,8 @@ manual steps. It includes:
   `mcp_dispatch.py`), `privacyfence_begin_unattended_session` refusing when disabled by
   configuration, and `privacyfence_list_auto_accept_rules` always leaving an audit entry for its own
   disclosure.
-- `mcpb/shim/test/*.test.ts` (`npm test`, run from `mcpb/shim/`) — the .mcpb shim's own suite (D11 in
-  `docs/https-connector-refactor-plan.md` §12): daemon discovery/launch (`daemon.test.ts`, against
+- `mcpb/shim/test/*.test.ts` (`npm test`, run from `mcpb/shim/`) — the .mcpb shim's own suite:
+  daemon discovery/launch (`daemon.test.ts`, against
   `mcp_url` file discovery) and the stdio<->Streamable HTTP message proxy (`proxy.test.ts`,
   `index.test.ts` — the latter against a real fake `/mcp` server built on the official SDK's own
   server classes, not a hand-mocked transport). The only Node suite left in this repo since P5
@@ -231,7 +227,7 @@ manual steps. It includes:
   either. Needs no Node — since P5 there is no longer a second, independently-maintained protocol
   implementation to cross-check against (both client and server here are the official `mcp` SDK).
   Uses the official `mcp` Python client, a runtime dependency since P2 (`pyproject.toml`'s
-  `[project.dependencies]` — see `docs/https-connector-refactor-plan.md` §8.2/D2) rather than a
+  `[project.dependencies]`) rather than a
   test-only one.
 - `tests/system/test_local_mode_system.py` (`automated-test-strategy-plan.md` Phase 3, layer 3
   cross-platform system) — the one module in this tier that spawns the real
@@ -282,8 +278,7 @@ to re-run anything or have access to the same accounts/hardware themselves.
 
 Through P9 a third script, `qa_popup_smoke.py`, covered the one thing `test_approval_window.py`/
 `test_dialog_window.py`'s construction-only tests couldn't reach: whether the real native modal loop
-actually blocked and a real click actually reached it. P10 (`https-connector-refactor-plan.md` §12,
-D6) deleted the native popup itself along with that script — there is no modal loop left to smoke-
+actually blocked and a real click actually reached it. P10 deleted the native popup itself along with that script — there is no modal loop left to smoke-
 test. `qa_web_smoke.py` below is this tier's own (Chromium-driven, not AppKit-driven) equivalent for
 the web approval surface that replaced it, and already existed before this phase; nothing new was
 needed to fill the gap.

@@ -204,8 +204,7 @@ class TestAuthorizeInteractiveExchange:
 # ---------------------------------------------------------------------------- #
 # build_authorize_url / exchange_code / resolve_resource_and_save -- called
 # directly (not through run_browser_oauth) by web/routes_connect.py's
-# org-mode server-redirect flow (P8, docs/https-connector-refactor-plan.md
-# §9.3).
+# org-mode server-redirect flow.
 # ---------------------------------------------------------------------------- #
 
 class TestHoistedFunctions:

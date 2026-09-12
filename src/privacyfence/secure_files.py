@@ -1,5 +1,5 @@
 """Shared atomic-write and permission helpers for credential/config storage
-(SEC-09, docs/security-remediation-plan.md Phase 1 item 1.4).
+(SEC-09).
 
 Before this module existed, every credential/token/config writer in this
 codebase followed the same pattern: truncate-and-write the destination file

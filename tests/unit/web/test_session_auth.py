@@ -1,7 +1,6 @@
 """Tests for web/session_auth.py: the local-mode session store and the
-SEC-06 bootstrap-code store (docs/security-remediation-plan.md, Phase 1
-item 1.2). Mirrors test_org_session.py's own pattern for OrgSessionStore --
-LocalSessionStore is deliberately its local-mode counterpart, minus the
+SEC-06 bootstrap-code store. Mirrors test_org_session.py's own pattern for
+OrgSessionStore -- LocalSessionStore is deliberately its local-mode counterpart, minus the
 per-principal identity org mode needs and local mode doesn't.
 """
 from __future__ import annotations
@@ -293,8 +292,7 @@ class TestVerifyBearerSecret:
 
 class TestUnauthorizedHtml:
     def test_is_no_store(self):
-        # SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5):
-        # this page names a live bearer-secret command (the exact
+        # SEC-18: this page names a live bearer-secret command (the exact
         # ~/.privacyfence/web_token curl invocation) -- it must never be
         # cached, and previously carried no Cache-Control header at all.
         scope = {

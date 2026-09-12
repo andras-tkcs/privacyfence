@@ -9,8 +9,8 @@ Originally written (P2) as a self-contained Python port of what was then
 ``_propose_rule_change``/``_build_manifest``/begin-end-unattended-session --
 deliberately not a shared refactor of ``IPCServer`` at the time, so as not
 to put that module's own already-green test suite at risk mid-migration.
-P5 (docs/https-connector-refactor-plan.md §12) deleted the bridge and
-``ipc_server.py`` entirely once both had a stable release behind them, so
+P5 deleted the bridge and ``ipc_server.py`` entirely once both had a stable
+release behind them, so
 this module (alongside its P3 collaborator, ``approvals.py``) is now simply
 the one connector-call dispatcher there is, not "the /mcp counterpart" of
 anything else. The session key this dispatch is scoped to is a fresh UUID
@@ -75,10 +75,10 @@ class McpDispatcher:
         self._unattended_sessions: set[Hashable] = set()
         self._unattended_changed_listener: Callable[[], None] | None = None
         # The deferred-approval registry privacyfence_await_approval polls
-        # (P3, docs/https-connector-refactor-plan.md §5.2 point 7) -- None
-        # when nothing in this install can ever produce a pending approval
-        # (native-only local mode with /mcp still enabled), in which case
-        # every id this tool is asked about is simply "unknown".
+        # (P3) -- None when nothing in this install can ever produce a
+        # pending approval (native-only local mode with /mcp still enabled),
+        # in which case every id this tool is asked about is simply
+        # "unknown".
         self._registry = registry
 
     @property
@@ -120,8 +120,8 @@ class McpDispatcher:
         if connector is None:
             raise ValueError(f"Unknown connector: {connector_name!r}")
 
-        # P7 (docs/https-connector-refactor-plan.md §9): principal_id folds
-        # into both the dedupe key and the last-write timestamp below.
+        # P7: principal_id folds into both the dedupe key and the
+        # last-write timestamp below.
         # Without it, two different org-mode principals calling the same
         # tool with the same arguments within _DEDUPE_TTL_SECONDS would
         # share one cache entry -- the second caller getting handed the

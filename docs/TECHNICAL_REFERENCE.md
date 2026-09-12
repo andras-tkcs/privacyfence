@@ -563,14 +563,14 @@ no checkboxes of its own; the one editable copy of these grants stays on the Dri
 ### Web surfaces (`/approvals`, `/settings`)
 
 Every approval card and the settings page above are served over the embedded web server
-(`web/server.py`) — through P9 (P1/P4, `docs/https-connector-refactor-plan.md` §16) this ran
-alongside a native macOS menu bar/approval dialogs/settings window; P10 deleted that native UI
-layer entirely (§12, decision D6: "two approval surfaces means two places for a security fix to
+(`web/server.py`) — this used to run
+alongside a native macOS menu bar/approval dialogs/settings window; that native UI
+layer was later deleted entirely ("two approval surfaces means two places for a security fix to
 land"), so the web surface is now the only one, on every platform this daemon runs on. Two config
 keys under `web:` in `settings.yaml`:
 
 - `web.mcp.enabled: true` (default) — turns on the `/mcp` Streamable HTTP endpoint Claude talks to.
-- `web.settings.enabled: true` (default since P10) — turns on `GET /settings` and its
+- `web.settings.enabled: true` (default) — turns on `GET /settings` and its
   `POST /api/settings/{action}` dispatcher. `web.settings.allow_quit` (default `true`) gates whether
   the About page's Quit button works from a browser at all — always behind an in-page confirmation
   either way. The approval surface itself (`/approvals`) has no such switch — P10 is the phase with

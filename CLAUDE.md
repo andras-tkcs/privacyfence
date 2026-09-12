@@ -59,8 +59,7 @@ already be `pip install -e .`d (both scripts' own prerequisites say so) — same
 `mcpb/shim/package.json`'s `version` field is **not** tied to any of this — leave it as
 `0.0.0-dev`. The shim carries no protocol version of its own to keep in sync with the daemon's (it
 has no tool-schema knowledge at all — see `mcpb/shim/src/index.ts`'s module docstring), so unlike
-the original bridge it replaced (retired at P5, see `docs/https-connector-refactor-plan.md`),
-there's nothing here for the real version to be injected into at build time. `scripts/
+the original bridge it replaced, there's nothing here for the real version to be injected into at build time. `scripts/
 build_mcpb.sh` reads the real version only to stamp the `.mcpb` manifest itself
 (`mcpb/manifest.json.tmpl`'s `__VERSION__`), not anything inside the bundled `shim.js`.
 
