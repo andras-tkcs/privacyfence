@@ -22,7 +22,7 @@ in CI):
    the CI runner's own already-logged-on account.** This test has no way to
    learn that account's password (nor should it), so it can't make it log on
    a *second* time -- and ``installer/privacyfence.iss``'s own ``schtasks
-   /create`` call (see ``[Run]``) passes ``/ru "BUILTIN\Users"``, the
+   /create`` call (see ``[Run]``) passes ``/ru "BUILTIN\\Users"``, the
    built-in group rather than one specific account, so the trigger fires for
    *any* interactive logon, not just the installing user's. (An earlier
    version of this line omitted ``/RU`` entirely on the assumption that the
@@ -32,7 +32,7 @@ in CI):
    only. This module's own first real run against a real Windows runner is
    what caught that -- registration succeeded, but the throwaway account's
    logon never fired the trigger -- fixed by the explicit
-   ``/ru "BUILTIN\Users"`` above.) That's the same "whichever account is at
+   ``/ru "BUILTIN\\Users"`` above.) That's the same "whichever account is at
    the keyboard" scope the macOS LaunchAgent (keyed off the current console
    uid) and the Linux ``.deb``'s XDG autostart (keyed off the current
    desktop session) already have -- so a brand-new throwaway account, whose
