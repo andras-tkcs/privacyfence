@@ -43,6 +43,24 @@ the packaged app:
    at all) over MCP, click "Confirm" on the real served card from the real
    browser, and assert the MCP call the whole time was blocked on returns
    the confirmed result once that happens.
+6. **State lives outside the package**: delete the installed
+   ``PrivacyFenceApp.app`` -- the actual "uninstall" gesture on macOS (drag
+   to Trash; there's no installer/uninstaller pair the way Windows/Linux
+   have) -- and confirm the rule change from step 5 is still on disk under
+   ``$HOME/.privacyfence``, the same "user state survives package removal"
+   property ``test_deb_packaged_lifecycle.py``/``test_windows_packaged_
+   smoke.py`` assert for their own platforms' removal gesture.
+7. **Signature/notarization**: when the DMG was built with ``--sign``/
+   ``NOTARIZE_PROFILE`` (as ``build.yml``'s release job always does; a local
+   unsigned dev build is legitimate and skips this instead of failing it),
+   verify the installed bundle's code-signature chain (``codesign
+   --verify --deep --strict``), that it's actually signed by a real
+   Developer ID identity rather than ad-hoc, that Gatekeeper's own policy
+   engine would accept it (``spctl --assess --type execute``), and that the
+   DMG itself carries a stapled notarization ticket. This proves the
+   artifact's Gatekeeper story automatically; the interactive first-launch
+   "are you sure you want to open this" dialog a human actually sees stays
+   manual, per this plan's own governing rule.
 
 Skipped entirely unless running on real macOS with a just-built DMG on disk
 (this only makes sense as a step in ``.github/workflows/build.yml``'s
@@ -114,6 +132,7 @@ pytestmark = [
     # same reasoning as test_shim_mcp_contract.py's own inflated timeout for the same npm-install
     # cost, plus this test's own daemon startup and browser work on top.
     pytest.mark.timeout(300),
+    pytest.mark.packaged,
 ]
 
 
@@ -306,7 +325,7 @@ def _confirm_pending_rule_change(bootstrap_url: str) -> None:
 
 
 async def test_packaged_app_connects_over_mcp_and_completes_an_approval_round_trip(
-    running_packaged_daemon, built_shim_entry,
+    running_packaged_daemon, built_shim_entry, installed_app,
 ):
     """The one end-to-end assertion this whole module exists for: the real
     ``.mcpb`` shim, talking to the real packaged daemon started from the
@@ -353,3 +372,83 @@ async def test_packaged_app_connects_over_mcp_and_completes_an_approval_round_tr
     # confirmed-but-inert in-memory result.
     settings_path = running_packaged_daemon.home / ".privacyfence" / "config" / "settings.yaml"
     assert "trusted_sender_domain" in settings_path.read_text(encoding="utf-8")
+
+    # ── State lives outside the package (module docstring, §6) ───────────
+    # macOS has no installer/uninstaller pair -- "uninstalling" is deleting
+    # the .app bundle, same as dragging it to the Trash. That must never
+    # touch $HOME/.privacyfence, the same "user state survives package
+    # removal" property test_deb_packaged_lifecycle.py's `dpkg -r`/`dpkg -P`
+    # and test_windows_packaged_smoke.py's silent uninstall each assert for
+    # their own platform's removal gesture. The daemon process is still
+    # running from this bundle's own binary at this point -- removing the
+    # files out from under an already-exec'd process is ordinary POSIX
+    # unlink semantics, not an error, on macOS.
+    shutil.rmtree(installed_app)
+    assert not installed_app.exists()
+    assert settings_path.exists(), "deleting PrivacyFenceApp.app must never touch $HOME/.privacyfence state"
+    assert "trusted_sender_domain" in settings_path.read_text(encoding="utf-8")
+
+
+def test_packaged_app_signature_and_notarization(installed_app):
+    """§7 of the module docstring -- distinct from the MCP/approval round
+    trip above, and deliberately its own test so a signature failure and an
+    approval-protocol failure are never conflated in one report.
+
+    ``scripts/build_dmg.sh``'s own ``--sign``/``NOTARIZE_PROFILE`` are both
+    optional (a local dev build with no Developer ID identity is a
+    legitimate, common case -- see that script's step 5/8 comments), so this
+    skips outright, rather than failing, when the artifact under test wasn't
+    built with them. ``build.yml``'s real release job always sets both (see
+    its "Build .app and DMG" step), so this asserts the real chain there.
+    """
+    identify = subprocess.run(
+        ["codesign", "-dv", "--verbose=4", str(installed_app)],
+        capture_output=True, text=True,
+    )
+    # codesign writes its `-d` info to stderr; an entirely unsigned bundle
+    # exits 1 with "code object is not signed at all".
+    if identify.returncode != 0:
+        pytest.skip(
+            f"PrivacyFenceApp.app is unsigned for this build (SIGN_IDENTITY unset) -- "
+            f"run scripts/build_dmg.sh --sign '<identity>' to exercise this test: {identify.stderr}"
+        )
+    assert "Authority=Developer ID Application" in identify.stderr, (
+        f"expected a real Developer ID signature, not an ad-hoc one:\n{identify.stderr}"
+    )
+
+    verify = subprocess.run(
+        ["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(installed_app)],
+        capture_output=True, text=True,
+    )
+    assert verify.returncode == 0, f"codesign --verify --deep --strict failed:\n{verify.stderr}"
+
+    # Gatekeeper's own policy engine, asked the same question it asks on a
+    # real first launch, without actually invoking the interactive
+    # "are you sure you want to open this" dialog a human sees (that part
+    # of the story stays manual, per this plan's own governing rule).
+    assess = subprocess.run(
+        ["spctl", "--assess", "--type", "execute", "--verbose", str(installed_app)],
+        capture_output=True, text=True,
+    )
+    assert assess.returncode == 0, f"Gatekeeper would reject this app (spctl --assess):\n{assess.stdout}{assess.stderr}"
+
+    # Notarization is checked against the DMG itself (what ships), not the
+    # extracted bundle -- `xcrun stapler staple` (build_dmg.sh step 8)
+    # staples the ticket to the disk image. A signed-but-not-notarized local
+    # build (NOTARIZE_PROFILE unset) is also legitimate and must not fail
+    # this test -- `spctl`'s own "source=" line is what actually says
+    # whether Apple's notarization ticket was found and accepted, without
+    # this test needing network access to ask Apple directly the way
+    # `xcrun stapler validate` can fall back to doing.
+    dmg_path = _built_dmgs()[-1]
+    dmg_assess = subprocess.run(
+        ["spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose", str(dmg_path)],
+        capture_output=True, text=True,
+    )
+    dmg_assess_output = dmg_assess.stdout + dmg_assess.stderr
+    if "source=Notarized Developer ID" not in dmg_assess_output:
+        pytest.skip(
+            f"{dmg_path} is signed but not notarized for this build (NOTARIZE_PROFILE unset): "
+            f"{dmg_assess_output}"
+        )
+    assert dmg_assess.returncode == 0, f"spctl rejected the notarized DMG outright:\n{dmg_assess_output}"

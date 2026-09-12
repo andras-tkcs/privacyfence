@@ -778,11 +778,11 @@ Prove what users actually download.
 
 ### Already in this repo
 
-- **macOS**: `tests/integration/test_macos_packaged_smoke.py` already mounts the built DMG,
-  extracts the app, launches the frozen daemon with an isolated `$HOME`, connects via the real
-  built `mcpb/shim/dist/shim.js`, drives a headless-Chromium approval round trip, and (per its own
-  docstring) covers most of what §6.1 below asks for. Confirm it also asserts signature/notarization
-  validation and state-outside-package — extend narrowly if either is missing rather than assuming.
+- **macOS**: done as of this phase's own §6.1 below — `tests/integration/test_macos_packaged_smoke.py`
+  already mounted the built DMG, extracted the app, launched the frozen daemon with an isolated
+  `$HOME`, connected via the real built `mcpb/shim/dist/shim.js`, and drove a headless-Chromium
+  approval round trip; §6.1 closed the two gaps this phase's own audit found (signature/notarization
+  validation, and state-outside-package survival) rather than rebuilding any of the above.
 - **Linux**: done as of this phase's own §6.3 below — `tests/integration/test_deb_packaged_
   lifecycle.py` turns `docs/linux-local-deb-packaging-plan.md` Phase 7's install/autostart-file/
   remove/purge lifecycle (P7.1) and upgrade-in-place test (P7.3), both previously only manually
@@ -794,12 +794,43 @@ Prove what users actually download.
   installed daemon, and a real silent uninstall (package removal + scheduled-task removal + untouched
   user state), wired into `build.yml`'s `build-windows` job right after `scripts/build_installer.ps1`.
 
-### 6.1 macOS — close remaining gaps only
+### 6.1 macOS — close remaining gaps only — done
 
-Read `test_macos_packaged_smoke.py` in full before writing anything new; add only what its own
-docstring says is out of scope (e.g. explicit signature/notarization assertions if not already
-present, package cleanup/removal if not already exercised). Gatekeeper UX itself stays manual per
-the source strategy.
+Auditing `test_macos_packaged_smoke.py` in full (rather than assuming, per this item's own
+instruction) found the round trip it already ran was solid but genuinely missing both gaps this
+item asked to check for — neither signature/notarization validation nor state-outside-package
+survival existed anywhere in the file. Both are closed, narrowly, without touching the existing
+round trip's own steps 1–5:
+
+- **State lives outside the package** — the existing round-trip test now has one addition at its
+  end: delete the installed `PrivacyFenceApp.app` (macOS's actual "uninstall" gesture — there's no
+  installer/uninstaller pair the way Windows/Linux have one) and confirm the auto-accept rule the
+  test just applied is still readable from `$HOME/.privacyfence/config/settings.yaml` — the same
+  "user state survives package removal" property `test_deb_packaged_lifecycle.py`'s `dpkg -r`/
+  `dpkg -P` and `test_windows_packaged_smoke.py`'s silent uninstall already assert for their own
+  platforms' removal gesture. Deleting the bundle's files out from under its own already-running
+  process is ordinary POSIX unlink semantics, not an error, so this needed no change to the daemon
+  fixture's own lifecycle.
+- **Signature/notarization** — a new, separate test (`test_packaged_app_signature_and_notarization`,
+  deliberately its own test so a signature failure is never conflated with an approval-protocol
+  failure in one report) asserts `codesign --verify --deep --strict` on the installed bundle, that
+  the identity is a real `Authority=Developer ID Application` rather than ad-hoc, and that
+  Gatekeeper's own policy engine accepts it (`spctl --assess --type execute`) — the same question a
+  real first launch asks, without actually driving the interactive "are you sure" dialog a human
+  sees (that part of the story stays manual, per the source strategy). Notarization is checked
+  against the DMG itself via `spctl --assess --type open --context context:primary-signature`'s own
+  `source=Notarized Developer ID` line — chosen over `xcrun stapler validate` specifically so this
+  never needs network access to ask Apple directly. `scripts/build_dmg.sh`'s `--sign`/
+  `NOTARIZE_PROFILE` are both optional (a local dev build with no Developer ID identity is
+  legitimate and common), so this test skips outright, rather than failing, on an unsigned or
+  signed-but-unnotarized local build; `build.yml`'s real release job always sets both, so this
+  asserts the full chain there.
+- **`packaged` marker** — added to the module's existing `pytestmark` list, closing the one
+  inconsistency `testing-policy.md`'s own layer-6 note already flagged (`test_macos_packaged_smoke.py`
+  was the one packaged-artifact module not yet carrying it, "same posture as `browser`'s own note").
+
+Gatekeeper UX itself — the interactive dialog a human actually clicks through — stays manual per the
+source strategy; nothing in this item automates that.
 
 ### 6.2 Windows — new packaged installer smoke — done
 
