@@ -39,10 +39,13 @@ likely broken -- no test catches this" bug the plan's Phase 3 table named
 from __future__ import annotations
 
 import http.server
+import logging
+import re
 import socket
 import threading
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -157,8 +160,69 @@ def context(browser):
 @pytest.fixture
 def page(context):
     pg = context.new_page()
+    # Buffered here (not read live) so a failing test's own teardown
+    # (``_capture_failure_artifacts`` below) has the full transcript to
+    # write out, regardless of which point in the test the failure actually
+    # happened at -- a listener attached only after a failure would have
+    # missed everything already printed by then.
+    pg.pf_console_log: list[str] = []  # type: ignore[attr-defined]
+    pg.on("console", lambda msg: pg.pf_console_log.append(f"[console:{msg.type}] {msg.text}"))
+    pg.on("pageerror", lambda exc: pg.pf_console_log.append(f"[pageerror] {exc}"))
     yield pg
     pg.close()
+
+
+# Phase 4 item 4.5 (docs/automated-test-strategy-plan.md): "systematic
+# failure-artifact capture (screenshot/console/DOM/daemon log)" -- checked
+# against what this module and .github/workflows/tests.yml's own Playwright
+# step already had before this landed (neither did anything beyond pytest's
+# own default traceback/stdout capture), so this is new, not a duplicate of
+# an existing mechanism.
+_ARTIFACTS_DIR = Path(__file__).resolve().parents[2] / "test-results" / "browser-smoke"
+
+
+@pytest.fixture(autouse=True)
+def _capture_failure_artifacts(request, page, caplog):
+    """On any failing test in this file, write four things next to each
+    other under ``test-results/browser-smoke/<test id>.*`` (created lazily,
+    only once a test actually fails -- nothing written on a passing run):
+    a full-page screenshot, the served page's own current DOM
+    (``page.content()``), the buffered browser console/pageerror transcript
+    (``page``'s own ``pf_console_log`` above), and this suite's "daemon"
+    log -- there's no separate OS process here (``local_server``/
+    ``org_server`` run ``WebServer`` in-process on a background thread, see
+    those fixtures), so the closest equivalent is whatever
+    ``privacyfence.*`` actually logged during the test, which ``caplog``
+    already captures once its level is lowered enough to catch it.
+
+    Depends on ``page`` directly (every test in this module already takes
+    it) rather than reaching for it via ``request.getfixturevalue`` -- this
+    fixture's own teardown must run *after* the test body but *before*
+    ``page``'s (``pg.close()``), while the underlying page/server are still
+    alive to screenshot/read from; normal fixture teardown ordering
+    (reverse of setup) guarantees exactly that here since this fixture is
+    requested after ``page`` on every test's own parameter list.
+    """
+    caplog.set_level(logging.INFO)
+    yield
+    rep_call = getattr(request.node, "rep_call", None)
+    if rep_call is None or not rep_call.failed:
+        return
+    _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    base = _ARTIFACTS_DIR / re.sub(r"[^\w.-]+", "_", request.node.nodeid)
+    try:
+        page.screenshot(path=f"{base}.png", full_page=True)
+    except Exception as exc:  # pragma: no cover -- best-effort diagnostics
+        (base.with_name(base.name + ".screenshot-error.txt")).write_text(str(exc), encoding="utf-8")
+    try:
+        (base.with_name(base.name + ".dom.html")).write_text(page.content(), encoding="utf-8")
+    except Exception:  # pragma: no cover -- best-effort diagnostics
+        pass
+    console_log = getattr(page, "pf_console_log", [])
+    if console_log:
+        (base.with_name(base.name + ".console.log")).write_text("\n".join(console_log), encoding="utf-8")
+    if caplog.text:
+        (base.with_name(base.name + ".daemon.log")).write_text(caplog.text, encoding="utf-8")
 
 
 @pytest.fixture
@@ -241,6 +305,28 @@ def _register_card(web_ui: WebApprovalUI, **kwargs) -> tuple[threading.Thread, o
     # the blocked show_popup()/show_read_popup() call resolved to need reach
     # for it, via `thread.result_box.get("result")` once `thread.join()`
     # confirms it's populated.
+    t.result_box = box
+    return t, card
+
+
+def _register_confirm(web_ui: WebApprovalUI, categories: list[str]) -> tuple[threading.Thread, object]:
+    """Same pattern as ``_register_card`` above, but for the PII/rule
+    confirmation dialog shape (``show_pii_confirmation_popup``) -- a bare
+    ``bool``, not a ``(result, choice)`` tuple, is what the blocked call
+    resolves to; stashed on the thread the same way (``thread.result_box``)
+    so a caller that cares can confirm which of Proceed/Cancel actually won."""
+    box: dict = {}
+
+    def run():
+        box["result"] = web_ui.show_pii_confirmation_popup(categories)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 5
+    while web_ui.current() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    card = web_ui.current()
+    assert card is not None, "confirmation dialog never registered"
     t.result_box = box
     return t, card
 
@@ -617,6 +703,267 @@ class TestApprovalListBehavior:
             if thread.is_alive():
                 web_ui.resolve(card.id, "deny")
                 thread.join(timeout=5)
+
+
+# --------------------------------------------------------------------- #
+# PII behavior (Phase 4 item 4.2, docs/automated-test-strategy-plan.md):
+# deterministic synthetic PII triggers the banner/tint on a review-gate
+# card, an unrelated operation never gets it, and the separate PII/rule
+# confirmation dialog (show_pii_confirmation_popup, dialog_window_html.py's
+# build_confirmation_html) actually resolves Proceed/Cancel to the right
+# boolean from a real click -- the same "does the (result, choice) tuple
+# gate.py's caller needs actually reach the blocked call" concern
+# TestApprovalListBehavior's own "Always allow" test raised, for this
+# dialog's own bool-shaped contract instead.
+# --------------------------------------------------------------------- #
+
+
+class TestPiiApprovalUi:
+    def test_pii_banner_lists_the_matched_categories_on_a_review_gate_card(self, page, local_server):
+        """approval_window_html.py's ``_risk_section_html``: a read-gate
+        card carrying ``pii_categories`` renders the "Possible PII
+        detected" risk card, with every matched category rendered as its
+        own visible tag -- not just present in the HTML source, but
+        actually laid out and visible in a real browser."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        thread, card = _register_card(
+            web_ui, read=True, pii_categories=["Email address", "Phone number"],
+        )
+        try:
+            page.goto(f"{server.base_url}/approvals/{card.id}")
+            page.wait_for_load_state("load")
+            assert page.get_by_text("Possible PII detected").is_visible()
+            assert page.get_by_text("Email address").is_visible()
+            assert page.get_by_text("Phone number").is_visible()
+        finally:
+            web_ui.resolve(card.id, "deny")
+            thread.join(timeout=5)
+
+    def test_an_unrelated_operation_never_shows_the_pii_banner(self, page, local_server):
+        """The negative case only means something next to the positive one
+        above: an ordinary card with no PII match at all (a plain write-gate
+        popup, same shape ``TestApprovalDecisionFlow`` already exercises)
+        must never render the risk card -- ``_risk_section_html`` returns
+        empty for an empty category list, and this proves that reaches the
+        real served page, not just the Python-level HTML string."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        thread, card = _register_card(web_ui)
+        try:
+            page.goto(f"{server.base_url}/approvals/{card.id}")
+            page.wait_for_load_state("load")
+            assert page.get_by_text("Possible PII detected").count() == 0
+        finally:
+            web_ui.resolve(card.id, "deny")
+            thread.join(timeout=5)
+
+    def test_proceed_on_the_pii_confirmation_dialog_resolves_true(self, page, local_server):
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        thread, card = _register_confirm(web_ui, ["Email address"])
+        try:
+            page.goto(f"{server.base_url}/approvals/{card.id}")
+            page.wait_for_load_state("load")
+            assert page.get_by_text("PrivacyFence — Possible PII Detected").is_visible()
+            page.locator('[data-pf-action="confirm"]').click()
+            page.wait_for_url(f"{server.base_url}/approvals")
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert thread.result_box.get("result") is True
+            assert page.locator("#pf-shell-toast").text_content() == _DECIDED_MESSAGE
+        finally:
+            if thread.is_alive():
+                web_ui.resolve(card.id, "cancel")
+                thread.join(timeout=5)
+
+    def test_cancel_on_the_pii_confirmation_dialog_resolves_false(self, page, local_server):
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        thread, card = _register_confirm(web_ui, ["Email address"])
+        try:
+            page.goto(f"{server.base_url}/approvals/{card.id}")
+            page.wait_for_load_state("load")
+            page.locator('[data-pf-action="cancel"]').click()
+            page.wait_for_url(f"{server.base_url}/approvals")
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            assert thread.result_box.get("result") is False
+            assert page.locator("#pf-shell-toast").text_content() == _DENIED_MESSAGE
+        finally:
+            if thread.is_alive():
+                web_ui.resolve(card.id, "cancel")
+                thread.join(timeout=5)
+
+
+# --------------------------------------------------------------------- #
+# Responsive layout (Phase 4 item 4.3, docs/automated-test-strategy-plan.md):
+# named viewports (phone/tablet/desktop) -- no horizontal page scroll, the
+# WIDE layout's two-column split actually stacks below approval_window_
+# html.py's own 700px breakpoint, primary actions stay reachable, and the
+# separate (native-window-shaped) confirmation dialog fits a phone viewport
+# too, not just the card documents.
+# --------------------------------------------------------------------- #
+
+_VIEWPORTS = {
+    "phone": {"width": 375, "height": 812},
+    "tablet": {"width": 768, "height": 1024},
+    "desktop": {"width": 1280, "height": 800},
+}
+
+
+def _assert_no_horizontal_overflow(page) -> None:
+    scroll_width = page.evaluate("document.documentElement.scrollWidth")
+    client_width = page.evaluate("document.documentElement.clientWidth")
+    assert scroll_width <= client_width, f"page scrolls horizontally: {scroll_width} > {client_width}"
+
+
+class TestResponsiveLayout:
+    @pytest.mark.parametrize("viewport_name", sorted(_VIEWPORTS))
+    def test_approval_list_has_no_horizontal_overflow(self, page, local_server, viewport_name):
+        server, _web_ui = local_server
+        page.set_viewport_size(_VIEWPORTS[viewport_name])
+        _sign_in_local(page, server)
+        page.goto(f"{server.base_url}/approvals")
+        page.wait_for_load_state("load")
+        _assert_no_horizontal_overflow(page)
+
+    @pytest.mark.parametrize("viewport_name", sorted(_VIEWPORTS))
+    def test_pending_card_has_no_overflow_and_primary_actions_stay_visible(
+        self, page, local_server, viewport_name,
+    ):
+        server, web_ui = local_server
+        page.set_viewport_size(_VIEWPORTS[viewport_name])
+        _sign_in_local(page, server)
+        # WIDE -- the two-column layout with the most to go wrong at a
+        # narrow width (see the stacking test below); NARROW has no second
+        # column to overflow in the first place.
+        thread, card = _register_card(web_ui, read=True, layout="wide")
+        try:
+            page.goto(f"{server.base_url}/approvals/{card.id}")
+            page.wait_for_load_state("load")
+            _assert_no_horizontal_overflow(page)
+            assert page.locator('[data-pf-action="accept"]').is_visible()
+            assert page.locator('[data-pf-action="deny"]').is_visible()
+        finally:
+            web_ui.resolve(card.id, "deny")
+            thread.join(timeout=5)
+
+    def test_wide_layout_columns_stack_at_phone_width_but_sit_side_by_side_on_desktop(
+        self, page, local_server,
+    ):
+        """styles.css's ``.pf-wide-row``/``@media (max-width: 700px)``
+        block: two columns (row) above the breakpoint, stacked (column)
+        below it -- a real computed-style assertion, not just "the CSS rule
+        exists in the source", the same posture ``TestColorScheme`` below
+        takes for the dark-mode tokens."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        thread, card = _register_card(web_ui, read=True, layout="wide")
+        try:
+            page.set_viewport_size(_VIEWPORTS["phone"])
+            page.goto(f"{server.base_url}/approvals/{card.id}")
+            page.wait_for_load_state("load")
+            assert page.evaluate(
+                "getComputedStyle(document.querySelector('.pf-wide-row')).flexDirection"
+            ) == "column"
+
+            page.set_viewport_size(_VIEWPORTS["desktop"])
+            page.reload()
+            page.wait_for_load_state("load")
+            assert page.evaluate(
+                "getComputedStyle(document.querySelector('.pf-wide-row')).flexDirection"
+            ) == "row"
+        finally:
+            web_ui.resolve(card.id, "deny")
+            thread.join(timeout=5)
+
+    def test_pii_confirmation_dialog_fits_a_phone_viewport(self, page, local_server):
+        """The regression test for the bug this check found: dialog_window_
+        html.py's ``_document()`` used to give the confirmation/choice
+        dialogs a bare fixed ``width: {width}px`` -- correct for the native
+        host, which sizes its own window frame to exactly that width, but
+        an unconditional overflow once the exact same document is served
+        into an ordinary (narrower) browser tab/phone viewport, as
+        web_approval_ui.py's ``show_pii_confirmation_popup`` does. Fixed to
+        ``width: min({width}px, 100%)``, the same responsive shape
+        approval_window_html.py's own card documents already used."""
+        server, web_ui = local_server
+        _sign_in_local(page, server)
+        page.set_viewport_size(_VIEWPORTS["phone"])
+        thread, card = _register_confirm(web_ui, ["Email address"])
+        try:
+            page.goto(f"{server.base_url}/approvals/{card.id}")
+            page.wait_for_load_state("load")
+            _assert_no_horizontal_overflow(page)
+            assert page.locator('[data-pf-action="confirm"]').is_visible()
+            assert page.locator('[data-pf-action="cancel"]').is_visible()
+        finally:
+            web_ui.resolve(card.id, "cancel")
+            thread.join(timeout=5)
+
+
+# --------------------------------------------------------------------- #
+# Light/dark mode (Phase 4 item 4.4, docs/automated-test-strategy-plan.md):
+# structural assertions only (element presence, and that the dark-mode
+# design tokens actually took effect on a real computed style) -- not pixel
+# comparison, per that item's own text; subjective visual quality
+# (contrast, "does this look right") stays manual (docs/testing-policy.md's
+# governing rule on what stays manual).
+# --------------------------------------------------------------------- #
+
+
+class TestColorScheme:
+    @pytest.mark.parametrize("color_scheme", ["light", "dark"])
+    def test_approval_list_renders_in_both_color_schemes(self, page, local_server, color_scheme):
+        server, _web_ui = local_server
+        page.emulate_media(color_scheme=color_scheme)
+        _sign_in_local(page, server)
+        page.goto(f"{server.base_url}/approvals")
+        page.wait_for_load_state("load")
+        assert page.get_by_text("Nothing is waiting.").is_visible()
+        assert page.get_by_text("PrivacyFence is watching.").is_visible()
+
+    @pytest.mark.parametrize("color_scheme", ["light", "dark"])
+    def test_pending_card_renders_in_both_color_schemes(self, page, local_server, color_scheme):
+        server, web_ui = local_server
+        page.emulate_media(color_scheme=color_scheme)
+        _sign_in_local(page, server)
+        thread, card = _register_card(
+            web_ui, read=True, pii_categories=["Email address"], layout="wide",
+        )
+        try:
+            page.goto(f"{server.base_url}/approvals/{card.id}")
+            page.wait_for_load_state("load")
+            assert page.get_by_text("Possible PII detected").is_visible()
+            assert page.locator('[data-pf-action="accept"]').is_visible()
+            assert page.locator('[data-pf-action="deny"]').is_visible()
+        finally:
+            web_ui.resolve(card.id, "deny")
+            thread.join(timeout=5)
+
+    def test_the_dark_tokens_actually_take_effect_not_just_the_light_ones_twice(self, page, local_server):
+        """The positive-and-negative pairing every other structural check in
+        this class needs to mean anything: both parametrized tests above
+        pass even if ``prefers-color-scheme: dark`` silently fell back to
+        the light palette (element presence alone can't tell the
+        difference) -- this proves the page's own background color, driven
+        by styles.css's ``@media (prefers-color-scheme: dark)`` block,
+        genuinely differs between the two, on the same page, in the same
+        browser context."""
+        server, _web_ui = local_server
+        _sign_in_local(page, server)
+        page.emulate_media(color_scheme="light")
+        page.goto(f"{server.base_url}/approvals")
+        page.wait_for_load_state("load")
+        light_bg = page.evaluate("getComputedStyle(document.body).backgroundColor")
+
+        page.emulate_media(color_scheme="dark")
+        page.reload()
+        page.wait_for_load_state("load")
+        dark_bg = page.evaluate("getComputedStyle(document.body).backgroundColor")
+
+        assert light_bg != dark_bg
 
 
 # --------------------------------------------------------------------- #

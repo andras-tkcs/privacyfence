@@ -29,7 +29,13 @@ also now done — `tests/system/test_local_mode_system.py`, collected by every j
 the full suite, with no new CI wiring needed; see that phase's own status note for what shipped and
 where it deviated from the original design (the bootstrap-link-redaction gotcha, and the real
 "Quit PrivacyFence" action used for a genuinely clean shutdown rather than `proc.terminate()`).
-Phases 4–10 are unaffected by any of these merges and reflect this plan's original grounding pass.
+[Phase 4](#phase-4--complete-browserui-automation) (browser/UI automation) is also now done, across
+two PRs (#298 for item 4.1, a follow-up for items 4.2–4.5) — see that phase's own status note for
+what shipped, including a real responsive-layout bug the new checks found and fixed
+(`dialog_window_html.py`'s confirmation/choice dialogs overflowing a phone-width viewport) and the
+new failure-artifact-capture infrastructure item 4.5 asked for, which didn't exist anywhere in this
+repo before. Phases 5–10 are unaffected by any of these merges and reflect this plan's original
+grounding pass.
 Phase 11 (update branch-protection required checks) is new in this revision — added once this plan
 was checked against `testing-policy.md`'s own "one job to merge" language and found not to close
 that gap anywhere — and Phase 12 is the renumbered "retire the platform-specific plan docs" phase
@@ -616,51 +622,61 @@ described:
 
 Move every objectively testable browser behavior out of manual QA.
 
-### Already in this repo
+### Status: done
 
-`tests/integration/test_browser_smoke.py` (TST-06) already covers substantially more than a bare
-minimum: `TestBootstrapLogin`, `TestApprovalDecisionFlow`, `TestPdfPreview`,
-`TestSecurityHeadersCsp` (a real no-inline-script CSP check, not a skip), and
-`TestOrgModeWebAuthnUi`. What's **not** yet covered, checked against the classes above:
+Item 1 (`TestApprovalListBehavior`) landed first, in PR #298 (Phase 4.1). Items 2-5 landed in a
+follow-up PR that also extended `test_browser_smoke.py` directly (still the one home for this
+layer, no new file):
 
-- Empty approval list, "Always allow," return-to-list toast behavior beyond one Allow/Deny round
-  trip, live SSE refresh under multiple pending cards, and stale/idempotent decision handling
-  (double-submitting a decision).
-- PII-specific banner/highlight/confirmation assertions against deterministic synthetic PII (the
-  existing classes exercise the approval flow generally, not the PII gate path specifically).
-- Responsive-layout assertions at named viewports (375×812, 768×1024, desktop).
-- `prefers-color-scheme: light`/`dark` structural assertions.
-- Systematic failure-artifact capture (screenshot/console/DOM/daemon log) — check
-  `tests.yml`'s Playwright step and `test_browser_smoke.py`'s own fixtures for what already uploads
-  on failure before adding more; extend rather than duplicate.
+- **PII behavior** (`TestPiiApprovalUi`): a review-gate card carrying `pii_categories` renders the
+  "Possible PII detected" risk card with every matched category visible as its own tag; an ordinary
+  card with no PII match never renders it at all (the negative case only means something next to
+  the positive one); and the separate PII/rule confirmation dialog
+  (`show_pii_confirmation_popup`/`dialog_window_html.build_confirmation_html`) actually resolves
+  Proceed → `True` and Cancel → `False` from a real click, with the right post-decision toast on
+  each.
+- **Responsive layout** (`TestResponsiveLayout`): the three named viewports (375×812, 768×1024,
+  1280×800), asserting no horizontal page scroll on both the approval list and a pending WIDE-layout
+  card, the WIDE two-column split actually computing `flex-direction: column` below
+  `approval_window_html.py`'s 700px breakpoint and `row` above it, primary Allow/Deny actions
+  staying visible, and the confirmation dialog fitting a phone viewport too. **Found and fixed a
+  real bug in the process**: `dialog_window_html.py`'s `_document()` (the confirmation/choice-picker
+  shape `show_pii_confirmation_popup`/`show_rule_confirmation_popup`/`show_rule_choice_popup` all
+  render) gave its `<body>` a bare fixed `width: {width}px` — correct for the native host, which
+  sizes its own window frame to exactly that width, but an unconditional horizontal overflow once
+  the identical document is served into an ordinary (narrower) browser tab, which the web approval
+  UI does for exactly this shape. Fixed to `width: min({width}px, 100%)` plus the same
+  `@media (max-width: 700px)` height override `approval_window_html.py`'s own card documents already
+  use, for the same reason — the same "no test catches this" pattern `build_csp()`
+  (`TestSecurityHeadersCsp`) and the PDF `<embed>` fix (`TestPdfPreview`) already closed elsewhere in
+  this file, this time caught by a real-browser layout check instead of a real-browser security
+  check. `tests/unit/test_dialog_window_html.py`'s two width-assertion tests were updated to match
+  the new responsive CSS shape rather than the old bare-pixel one.
+- **Light/dark mode** (`TestColorScheme`): both `prefers-color-scheme` values render correctly
+  (element presence) on the approval list and on a pending PII card, plus one positive-and-negative
+  pairing test proving the dark tokens actually take effect — `document.body`'s own computed
+  background color genuinely differs between the two `page.emulate_media()` states in the same
+  browser context — rather than the dark case silently falling back to the light palette in a way
+  bare element-presence assertions can't tell apart. Structural assertions only, no pixel
+  comparison, per this phase's own text; subjective visual quality stays manual
+  (`docs/testing-policy.md`'s governing rule).
+- **Failure-artifact capture**: neither this file nor `tests.yml`'s own Playwright step had any of
+  screenshot/console/DOM/daemon-log capture on a failing test before this landed — checked, not
+  assumed, so this is new infrastructure, not a duplicate. `tests/integration/conftest.py`'s
+  `pytest_runtest_makereport` hook (hook implementations are only ever collected from
+  `conftest.py`/plugins, never an ordinary test module) stashes each phase's own outcome onto the
+  test item; `test_browser_smoke.py`'s `page` fixture now buffers every `console`/`pageerror` event
+  as it happens (read only after the fact, from teardown, would miss anything printed before a
+  failure); and the new autouse `_capture_failure_artifacts` fixture writes a screenshot, the page's
+  current DOM, that console/pageerror transcript, and — since this suite runs `WebServer` in-process
+  on a background thread rather than as a separate OS process, so there's no daemon log file to
+  reach for — whatever `privacyfence.*` logged during the test (via `caplog`) to
+  `test-results/browser-smoke/<test id>.*`, but only for a test that actually failed; nothing is
+  written on a passing run. `.github/workflows/tests.yml` uploads that directory as a build artifact
+  on `failure()`, and `.gitignore` excludes it as a local/CI-only scratch directory, never something
+  to commit.
 
-### Remaining work
-
-Extend `test_browser_smoke.py` (new test classes, not a new file — it's already the established
-home for this layer) with:
-
-1. **Approval behavior** (`TestApprovalListBehavior` or similar): empty list, "Always allow" →
-   proposed-rule side effect, return-to-list + toast, live SSE refresh, multiple pending cards,
-   double-decision idempotency — done. `TestApprovalListBehavior` in `test_browser_smoke.py` covers
-   all six: the bare empty state, clicking a card's "Always allow" button and confirming the
-   `(result, choice)` tuple gate.py's caller needs actually reaches the blocked `show_popup()` call
-   (the rule-proposal side effect itself stays test_gate.py's job, per that module's own "Accept
-   all" classes — this is the browser-observable half only), the post-decision toast rendering the
-   right message across two separate round trips (not stuck on the first one), the SSE stream
-   dropping the right row live with two cards pending at once, and a double-submitted decide POST
-   resolving the call exactly once (200 then 409, not a second resolution).
-2. **PII behavior** (`TestPiiApprovalUi`): deterministic synthetic PII triggers the banner/tint,
-   Proceed and Cancel both work, an unrelated operation is never highlighted.
-3. **Responsive layout** (`TestResponsiveLayout`): the three viewports above; assert no horizontal
-   overflow, wide cards stack, primary actions stay visible, dialogs fit the viewport.
-4. **Light/dark mode** (`TestColorScheme`): both `prefers-color-scheme` values on the approval list
-   and a pending card; structural assertions only (element presence/class), not pixel comparison —
-   the source strategy is explicit that subjective visual quality stays manual.
-5. Confirm failure-artifact capture (screenshot, browser console, relevant DOM, daemon log) already
-   happens on any new failing test in this file the same way it does for the existing ones; add
-   whichever of those isn't already wired into the shared fixture.
-
-### Exit criteria
+### Exit criteria (met)
 
 Manual browser QA is reduced to subjective visual inspection — every objectively-checkable behavior
 above has a passing automated assertion.
@@ -1019,8 +1035,11 @@ Phase 3  Canonical cross-platform system test                    (DONE — tests
    ↓                                                               mode_system.py, collected by every
    ↓                                                               job that runs the full suite, no
    ↓                                                               new CI wiring needed)
-Phase 4  Browser/UI automation                                   (extend existing test_browser_
-   ↓                                                               smoke.py, not a new file)
+Phase 4  Browser/UI automation                                   (DONE — extended existing
+   ↓                                                               test_browser_smoke.py, not a
+   ↓                                                               new file; found/fixed a real
+   ↓                                                               phone-viewport overflow bug;
+   ↓                                                               new failure-artifact capture)
 Phase 5  Gate/policy matrix                                      (mostly an audit of the existing
    ↓                                                               2,600-line test_gate.py)
 Phase 6  Packaged-artifact lifecycle                              (macOS: close small gaps.
@@ -1082,8 +1101,11 @@ plan's grounding pass found the work already done, and a note on which remain ge
 13. ~~Cross-platform daemon/MCP/approval/audit test~~ — **done** (Phase 3):
     `tests/system/test_local_mode_system.py`, a real spawned daemon process reusing Phase 2.3's own
     spawn pattern and test_deferred_approval_round_trip.py's deferred-approval protocol shape.
-14. Browser approval-flow coverage gaps: "Always allow," multi-card, idempotency (Phase 4.1)
-15. Browser PII/responsive/light-dark coverage (Phase 4.2–4.4)
+14. ~~Browser approval-flow coverage gaps: "Always allow," multi-card, idempotency~~ — **done**,
+    PR #298 (Phase 4.1)
+15. ~~Browser PII/responsive/light-dark coverage + failure-artifact capture~~ — **done** (Phase
+    4.2–4.5): found and fixed a real phone-viewport overflow bug in the process (see Phase 4's own
+    status note)
 16. Gate matrix audit + close any real gap found (Phase 5) — likely small, since the matrix is
     mostly already there
 17. Linux packaged lifecycle — automate the already-manually-proven P7.1/P7.3 (Phase 6.3)
@@ -1121,7 +1143,7 @@ combination.
 - A canonical daemon/MCP/approval/audit scenario passes on all three desktop platforms (Phase 3,
   done).
 - Browser behavior is tested automatically against real Chromium, covering PII, responsive, and
-  light/dark surfaces, not just the approval round trip already covered (Phase 4).
+  light/dark surfaces, not just the approval round trip already covered (Phase 4, done).
 - Every connector is periodically exercised against dedicated QA accounts (Phase 1, done for ten of
   eleven — Apps Script fixture coverage is the one open item).
 - Provider API drift is detected automatically and produces a reviewable PR (Phase 1, done).
