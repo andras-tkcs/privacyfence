@@ -399,17 +399,29 @@ async def test_installer_autostart_activates_daemon_via_real_logon_session(
     _prepare_home(home, port=port)
 
     # ── Install (as this test's own -- not the throwaway -- account; see
-    # module docstring point 1 for why the installer's own schtasks /create
-    # using /ru "BUILTIN\Users" makes this the exact real-world trigger
-    # scope, regardless of which account runs the installer) ──────────────
+    # module docstring point 1 for why installer/privacyfence.iss's own
+    # RegisterAutostartTask (its Task Scheduler XML, not a plain schtasks
+    # /create flag) makes this the exact real-world trigger scope,
+    # regardless of which account runs the installer) ──────────────────────
+    log_path = tmp_path / "install.log"
     install_result = _run_installer(
         str(setup_exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/SP-", "/NORESTART",
-        f"/DIR={install_dir}", f"/LOG={tmp_path / 'install.log'}",
+        f"/DIR={install_dir}", f"/LOG={log_path}",
     )
     assert install_result.returncode == 0, (
-        f"installer failed (exit {install_result.returncode}):\n{install_result.stdout}{install_result.stderr}"
+        f"installer failed (exit {install_result.returncode}):\n{install_result.stdout}{install_result.stderr}\n"
+        f"---- install log ----\n{log_path.read_text(errors='replace') if log_path.exists() else '(missing)'}"
     )
-    assert _task_exists(), f"Task Scheduler task {TASK_NAME!r} missing after install"
+    # RegisterAutostartTask (installer/privacyfence.iss's [Code] section)
+    # doesn't abort Setup on its own failure, so a silent install can still
+    # exit 0 with no task actually registered -- the install log (Inno's
+    # own /LOG= output, which records every [Code] Exec call and its
+    # result) is the only way to see why, short of downloading this test's
+    # own diagnostics artifact by hand.
+    assert _task_exists(), (
+        f"Task Scheduler task {TASK_NAME!r} missing after install\n"
+        f"---- install log ----\n{log_path.read_text(errors='replace') if log_path.exists() else '(missing)'}"
+    )
 
     # A silent install's own [Run] "launch now" step is skipifsilent -- it
     # must never fire under /VERYSILENT (test_windows_packaged_smoke.py's

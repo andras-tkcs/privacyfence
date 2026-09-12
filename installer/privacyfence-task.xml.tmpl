@@ -9,19 +9,27 @@ install time, substitutes __EXEC_PATH__ with the real installed
 
 Structure follows Microsoft's own official "any group member" logon
 trigger example (learn.microsoft.com/en-us/windows/win32/taskschd/
-logon-trigger-example xml): LogonTrigger with no UserId fires for any
-interactive logon, not just one specific account, and Principal uses
-GroupId (the built-in Users group) rather than UserId so the task runs
-as whichever user just logged on, in their own session: the same
-"whichever account is at the keyboard" scope the macOS LaunchAgent and
-the Linux .deb's XDG autostart already have. MultipleInstancesPolicy is
-Parallel, not the more common IgnoreNew, deliberately: this task can
-legitimately have more than one concurrent instance at once, one per
-user session, since GroupId, unlike a single UserId, can trigger for
-several different logged on users at the same time.
-
-RestartOnFailure is the piece plain schtasks /create CLI flags never
-had a way to express at all; there is no equivalent flag, see
+logon-trigger-example xml) as closely as possible, deliberately: an
+earlier, more elaborate version of this file (every Settings element a
+real exported task commonly carries, e.g. IdleSettings and
+ExecutionTimeLimit) built and installed without a compile error but
+the task still never actually appeared afterward, one plausible
+explanation being an element this repo could not verify against a
+real schema validator locally. Kept to only the elements this task
+actually needs changed from their own documented defaults, closest to
+the confirmed official example, to minimize that risk. LogonTrigger
+with no UserId fires for any interactive logon, not just one specific
+account, and
+Principal uses GroupId (the built-in Users group) rather than UserId so
+the task runs as whichever user just logged on, in their own session:
+the same "whichever account is at the keyboard" scope the macOS
+LaunchAgent and the Linux .deb's XDG autostart already have.
+MultipleInstancesPolicy is Parallel, not the schema default IgnoreNew,
+deliberately: this task can legitimately have more than one concurrent
+instance at once, one per user session, since GroupId, unlike a single
+UserId, can trigger for several different logged on users at the same
+time. RestartOnFailure is the piece plain schtasks /create CLI flags
+never had a way to express at all; there is no equivalent flag, see
 installer/privacyfence.iss's own comment history. It is the direct
 analogue of the macOS LaunchAgent's KeepAlive/SuccessfulExit=false and
 the Linux .deb plan's own systemd Restart=on-failure.
@@ -29,7 +37,7 @@ the Linux .deb plan's own systemd Restart=on-failure.
 NOTE: this comment intentionally avoids the two-hyphen sequence, which
 XML comments may not contain anywhere in their body.
 -->
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Starts PrivacyFence when any user signs in, and restarts it if it exits unexpectedly.</Description>
   </RegistrationInfo>
@@ -40,28 +48,15 @@ XML comments may not contain anywhere in their body.
   </Triggers>
   <Principals>
     <Principal>
-      <GroupId>BUILTIN\Users</GroupId>
+      <GroupId>Builtin\Users</GroupId>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
   </Principals>
   <Settings>
     <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>false</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings>
-      <StopOnIdleEnd>false</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <AllowHardTerminate>true</AllowHardTerminate>
     <RestartOnFailure>
       <Interval>PT1M</Interval>
       <Count>999</Count>
