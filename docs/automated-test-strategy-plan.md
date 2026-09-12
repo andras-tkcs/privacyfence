@@ -1503,49 +1503,68 @@ Give the installed Windows autostart task real crash-restart behavior — parity
 LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and the Linux `.deb`'s systemd `Restart=on-failure`,
 which Phase 3's original design intent wanted but never actually shipped.
 
-### Already in this repo
+### Status: implementation done; exit criteria not yet met, for a reason outside this phase's own scope
 
 Phase 12's own verification pass found and fixed two independent reasons
-`windows-graphical-session.yml` was red on every run — see that phase's own status note for the
-detail on both. Neither fix restores restart-on-failure, which is what this phase is for: the task
-now registers correctly and fires for any interactive logon, but it is logon-triggered only — no
-restart-on-failure of any kind, since there was never a working implementation of it to begin with.
-`platform-support.md`'s "Known open items" and `TECHNICAL_REFERENCE.md`'s "Windows" subsection both
-already name this as a known, expected-to-fail check.
+`windows-graphical-session.yml` was red on every run — see that phase's own status note for detail.
+Neither of those fixes restored restart-on-failure; getting there needed the real Task Scheduler XML
+task definition this phase called for, plus two further real bugs *in* that XML approach, both found
+and fixed the same way (an actual `workflow_dispatch` run against a real `windows-latest` runner, not
+assumption): the XML prolog's `encoding="UTF-8"` declaration contradicted the Unicode stream
+`schtasks.exe` already hands MSXML, which rejected the whole registration outright
+(`ERROR: The task XML is malformed. ... unable to switch the encoding`) — dropped entirely, since the
+definition is pure ASCII and needs no declared encoding at all; and the task definition was missing
+`version="1.2"` on `<Task>`, `id` on `<Principal>`, and the matching `Context` on `<Actions>` — without
+that id/Context pair, the `GroupId` principal was registered but never actually bound to the action
+that runs. `installer/privacyfence-task.xml.tmpl` now carries all of this, including
+`<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>` (`3`, not an
+arbitrarily large count — the same default Task Scheduler's own UI offers, and a restart count is a
+bounded schema type), and `installer/privacyfence.iss`'s `[Code]` section now captures and logs
+`schtasks`'s own stdout/stderr on registration, closing the blind spot that made the encoding bug take
+several runs to even see. Items 1-3 below are done; see `platform-support.md`'s "Known open items" for
+the fuller narrative and links.
 
-### Remaining work
+**What's not done, and why it doesn't belong to this phase to fix:** item 4 (a real crash-restart
+assertion) was never reached, because `windows-graphical-session.yml`'s existing real-logon test still
+fails one step earlier than that — the `LogonTrigger` itself doesn't fire within the test's 30s
+window, even though `schtasks /query /v` shows the task correctly registered, enabled, and scoped.
+The cause is the test's own substitution for "someone signs in": PowerShell's
+`Start-Process -Credential` (`CreateProcessWithLogonW`) creates a logon session but not the Terminal
+Services *session* logon a `LogonTrigger` actually subscribes to, on a hosted runner. That is a gap in
+this specific CI test's methodology, not in the shipped task definition — no amount of further XML or
+`[Code]` work closes it. Deciding what this test should assert instead (narrow it to what CI can
+prove without a real interactive session; build a real session via RDP loopback; or retire the
+workflow in favor of Phase 6.2's packaged-installer smoke test) is a deliberate scope call for a
+follow-up, not a leftover item of this phase's own remaining work.
 
-1. Author a Task Scheduler task-definition XML (`<Triggers><LogonTrigger>` with no `<UserId>`, same
-   "any interactive logon" scope the current flag-based registration has; `<Principals><Principal>`
-   with `<RunLevel>LeastPrivilege</RunLevel>`, matching today's `/rl limited`; `<Settings>` with
-   `<RestartOnFailure><Interval>PT1M</Interval><Count>...</Count></RestartOnFailure>`) with a
-   placeholder for the installed `privacyfence-app.exe` path.
-2. Wire it into `installer/privacyfence.iss`'s `[Code]` section: extract the template at install time
-   (`[Files]` with `Flags: dontcopy`), substitute the real `{app}` path, and register it via
-   `schtasks /create /tn "PrivacyFence" /xml <file> /f` from a `CurStepChanged(ssPostInstall)` hook,
-   replacing the current plain `[Run]` entry.
-3. **Get the task-definition XML's file encoding right.** `schtasks /create /xml` is documented to
-   require the file to actually be UTF-16-encoded, not just UTF-8 text with a matching `encoding=`
-   declaration — Inno Setup's stock Pascal-Script `SaveStringToFile` writes plain (ANSI/UTF-8) text,
-   not UTF-16, so this needs either a real UTF-16 write path in the `[Code]` section or writing the
-   template's placeholder-substitution step differently (e.g. baking the real path in at build time
-   in `scripts/build_installer.ps1`, which already has real PowerShell available to write a correctly
-   -encoded file, rather than doing the substitution in Pascal Script at all). This is exactly the
-   kind of byte-level detail that needs a real Windows host or a `workflow_dispatch` run to get
-   right — don't guess at it from a Linux dev loop, the same lesson Phase 12's own fix drew from
-   getting the `/ri`/`/du` root cause wrong on the first pass.
+### Remaining work (done, kept for history)
+
+1. ~~Author a Task Scheduler task-definition XML~~ — **Done**: `installer/privacyfence-task.xml.tmpl`.
+2. ~~Wire it into `installer/privacyfence.iss`'s `[Code]` section~~ — **Done**: `RegisterAutostartTask`,
+   called from `CurStepChanged(ssPostInstall)`.
+3. ~~Get the task-definition XML's file encoding right~~ — **Done**, but not the way this item
+   originally guessed: the real fix was declaring *no* encoding at all (see above), not writing real
+   UTF-16 bytes — confirmed only by a real `workflow_dispatch` run surfacing `schtasks`'s own error
+   text, the same "don't guess at it from a Linux dev loop" lesson this item already called out in
+   advance.
 4. Extend `tests/integration/test_windows_graphical_session_autostart.py` (or
    `test_windows_packaged_smoke.py`) with a real crash-restart assertion: start the installed daemon,
-   kill its process, wait, and confirm Task Scheduler actually relaunched it.
-5. Validate via `workflow_dispatch` on `windows-graphical-session.yml` before merging, same as every
-   other Windows-flag change in this plan — this tier has already shown once that a flag/XML syntax
-   assumption can silently break autostart registration entirely.
+   kill its process, wait, and confirm Task Scheduler actually relaunched it. **Blocked**, not merely
+   undone — see the status note above; this needs the logon-trigger test-methodology gap resolved
+   first, since the daemon that assertion would kill never starts in CI today.
+5. ~~Validate via `workflow_dispatch` on `windows-graphical-session.yml`~~ — done for items 1-3 (two
+   consecutive green `build.yml` dispatches, including `build-windows` and the `windows-graphical-
+   session` job reaching registration); not yet possible for item 4, blocked on the same gap.
 
 ### Exit criteria
 
 The installed Windows autostart task actually restarts the daemon after a crash, proven by an
 automated CI test (not just a manual QA step), with the fix's own correctness confirmed on a real
-`windows-latest` runner before merging, not assumed from documentation alone.
+`windows-latest` runner before merging, not assumed from documentation alone. **Not yet met**: the
+task definition itself (registration and `<RestartOnFailure>`) is confirmed correct on a real
+`windows-latest` runner, but no automated test has yet exercised a real crash-restart, because the
+logon-trigger test-methodology gap above blocks even getting the daemon running via CI's own
+substitution for a real sign-in.
 
 ---
 
@@ -1610,7 +1629,12 @@ Phase 12 Retire the platform-specific plan docs                  (DONE — all f
    ↓                                                                and fixed a real regression --
    ↓                                                                see Phase 13 below)
 Phase 13 Windows Task Scheduler real crash-restart-on-failure    (new, found by Phase 12's own
-                                                                    verification pass -- not yet built)
+                                                                    verification pass -- task
+                                                                    definition/registration done and
+                                                                    verified; automated crash-restart
+                                                                    proof still blocked on a CI test-
+                                                                    methodology gap, see Phase 13's own
+                                                                    status note)
 ```
 
 Phases 4 and 5 may proceed in parallel once Phase 3 is stable, as in the source strategy. Phase 7
@@ -1745,5 +1769,7 @@ combination.
   `manual-pre-release-test-plan.md` are retired (Phase 12); their still-real open items live in
   `platform-support.md`'s "Known open items" instead.
 - The Windows autostart task actually survives a daemon crash, the same crash-restart parity Windows
-  has had on every other platform's own autostart mechanism from the start (Phase 13, new, not yet
-  done).
+  has had on every other platform's own autostart mechanism from the start (Phase 13: the task
+  definition itself now does this, confirmed on a real `windows-latest` runner; proving it with an
+  automated CI test is still blocked on `windows-graphical-session.yml`'s own real-logon
+  test-methodology gap, not on further Windows installer work).
