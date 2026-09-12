@@ -1,7 +1,8 @@
 # Release Publishing & Download KPI — Phased Implementation Plan
 
-Status: planned, not yet started. Use this doc to scope a single session/PR to one phase — e.g.
-"implement phase 2 of the release publishing plan" refers to a phase heading below.
+Status: prerequisites provisioned and confirmed (2026-09-12) — implementation-ready, Phase 1 not
+yet started. Use this doc to scope a single session/PR to one phase — e.g. "implement phase 2 of
+the release publishing plan" refers to a phase heading below.
 
 ## Goal
 
@@ -47,31 +48,42 @@ is the only public path to release artifacts.
 
 ## Prerequisites (Cloudflare-side, provisioned manually per the separate Cloudflare Setup Guide)
 
-Each phase below states which of these it needs to already exist. As of writing, assume all of
-this is done before Phase 1 starts:
+Each phase below states which of these it needs to already exist. As of writing, all of this is
+done and confirmed before Phase 1 starts. Concrete resource identifiers, for direct use in
+`wrangler.toml` and CI:
 
-- R2 bucket `privacyfence-releases` confirmed private (Public Development URL disabled, no
-  Custom Domain attached).
-- D1 database `privacyfence-downloads` created and **empty** (schema comes from this repo's
-  migration, not the dashboard).
-- A Worker exists in the dashboard (reused if one was already created experimentally, otherwise
-  named `privacyfence-downloads`) with two bindings: `RELEASES` → R2 bucket
-  `privacyfence-releases`, `DB` → D1 database `privacyfence-downloads`.
-- Custom Domain `downloads.privacyfence.eu` attached to that Worker; no Cloudflare Access in
-  front of it; `*.workers.dev` left enabled for now (disabled only after Phase 3/production
-  validation, together with `workers_dev = false` in the committed `wrangler.toml`).
-- GitHub secrets: `CLOUDFLARE_API_TOKEN` (scoped to Workers Edit + Account D1 Edit, restricted to
-  this account and the `privacyfence.eu` zone), `CLOUDFLARE_ACCOUNT_ID`. These are separate from,
-  and additional to, the existing `CF_R2_ACCESS_KEY_ID` / `CF_R2_SECRET_ACCESS_KEY` /
-  `CF_R2_ENDPOINT` used by the release-upload pipeline — do not conflate or remove those.
-- The D1 database ID (needed for `wrangler.toml`'s `[[d1_databases]]` block).
+- **Cloudflare zone**: `privacyfence.eu`.
+- **Account ID**: `326657b4f70af041996d60fd6b8f83fa`.
+- **Download domain**: `downloads.privacyfence.eu` (Custom Domain attached to the
+  `privacyfence-downloads` Worker below).
+- **R2 bucket**: `privacyfence-releases` — confirmed private (Public Development URL disabled,
+  no Custom Domain attached). Same bucket the existing `scripts/r2_release.py` upload pipeline
+  writes to.
+- **R2 binding name**: `RELEASES`.
+- **D1 database**: `privacyfence-downloads` — created and **empty** (schema comes from this
+  repo's migration, not the dashboard).
+- **D1 database ID**: `1cb5c99c-6d34-4031-a5f6-2f3a406e4979` (goes in `wrangler.toml`'s
+  `[[d1_databases]]` block).
+- **D1 binding name**: `DB`.
+- **Worker**: `privacyfence-downloads`, with both bindings above (`RELEASES` → the R2 bucket,
+  `DB` → the D1 database); no Cloudflare Access in front of it; `*.workers.dev` left enabled for
+  now (disabled only after Phase 3/production validation, together with `workers_dev = false` in
+  the committed `wrangler.toml`).
+- **GitHub secrets**: `CLOUDFLARE_API_TOKEN` (scoped to Workers Edit + Account D1 Edit,
+  restricted to this account and the `privacyfence.eu` zone) and `CLOUDFLARE_ACCOUNT_ID` are
+  confirmed present in the repo's Actions secrets. These are separate from, and additional to,
+  the existing `CF_R2_ACCESS_KEY_ID` / `CF_R2_SECRET_ACCESS_KEY` / `CF_R2_ENDPOINT` used by the
+  release-upload pipeline — do not conflate or remove those.
 
 ## Phase 0 — Preconditions check (no code)
 
-Confirm every item in the Prerequisites section above is actually true (R2 still private, D1
-empty, bindings named exactly `RELEASES`/`DB`, custom domain attached, both credential sets
-present in GitHub). Nothing here blocks starting Phase 1 except having the D1 database ID in
-hand. No repo changes in this phase.
+Confirmed (2026-09-12): R2 bucket `privacyfence-releases` is still private, D1 database
+`privacyfence-downloads` is empty, the `privacyfence-downloads` Worker's bindings are named
+exactly `RELEASES`/`DB`, the `downloads.privacyfence.eu` custom domain is attached, and both
+`CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` are present in GitHub alongside the existing
+`CF_R2_*` credentials. All identifiers needed for `wrangler.toml` (account ID, D1 database ID,
+bucket/database/binding names) are recorded above. No repo changes in this phase — it is
+implementation-ready; Phase 1 can start.
 
 ## Phase 1 — Worker infrastructure
 
