@@ -28,11 +28,27 @@ jobs:
       - name: Install system dependencies
         run: brew install create-dmg
 
+      - name: Install pinned runtime dependencies
+        # This is what actually ends up in the DMG -- PyInstaller freezes whatever's importable
+        # once this job's install steps finish, and it's the SBOM (below, "Generate Python SBOM")
+        # that's supposed to describe exactly that. Installing from the hash-verified lockfile
+        # first, before the unpinned editable install below, is what makes both of those true: a
+        # compromised or substituted package on the index fails this install instead of landing in
+        # the shipped app silently (requirements/README.md), and pip-audit --strict
+        # (dependency-audit.yml) is auditing the dependency set that's actually bundled, not just
+        # one that happens to satisfy the same version ranges.
+        run: pip install --require-hashes -r requirements/runtime.lock.txt
+
       - name: Install Python dependencies
         # `test` extra (not just `dev`) so the packaged smoke test below --
         # tests/integration/test_macos_packaged_smoke.py, TST-15 -- has
         # pytest/pytest-timeout/playwright available; `mcp` (the client it
         # and the shim fixture need) is already a runtime dependency.
+        #
+        # The runtime dependencies themselves were already installed, pinned and hash-verified, by
+        # the step above; pip only installs a requirement it doesn't already have a satisfying
+        # version of, so this step adds the dev/test extras on top without re-resolving or
+        # loosening anything the previous step pinned.
         run: pip install -e ".[dev,test]"
 
       # tests/integration/test_macos_packaged_smoke.py drives a real headless
@@ -245,11 +261,20 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      - name: Install pinned runtime dependencies
+        # Same reasoning as the `build` (macOS) job's identically-named step above: this is what
+        # actually ends up in the Windows installer, so it needs to come from the hash-verified
+        # lockfile rather than an unpinned resolve.
+        run: pip install --require-hashes -r requirements/runtime.lock.txt
+
       - name: Install Python dependencies
         # `test` extra (not just `dev`) so the packaged smoke test below --
         # tests/integration/test_windows_packaged_smoke.py, Phase 6.2 -- has
         # pytest/pytest-timeout available; `mcp` (the client it needs) is
         # already a runtime dependency.
+        #
+        # The runtime dependencies were already installed, pinned and hash-verified, by the step
+        # above; this only layers the dev/test extras on top -- see that step's comment.
         run: pip install -e ".[dev,test]"
 
       # Same version/channel resolution as the `build` job's identically-
@@ -401,10 +426,21 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq dpkg-dev lintian desktop-file-utils
 
+      - name: Install pinned runtime dependencies
+        # Same reasoning as the `build` (macOS) job's identically-named step above: this is what
+        # actually ends up in the .deb, so it needs to come from the hash-verified lockfile rather
+        # than an unpinned resolve.
+        run: pip install --require-hashes -r requirements/runtime.lock.txt
+
       - name: Install Python dependencies
         # [test] alongside [dev]: needed for the org-mode Ubuntu release smoke test below (pytest,
         # pytest-timeout, mcp's test-side client helpers) and for the packaged .deb lifecycle test
         # after the build -- not otherwise required by this job's own .deb build.
+        #
+        # The runtime dependencies were already installed, pinned and hash-verified, by the step
+        # above; this only layers the dev/test extras (and pyinstaller, already a `dev` extra --
+        # named again here for emphasis, since it's what turns this job's own output into the
+        # .deb) on top -- see that step's comment.
         run: pip install -e ".[dev,test]" pyinstaller
 
       # TST-16 (docs/security-remediation-plan.md Phase 3 item 3.11): the
