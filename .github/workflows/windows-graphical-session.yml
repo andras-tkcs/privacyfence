@@ -1,0 +1,82 @@
+name: Windows graphical-session autostart
+
+# docs/automated-test-strategy-plan.md Phase 7 item 2 (docs/windows-support-
+# plan.md 8.2): a real interactive-logon-equivalent session actually starting
+# the packaged daemon via the installer's Task Scheduler ONLOGON trigger --
+# see tests/integration/test_windows_graphical_session_autostart.py's own
+# docstring for exactly what it proves and the two deliberate substitutions
+# it makes (no physical sign-in in CI; a throwaway local account added to
+# Administrators purely to satisfy this Windows Server image's default
+# "Log on locally" policy).
+#
+# Deliberately its own workflow, not a step added to build.yml's
+# build-windows job or tests.yml's per-PR jobs -- same reasoning as
+# linux-graphical-session.yml: this is the flakiest, most expensive tier in
+# this repo's whole test taxonomy by design (Phase 7's own objective), so a
+# flaky run here must never block an actual release the way a failure in
+# build.yml's own packaged installer smoke test (Phase 6.2) correctly does,
+# and it's too heavy to run on every PR. Scheduled instead on
+# packaging-related `main` changes, a weekly cadence (an hour after
+# linux-graphical-session.yml's own Monday slot, same reasoning -- spread
+# the heavier scheduled jobs across the runner pool), and by explicit
+# maintainer trigger.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'installer/**'
+      - 'scripts/build_installer.ps1'
+      - 'scripts/pyinstaller_common.py'
+      - 'PrivacyFenceApp.win.spec'
+      - 'tests/integration/test_windows_packaged_smoke.py'
+      - 'tests/integration/test_windows_graphical_session_autostart.py'
+      - '.github/workflows/windows-graphical-session.yml'
+  schedule:
+    - cron: '0 8 * * 1'   # weekly, Monday 08:00 UTC -- an hour after
+                           # linux-graphical-session.yml's own Monday 07:00
+                           # UTC slot so the two heavier scheduled jobs don't
+                           # contend for the same runner pool
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  graphical-session:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # full history + tags -- setuptools_scm needs them (see CLAUDE.md)
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mcpb/shim/package-lock.json
+
+      # Provides iscc.exe (installer/privacyfence.iss, run by
+      # scripts/build_installer.ps1) -- not preinstalled on windows-latest.
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Install Python dependencies
+        run: pip install -e ".[dev,test]"
+
+      - name: Build installer
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        shell: pwsh
+        run: ./scripts/build_installer.ps1
+
+      # GitHub-hosted Windows runners already run elevated (Administrators
+      # group) -- this test's own skip condition confirms it rather than
+      # assuming so, but this job still needs no separate elevation step.
+      - name: Run Windows graphical-session/autostart test (Phase 7 item 2)
+        run: pytest tests/integration/test_windows_graphical_session_autostart.py -v

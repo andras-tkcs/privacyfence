@@ -51,8 +51,16 @@ release gating) — see that phase's own status note and its new "Upgrade/state-
 each get their own synthetically-relabeled "version N+1" built from the same already-built artifact
 rather than a second real build, the same substitution 6.3's own Linux upgrade test already made;
 6.4 landed as a same-repo REST-API polling job rather than a `needs:` edge, since GitHub Actions has
-no such edge across separate workflow files). Phases 7–10 are unaffected by any of these merges and
-reflect this plan's original grounding pass.
+no such edge across separate workflow files). [Phase 7](#phase-7--graphical-sessionautostart-verification)
+is now fully done — Linux (item 1) landed first as `tests/integration/test_linux_graphical_session_
+autostart.py`, its own `.github/workflows/linux-graphical-session.yml`, closing `linux-local-deb-
+packaging-plan.md` P7.2 (one deliberate substitution: no real display manager in CI, so a real
+`systemd --user` session brought up and pointed at `xdg-desktop-autostart.target` stands in for the
+missing physical login); Windows (item 2) followed the same shape as `tests/integration/test_windows_
+graphical_session_autostart.py`, its own `.github/workflows/windows-graphical-session.yml`, closing
+`windows-support-plan.md` 8.2 (two deliberate substitutions this time — see that phase's own status
+note). Item 3 (macOS) remains deliberately not built, per the source strategy's own guidance. Phases
+8–10 are otherwise unaffected by any of these merges and reflect this plan's original grounding pass.
 Phase 11 (update branch-protection required checks) is new in this revision — added once this plan
 was checked against `testing-policy.md`'s own "one job to merge" language and found not to close
 that gap anywhere — and Phase 12 is the renumbered "retire the platform-specific plan docs" phase
@@ -947,7 +955,8 @@ cookie as CSRF — so this job needs no Node/Playwright dependency, only what `s
 itself already needs.
 
 `docs/linux-local-deb-packaging-plan.md`'s P7.1 and P7.3 are marked CI-automated (not just
-manually-verified-once); P7.2 (graphical-session autostart) stays open, per this plan's own Phase 7.
+manually-verified-once); P7.2 (graphical-session autostart) is closed by this phase's own item 1,
+below.
 
 ### Upgrade/state-preservation testing (item 20) — done
 
@@ -1053,28 +1062,84 @@ since GUI-session infrastructure is the most expensive, flakiest tier here.
 `linux-local-deb-packaging-plan.md` already tracks this exact gap as its own open item, **P7.2**:
 "Real desktop-session test... install on a real or VM Ubuntu/Debian desktop, log out/in, confirm the
 daemon is running post-login... confirm the OAuth loopback browser flow opens correctly." Nothing
-in this repo implements it yet. No equivalent Windows item exists in `windows-support-plan.md`/
-`windows-linux-support-plan.md` as of this writing.
+in this repo implements it yet. `windows-support-plan.md` already has a home for the Windows
+equivalent too — its own manual-QA item **8.2** ("Log out/in (or reboot), confirm the daemon
+autostarts via the Task Scheduler task") — just not yet automated.
+
+**Status note:** items 1 (Linux) and 2 (Windows) are now **done** —
+`tests/integration/test_linux_graphical_session_autostart.py`/`.github/workflows/linux-graphical-
+session.yml` and `tests/integration/test_windows_graphical_session_autostart.py`/`.github/workflows/
+windows-graphical-session.yml` respectively. Item 3 (macOS, deliberately not built) remains as
+originally planned.
 
 ### Remaining work
 
-1. **Linux**: a graphical Ubuntu VM scenario implementing `linux-local-deb-packaging-plan.md` P7.2
+1. ~~**Linux**: a graphical Ubuntu VM scenario implementing `linux-local-deb-packaging-plan.md` P7.2
    exactly as already specified there — install, ensure stopped, logout/reboot, login, wait for
    session startup, verify daemon, exercise the system request from Phase 3, and where practical the
-   OAuth loopback browser-opening flow. Close P7.2 in that document once this lands.
-2. **Windows**: equivalent scenario on a Windows desktop VM/session — install, sign out/reboot, sign
+   OAuth loopback browser-opening flow. Close P7.2 in that document once this lands.~~ **Done** —
+   `tests/integration/test_linux_graphical_session_autostart.py`. There's no real display manager to
+   actually log into on a CI runner, so this makes one deliberate substitution instead of a
+   hand-rolled one: it brings up a real `systemd --user` manager for the account (the same
+   `user@<uid>.service` unit `pam_systemd` starts at a real login) and starts
+   `xdg-desktop-autostart.target` — the same target a real GNOME/KDE/Sway session's own
+   compositor/session manager pulls in once it comes up, standing in for the missing physical login.
+   Everything downstream of that one substitution is the real, unmocked OS mechanism:
+   `systemd-xdg-autostart-generator` (confirmed present, never hand-parsed) turns the installed
+   `/etc/xdg/autostart/privacyfence.desktop` into a transient `app-privacyfence@autostart.service`
+   unit, gated behind that same target exactly the way a real desktop session's own autostart works
+   today; starting the target is confirmed to actually launch the real packaged binary
+   (`/proc/<pid>/exe` checked against the installed binary, not assumed), which then serves a real
+   daemon/MCP/approval/audit round trip (Phase 3's own contract shape), and "Quit PrivacyFence"
+   is confirmed to cleanly stop the real systemd unit, not just the process. A second test in the
+   same module closes the "OAuth loopback browser-opening flow" half of this item's own "where
+   practical" text for real too, under a genuine Xvfb `$DISPLAY`: unlike
+   `tests/platform/test_browser_launch_default.py` (Phase 2.3), which proves `oauth_loopback.py`'s
+   default path reaches `webbrowser.open` by monkeypatching that function itself, this test lets the
+   stdlib `webbrowser` module's own real browser-detection-and-subprocess-launch logic run unmocked,
+   via a real launched subprocess that performs the actual loopback HTTP round trip. `docs/linux-
+   local-deb-packaging-plan.md` P7.2 is now marked closed accordingly. Scheduled on packaging-related
+   `main` pushes, weekly, and on demand via its own workflow — deliberately kept out of both
+   `tests.yml`'s per-PR jobs and `build.yml`'s tag-triggered release pipeline, since a flaky run in
+   this tier (the flakiest and most expensive in this plan's whole taxonomy, per this phase's own
+   objective) must never block an actual release.
+2. ~~**Windows**: equivalent scenario on a Windows desktop VM/session — install, sign out/reboot, sign
    in, verify autostart, exercise the Phase 3 system contract. Add this as a new tracked item in
-   `windows-support-plan.md` if that document doesn't already have a home for it.
+   `windows-support-plan.md` if that document doesn't already have a home for it.~~ **Done** —
+   `tests/integration/test_windows_graphical_session_autostart.py`, closing `windows-support-plan.md`
+   8.2 (that document already had a home for this item — it just needed converting from manual QA to
+   automated CI). There's no physical sign-in to drive on a GitHub-hosted Windows runner, so this
+   makes two deliberate substitutions rather than one hand-rolled workaround: a throwaway local
+   account stands in for "someone signs in" (this test mints and knows its password, unlike the CI
+   runner's own already-logged-on account, and `installer/privacyfence.iss`'s own `schtasks /create`
+   never passes `/RU`, which per Microsoft's documented default for `/SC ONLOGON` means the trigger
+   fires for *any* interactive logon — the same "whichever account is at the keyboard" scope the
+   macOS LaunchAgent and Linux XDG autostart already have, so a throwaway account is a valid stand-in,
+   not a special case); and that throwaway account is added to local Administrators purely to satisfy
+   this Windows Server base image's default "Log on locally" policy (denied to plain standard
+   accounts), not to change how the daemon itself runs — the scheduled task's own `/rl limited`
+   still governs that regardless of the account's own group membership. Everything else is the real,
+   unmocked mechanism: a genuine interactive Windows logon (`LOGON32_LOGON_INTERACTIVE` via
+   `CreateProcessWithLogonW`, driven through PowerShell's `Start-Process -Credential` — the same
+   primitive `runas.exe` is built on, and the standard documented way to manually test an "At log on"
+   Task Scheduler trigger without a physical sign-in), Task Scheduler's own real trigger evaluation of
+   the real installed task, the real packaged `privacyfence-app.exe` alias it launches (confirmed
+   running as the account that just logged on, via `Win32_Process`'s `GetOwner`, not assumed), a real
+   daemon/MCP/approval/audit round trip against it (Phase 3's own contract shape, reusing
+   `test_windows_packaged_smoke.py`'s own helpers), and "Quit PrivacyFence" confirmed to actually end
+   that real process. Scheduled the same way as the Linux module — its own
+   `.github/workflows/windows-graphical-session.yml`, packaging-related `main` pushes, weekly, and on
+   demand, deliberately out of both `tests.yml`'s per-PR jobs and `build.yml`'s tag-triggered release
+   pipeline.
 3. **macOS**: do not build dedicated login-launch infrastructure unless the existing packaged smoke
    (Phase 6.1) proves insufficient in practice — the source strategy is explicit on this, and nothing
    found while grounding this plan suggests macOS autostart is currently a live gap.
 
-Schedule these on packaging-related `main` changes, nightly/periodic runs, and release candidates —
-not on every PR; this tier's infrastructure cost doesn't justify per-PR cadence.
-
 ### Exit criteria
 
-Normal local-mode login/autostart is verified without owning physical Windows/Linux hardware.
+Normal local-mode login/autostart is verified without owning physical Windows/Linux hardware. Met for
+both Linux and Windows; item 3 (macOS) is exit criteria met by design, not left open — see its own
+remaining-work entry above.
 
 ---
 
@@ -1306,8 +1371,9 @@ Phase 6  Packaged-artifact lifecycle                              (DONE — macO
    ↓                                                               smoke, macOS/Windows upgrade tests
    ↓                                                               (item 20), and publish-pypi.yml's
    ↓                                                               cross-workflow release gating (6.4))
-Phase 7  Graphical-session/autostart                              (Linux has a tracked open item
-   ↓                                                               already, P7.2; Windows is new.)
+Phase 7  Graphical-session/autostart                              (Done for both Linux (P7.2) and
+   ↓                                                               Windows (8.2); macOS deliberately
+   ↓                                                               not built.)
 Phase 8  Org-mode system CI                                       (mostly an audit/extend of
    ↓                                                               test_org_ubuntu_release_smoke.py,
    ↓                                                               already largely built)
@@ -1378,8 +1444,12 @@ plan's grounding pass found the work already done, and a note on which remain ge
     macOS/Windows upgrade tests (Linux's own already landed inside 6.3/item 17 above), plus 6.4's
     `publish-pypi.yml` cross-workflow release gating, landed together in one PR — see Phase 6's own
     "Upgrade/state-preservation testing (item 20)" and "6.4 Release gating" subsections
-21. Linux graphical-session/autostart CI — closes the already-tracked P7.2 (Phase 7)
-22. Windows graphical-session/autostart CI — new work (Phase 7)
+21. ~~Linux graphical-session/autostart CI~~ — **done** (Phase 7 item 1): closes the already-tracked
+    P7.2, `tests/integration/test_linux_graphical_session_autostart.py`, its own
+    `.github/workflows/linux-graphical-session.yml`
+22. ~~Windows graphical-session/autostart CI~~ — **done** (Phase 7 item 2): closes
+    `windows-support-plan.md` 8.2, `tests/integration/test_windows_graphical_session_autostart.py`,
+    its own `.github/workflows/windows-graphical-session.yml`
 23. Org-mode system test audit/extension — likely small (Phase 8)
 24. Manual QA documentation reduction (Phase 9)
 25. CI diagnostic/observability polish (Phase 10)
@@ -1420,7 +1490,8 @@ combination.
   blocks publication on every channel this plan publishes to, not just its own platform's artifact
   (Phase 6, done).
 - Package upgrade tests prove user state survives, on all three platforms (Phase 6, done).
-- Local-mode autostart has automated platform-specific coverage (Phase 7).
+- Local-mode autostart has automated platform-specific coverage (Phase 7, done for Linux and Windows;
+  macOS deliberately not built).
 - Org mode executes an authenticated synthetic end-to-end request in CI (Phase 8, mostly already
   true — confirm and close remaining gaps).
 - `connector-qa-testing.md` is exploratory, not mandatory, for routine releases (Phase 9).
