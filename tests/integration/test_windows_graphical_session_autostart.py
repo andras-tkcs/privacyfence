@@ -21,26 +21,28 @@ in CI):
 1. **A throwaway local account stands in for "someone signs in", instead of
    the CI runner's own already-logged-on account.** This test has no way to
    learn that account's password (nor should it), so it can't make it log on
-   a *second* time -- and ``installer/privacyfence.iss``'s own ``schtasks
-   /create`` call (see ``[Run]``) passes ``/ru "BUILTIN\\Users"``, the
-   built-in group rather than one specific account, so the trigger fires for
-   *any* interactive logon, not just the installing user's. (An earlier
-   version of this line omitted ``/RU`` entirely on the assumption that the
-   unqualified default already meant "any user" -- it doesn't: per
-   Microsoft's own documentation, omitting ``/RU`` scopes the task to
-   whichever account ran ``schtasks /create``, i.e. the installing user
-   only. This module's own first real run against a real Windows runner is
-   what caught that -- registration succeeded, but the throwaway account's
-   logon never fired the trigger -- fixed by the explicit
-   ``/ru "BUILTIN\\Users"`` above.) That's the same "whichever account is at
-   the keyboard" scope the macOS LaunchAgent (keyed off the current console
+   a *second* time -- and the task ``installer/privacyfence.iss`` registers
+   (from ``[Code]``'s ``RegisterAutostartTask``, out of the real Task
+   Scheduler XML definition in ``installer/privacyfence-task.xml.tmpl``)
+   names ``Builtin\\Users`` as its principal's ``GroupId``, the built-in
+   group rather than one specific account, so its ``LogonTrigger`` fires for
+   *any* interactive logon, not just the installing user's. Two earlier
+   CLI-flag attempts at the same thing were each caught by a real run of
+   this very workflow -- first ``schtasks /create`` with no ``/RU`` at all
+   (which scopes the task to whichever account ran it, i.e. the installing
+   user only: registration succeeded, but the throwaway account's logon
+   never fired the trigger), then ``/ru "BUILTIN\\Users"``, which fixed the
+   scope but had no way to express the restart-on-failure behavior this
+   task also needs. See that template's own header comment for the full
+   history. That group scope is the same "whichever account is at the
+   keyboard" one the macOS LaunchAgent (keyed off the current console
    uid) and the Linux ``.deb``'s XDG autostart (keyed off the current
    desktop session) already have -- so a brand-new throwaway account, whose
    password this test mints and knows, is a valid stand-in for "a user
    signs in", not a special case the real trigger wouldn't also fire for.
 2. **The throwaway account is a local Administrator**, even though the
-   daemon it ends up running still runs at ``/rl limited`` (the scheduled
-   task's own execution-level setting, independent of the account's own
+   daemon it ends up running still runs at ``LeastPrivilege`` (the
+   scheduled task's own ``RunLevel``, independent of the account's own
    group membership -- this is exactly what's being verified: the task
    still requests the non-elevated token). This is *not* needed for
    anything this test is trying to prove; it works around a Windows Server

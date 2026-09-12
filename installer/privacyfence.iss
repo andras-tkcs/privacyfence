@@ -136,6 +136,40 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""{#TaskName}"" /f"; \
 ; uninstall" for a typical app might add.
 
 [Code]
+(* Copies whatever schtasks.exe wrote on stdout/stderr into Setup's own log
+   file, one line per log entry.
+
+   Everything about the autostart registration below was otherwise
+   invisible: Inno logs its own [Run] entries automatically but says
+   nothing at all about an Exec() call made from [Code]. So several
+   consecutive real windows-graphical-session.yml runs could establish only
+   that the task was missing afterwards, never why -- the install log they
+   dumped (tests/integration/test_windows_graphical_session_autostart.py's
+   own _install_log_tail) went straight from "Installation process
+   succeeded" to "Deinitializing Setup" with no trace of the registration
+   attempt in between. That is the gap this closes: schtasks prints a real
+   diagnostic on its own stderr for every way a task definition can be
+   rejected, and this is what puts that diagnostic somewhere a failing CI
+   run can actually read it back from. *)
+procedure LogSchtasksOutput(const OutFile: String);
+var
+  Lines: TArrayOfString;
+  I: Integer;
+begin
+  if not FileExists(OutFile) then
+  begin
+    Log('PrivacyFence: no schtasks output file at ' + OutFile);
+    Exit;
+  end;
+  if not LoadStringsFromFile(OutFile, Lines) then
+  begin
+    Log('PrivacyFence: could not read schtasks output file ' + OutFile);
+    Exit;
+  end;
+  for I := 0 to GetArrayLength(Lines) - 1 do
+    Log('PrivacyFence: schtasks: ' + Lines[I]);
+end;
+
 (* Registers the autostart Task Scheduler task (Phase 3.1) via a real Task
    Scheduler XML task definition (privacyfence-task.xml.tmpl, extracted to
    the temp directory by the [Files] "dontcopy" entry above), not
@@ -149,6 +183,12 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""{#TaskName}"" /f"; \
    entries execute, so the path it substitutes in always exists by the
    time schtasks reads it.
 
+   schtasks is invoked through cmd.exe rather than directly for one reason
+   only: so its stdout and stderr can be redirected to a file and read back
+   into the log (LogSchtasksOutput above). Exec() captures neither, and an
+   exit code on its own never says which part of a task definition Task
+   Scheduler rejected.
+
    Deliberately using this parenthesis-asterisk comment style rather than
    curly braces: Pascal's curly-brace comments don't nest, and the
    {app}/{tmp}-style Inno constant references this comment needs to talk
@@ -157,7 +197,7 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""{#TaskName}"" /f"; \
    version of this comment actually hit. *)
 function RegisterAutostartTask(): Boolean;
 var
-  TemplateFile, XmlFile, XmlContent, ExecPath: String;
+  TemplateFile, XmlFile, OutFile, XmlContent, ExecPath, CmdLine: String;
   RawContent: AnsiString;
   ResultCode: Integer;
 begin
@@ -171,21 +211,52 @@ begin
     every other call in this function can use the ordinary String type. }
   Result := LoadStringFromFile(TemplateFile, RawContent);
   if not Result then
+  begin
+    Log('PrivacyFence: could not read task template ' + TemplateFile);
     Exit;
+  end;
   XmlContent := RawContent;
   ExecPath := ExpandConstant('{app}\{#AliasExeName}');
   StringChangeEx(XmlContent, '__EXEC_PATH__', ExecPath, False);
   XmlFile := ExpandConstant('{tmp}\privacyfence-task.xml');
   Result := SaveStringToFile(XmlFile, XmlContent, False);
   if not Result then
+  begin
+    Log('PrivacyFence: could not write task definition ' + XmlFile);
     Exit;
-  Result := Exec(ExpandConstant('{sys}\schtasks.exe'),
-    '/create /tn "{#TaskName}" /xml "' + XmlFile + '" /f',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  end;
+  Log('PrivacyFence: registering autostart task "{#TaskName}" to run ' + ExecPath);
+
+  OutFile := ExpandConstant('{tmp}\schtasks-create.out');
+  { The doubled outer quotes are cmd.exe's own rule for a /C command line
+    whose first token is itself a quoted path: cmd strips the outermost
+    pair and runs what is left. }
+  CmdLine := '/C ""' + ExpandConstant('{sys}\schtasks.exe') +
+    '" /create /tn "{#TaskName}" /xml "' + XmlFile + '" /f > "' + OutFile + '" 2>&1"';
+  Result := Exec(ExpandConstant('{cmd}'), CmdLine, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  if not Result then
+  begin
+    Log('PrivacyFence: could not start cmd.exe to run schtasks at all');
+    Exit;
+  end;
+  LogSchtasksOutput(OutFile);
+  Log('PrivacyFence: schtasks /create exit code ' + IntToStr(ResultCode));
+  Result := ResultCode = 0;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
-    RegisterAutostartTask();
+  begin
+    (* A failed registration deliberately does not abort the install: every
+       other part of the install is still usable without autostart, and the
+       user can start PrivacyFence from the Start menu meanwhile. It is
+       logged as a failure rather than passed over silently so that the
+       install log actually says so -- which is also what Phase 7's
+       graphical-session test reads back when it finds the task missing. *)
+    if not RegisterAutostartTask() then
+      Log('PrivacyFence: autostart task registration FAILED; PrivacyFence ' +
+          'will not start automatically at logon.');
+  end;
 end;

@@ -17,13 +17,31 @@ the task still never actually appeared afterward, one plausible
 explanation being an element this repo could not verify against a
 real schema validator locally. Kept to only the elements this task
 actually needs changed from their own documented defaults, closest to
-the confirmed official example, to minimize that risk. LogonTrigger
-with no UserId fires for any interactive logon, not just one specific
-account, and
-Principal uses GroupId (the built-in Users group) rather than UserId so
-the task runs as whichever user just logged on, in their own session:
-the same "whichever account is at the keyboard" scope the macOS
-LaunchAgent and the Linux .deb's XDG autostart already have.
+the confirmed official example, to minimize that risk.
+
+Three details are copied from that example verbatim rather than
+simplified away, because each one is load bearing and a previous
+revision of this file dropped all three at once:
+
+  * `version="1.2"` on the root element. The Settings elements below
+    (MultipleInstancesPolicy, RestartOnFailure) are task schema 1.2
+    constructs; a definition that does not declare the version is
+    validated against the 1.0 schema, where they do not exist.
+  * `id` on Principal, and the matching `Context` on Actions. The
+    schema links an action set to the security context it runs under
+    by that id reference. With a Principal that carries no id and an
+    Actions element that names no Context, the GroupId below is not
+    actually bound to anything that runs.
+  * The trigger's StartBoundary. LogonTrigger inherits it from the
+    abstract trigger type, where it is the point from which the
+    trigger is live at all.
+
+LogonTrigger with no UserId fires for any interactive logon, not just
+one specific account, and Principal uses GroupId (the built-in Users
+group) rather than UserId so the task runs as whichever user just
+logged on, in their own session: the same "whichever account is at the
+keyboard" scope the macOS LaunchAgent and the Linux .deb's XDG
+autostart already have.
 MultipleInstancesPolicy is Parallel, not the schema default IgnoreNew,
 deliberately: this task can legitimately have more than one concurrent
 instance at once, one per user session, since GroupId, unlike a single
@@ -32,22 +50,28 @@ time. RestartOnFailure is the piece plain schtasks /create CLI flags
 never had a way to express at all; there is no equivalent flag, see
 installer/privacyfence.iss's own comment history. It is the direct
 analogue of the macOS LaunchAgent's KeepAlive/SuccessfulExit=false and
-the Linux .deb plan's own systemd Restart=on-failure.
+the Linux .deb plan's own systemd Restart=on-failure. Count is 3, the
+same value Task Scheduler's own UI offers by default, rather than an
+arbitrarily large number: the restart count is a bounded schema type,
+so a large value is a validation risk for no practical gain, and a
+daemon that has failed to stay up across three one minute retries is
+not going to be rescued by a fourth.
 
 NOTE: this comment intentionally avoids the two-hyphen sequence, which
 XML comments may not contain anywhere in their body.
 -->
-<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Starts PrivacyFence when any user signs in, and restarts it if it exits unexpectedly.</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
+      <StartBoundary>2020-01-01T00:00:00</StartBoundary>
       <Enabled>true</Enabled>
     </LogonTrigger>
   </Triggers>
   <Principals>
-    <Principal>
+    <Principal id="Author">
       <GroupId>Builtin\Users</GroupId>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
@@ -59,10 +83,10 @@ XML comments may not contain anywhere in their body.
     <AllowHardTerminate>true</AllowHardTerminate>
     <RestartOnFailure>
       <Interval>PT1M</Interval>
-      <Count>999</Count>
+      <Count>3</Count>
     </RestartOnFailure>
   </Settings>
-  <Actions>
+  <Actions Context="Author">
     <Exec>
       <Command>__EXEC_PATH__</Command>
     </Exec>
