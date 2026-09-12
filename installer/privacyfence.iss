@@ -157,14 +157,22 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ""{#TaskName}"" /f"; \
    version of this comment actually hit. *)
 function RegisterAutostartTask(): Boolean;
 var
-  TemplateFile, XmlFile, XmlContent, ExecPath: AnsiString;
+  TemplateFile, XmlFile, XmlContent, ExecPath: String;
+  RawContent: AnsiString;
   ResultCode: Integer;
 begin
   ExtractTemporaryFile('privacyfence-task.xml.tmpl');
   TemplateFile := ExpandConstant('{tmp}\privacyfence-task.xml.tmpl');
-  Result := LoadStringFromFile(TemplateFile, XmlContent);
+  { LoadStringFromFile's own "var S" output parameter is typed AnsiString,
+    not String -- passed as RawContent here and converted (a plain
+    assignment allows the AnsiString/String conversion that a var
+    parameter, like StringChangeEx's own first argument below, does not)
+    rather than declared as the var parameter's own type throughout, so
+    every other call in this function can use the ordinary String type. }
+  Result := LoadStringFromFile(TemplateFile, RawContent);
   if not Result then
     Exit;
+  XmlContent := RawContent;
   ExecPath := ExpandConstant('{app}\{#AliasExeName}');
   StringChangeEx(XmlContent, '__EXEC_PATH__', ExecPath, False);
   XmlFile := ExpandConstant('{tmp}\privacyfence-task.xml');
