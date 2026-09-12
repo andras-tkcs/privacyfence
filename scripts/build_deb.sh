@@ -9,7 +9,9 @@
 #   pip install -e .        # PrivacyFence itself, so VERSION below can read its installed
 #                            # metadata (git-tag-derived, see this repo's CLAUDE.md "Releasing")
 #   pip install pyinstaller
-#   apt-get install -y dpkg-dev lintian   # dpkg-deb ships with dpkg-dev; lintian is separate
+#   apt-get install -y dpkg-dev lintian patchelf   # dpkg-deb ships with dpkg-dev; lintian and
+#                                                   # patchelf are separate (see the RUNPATH
+#                                                   # cleanup in the staging step below)
 #
 # Usage:
 #   ./scripts/build_deb.sh
@@ -134,6 +136,42 @@ mkdir -p \
 
 echo "→ Staging package tree…"
 cp -a "${BUNDLE}/." "${STAGE}/opt/privacyfence/"
+
+# PyInstaller copies CPython's own extension modules straight out of whichever Python built the
+# bundle. On a CI runner that is setup-python's hosted toolcache interpreter, and those .so files
+# carry a RUNPATH pointing back into it (/opt/hostedtoolcache/Python/<x.y.z>/x64/lib) -- a
+# directory that exists only on the build machine. lintian rejects that at error severity
+# (custom-library-search-path), and rightly so: a library search path naming a directory the
+# target system doesn't control is dead weight at best, and at worst somewhere an attacker who
+# can create it gets a library loaded from. Nothing in the bundle needs it -- every library the
+# bundle actually loads travels with it and is found relative to the executable -- so drop the
+# absolute entries while leaving PyInstaller's own $ORIGIN-relative ones alone.
+#
+# This runs before the chmod below rather than after it so that the mode normalization there is
+# the last word on every file's permissions, whether or not patchelf rewrote it.
+if command -v patchelf &>/dev/null; then
+  echo "→ Stripping build-host library search paths…"
+  RPATHS_REWRITTEN=0
+  while IFS= read -r -d '' elf; do
+    current="$(patchelf --print-rpath "$elf" 2>/dev/null)" || continue
+    [ -n "$current" ] || continue
+    # `|| true` around grep: it exits 1 when nothing matches (an RUNPATH that is *entirely*
+    # absolute paths -- the common case here), which under `set -o pipefail` would abort the
+    # script instead of yielding the empty string that case actually means.
+    kept="$(printf '%s' "$current" | tr ':' '\n' | { grep -E '^\$ORIGIN' || true; } | paste -sd: -)"
+    [ "$kept" = "$current" ] && continue
+    if [ -n "$kept" ]; then
+      patchelf --set-rpath "$kept" "$elf"
+    else
+      patchelf --remove-rpath "$elf"
+    fi
+    RPATHS_REWRITTEN=$((RPATHS_REWRITTEN + 1))
+  done < <(find "${STAGE}/opt/privacyfence" -type f -print0)
+  echo "  …rewrote ${RPATHS_REWRITTEN} object(s)"
+else
+  echo "→ patchelf not found — skipping RUNPATH cleanup (install with: apt-get install -y patchelf)" >&2
+  echo "  The lint step below fails the build on any absolute RUNPATH left behind." >&2
+fi
 
 # PyInstaller's onedir output leaves every bundled shared library group-writable/executable
 # (0755, the same mode as the daemon binary itself) -- correct for the DMG's .app bundle (macOS
