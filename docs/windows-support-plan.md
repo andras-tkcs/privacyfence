@@ -247,9 +247,36 @@ verification that ties it together, parallel to the Linux plan's Phase 7:
 - [ ] **8.1** Install via the signed installer (Phase 4/5) on a clean Windows VM. Confirm no
       SmartScreen block prevents installation (or, if using an OV cert per 5.1's default, confirm the
       warning is the expected "unrecognized publisher, run anyway" rather than an outright block).
-- [ ] **8.2** Log out/in (or reboot), confirm the daemon autostarts via the Task Scheduler task
+- [x] **8.2** Log out/in (or reboot), confirm the daemon autostarts via the Task Scheduler task
       (Phase 3) — check `%USERPROFILE%\.privacyfence\mcp_url` exists and names a port something is
       listening on, same signal the mcpb shim's own `socketConnectable()` already checks.
+
+      **CI-automated** (`automated-test-strategy-plan.md` Phase 7 item 2):
+      `tests/integration/test_windows_graphical_session_autostart.py`, run by its own
+      `.github/workflows/windows-graphical-session.yml` (packaging-related `main` pushes, weekly, and
+      on demand — same posture as the Linux plan's own P7.2 automation, never per-PR or wired into
+      `build.yml`'s release pipeline). There's no physical sign-in to drive on a GitHub-hosted Windows
+      runner, so this makes two deliberate substitutions: a throwaway local account (whose password
+      this test mints and knows) stands in for "someone signs in" — valid because `installer/
+      privacyfence.iss`'s own `schtasks /create` never passes `/RU`, which per Microsoft's documented
+      default for `/SC ONLOGON` means the trigger fires for *any* interactive logon, the same
+      "whichever account is at the keyboard" scope the macOS LaunchAgent and Linux XDG autostart
+      already have; and that throwaway account is added to local Administrators purely to satisfy
+      this Windows Server base image's default "Log on locally" policy (denied to plain standard
+      accounts) — it does not change how the daemon itself runs, since the scheduled task's own
+      `/rl limited` governs that independently of the account's own group membership. Everything else
+      is the real, unmocked mechanism: a genuine interactive Windows logon
+      (`LOGON32_LOGON_INTERACTIVE` via `CreateProcessWithLogonW`, driven through PowerShell's
+      `Start-Process -Credential` — the same primitive `runas.exe` is built on), Task Scheduler's own
+      real trigger evaluation of the real installed task, the real packaged `privacyfence-app.exe`
+      alias it launches (confirmed running as the account that just logged on, via
+      `Win32_Process`'s `GetOwner`, not assumed), a real daemon/MCP/approval/audit round trip against
+      it (Phase 3's own contract shape), and "Quit PrivacyFence" confirmed to actually end that real
+      process. This closes the `%USERPROFILE%\.privacyfence\mcp_url`-equivalent check this item's
+      own text asks for (this test instead reads `web_token`/`mcp_token` and connects over the real
+      MCP endpoint — a stronger version of the same "something is listening" signal). 8.3's OAuth
+      loopback confirmation and 8.4's crash-restart confirmation remain manual — out of scope for
+      this item.
 - [ ] **8.3** Confirm the OAuth loopback flow (`oauth_loopback.py`'s `webbrowser.open()`, already
       cross-platform code — no change expected, just needs a real confirmation) opens the default
       browser correctly and completes a real connector auth (Gmail is the natural pick, matching the
