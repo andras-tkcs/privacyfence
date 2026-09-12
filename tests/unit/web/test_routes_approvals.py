@@ -54,18 +54,37 @@ def _pending_card(web_ui, **kwargs):
     if a test's own assertion fails before it resolves the card (or calls
     t.join()), this thread would otherwise block forever on the unresolved
     card's Event -- a non-daemon thread left running like that hangs the
-    whole pytest process at interpreter exit, not just fails the one test."""
+    whole pytest process at interpreter exit, not just fails the one test.
+
+    Waits for a card *this call* registered, by diffing against the ids
+    already pending before the thread started, rather than on
+    ``web_ui.current() is None``: current() is "the newest pending
+    approval", so once anything else is pending that wait finishes
+    instantly and hands back the *earlier* card. test_two_pending_cards_
+    both_link below is the call site that actually depends on the
+    difference -- with the old wait its two cards were frequently the same
+    object, and its "the list must show all of them, not just the most
+    recent" assertions then both checked the same link and passed without
+    ever exercising what the test exists for. (The same bug made
+    tests/integration/test_browser_smoke.py's own two-card SSE test fail in
+    CI; see that module's _await_new_registration.)
+    """
     box = {}
 
     def run():
         box["result"] = web_ui.show_popup("Send email", {"To": "a@b.com"}, "body text", **kwargs)
 
+    already_pending = {a.id for a in web_ui.deferred_registry.list_pending()}
     t = threading.Thread(target=run, daemon=True)
     t.start()
     deadline = time.monotonic() + 2
-    while web_ui.current() is None and time.monotonic() < deadline:
+    card = None
+    while time.monotonic() < deadline:
+        fresh = [a for a in web_ui.deferred_registry.list_pending() if a.id not in already_pending]
+        if fresh:
+            card = fresh[0]
+            break
         time.sleep(0.01)
-    card = web_ui.current()
     assert card is not None, "card never registered"
     return t, card, box
 
@@ -196,6 +215,12 @@ class TestListApprovals:
         _signed_in(client, sessions)
         t1, card1, box1 = _pending_card(web_ui)
         t2, card2, box2 = _pending_card(web_ui)
+        # Guards this test against silently proving nothing: if the helper
+        # ever hands back the same card twice (as it did before it stopped
+        # waiting on current() -- see _pending_card), both assertions below
+        # would check the same link and pass with only one row ever
+        # rendered, which is exactly the regression this test exists for.
+        assert card1.id != card2.id, "the helper handed back the same card twice"
         r = client.get("/approvals")
         assert f"/approvals/{card1.id}" in r.text
         assert f"/approvals/{card2.id}" in r.text

@@ -319,9 +319,33 @@ async def _run_in_popup_executor(func, *args, **kwargs) -> Any:
     different executor, hence this thin wrapper around
     ``loop.run_in_executor`` (which only accepts positional args, so a
     keyword-argument call is bound via ``functools.partial`` first).
+
+    Copies the calling coroutine's ``contextvars.Context`` (via ``ctx.run``,
+    the same mechanism ``asyncio.to_thread`` itself uses internally) rather
+    than letting ``loop.run_in_executor`` submit ``func`` to the thread pool
+    directly -- unlike ``loop.call_soon``, ``run_in_executor`` does *not*
+    copy context on its own, so a bare submit would run ``func`` in that
+    worker thread's own (empty) context instead of this call's. That's
+    invisible in local mode (there's only ever one principal), but in org
+    mode it silently resolved ``current_principal()`` back to the default
+    principal for every popup this function drives that registers its own
+    ``PendingApproval`` with no pre-registered one handed in --
+    ``show_rule_confirmation_popup`` (propose_rule_change's confirmation,
+    and the "Always allow" rule-creation sub-flow above) and
+    ``show_pii_confirmation_popup`` chief among them (gated_call's own main
+    review/popup path is unaffected: ``_resolve_decision`` already registers
+    the approval before this function is ever called, in this coroutine's
+    own correct context, and hands it in rather than letting one of these
+    register a fresh one). A misattributed approval like that isn't just
+    wrong bookkeeping: registry.list_pending(principal_id) is what org
+    mode's ``/approvals`` filters on, so the human it was actually meant for
+    would never see it -- and since nothing else in this build can decide
+    on another principal's behalf, the call blocks on it forever.
     """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_popup_executor, functools.partial(func, *args, **kwargs))
+    call = functools.partial(func, *args, **kwargs)
+    ctx = contextvars.copy_context()
+    return await loop.run_in_executor(_popup_executor, ctx.run, call)
 
 
 def _deferred_registry() -> PendingApprovalRegistry | None:

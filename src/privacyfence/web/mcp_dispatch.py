@@ -258,8 +258,15 @@ class McpDispatcher:
         except Exception as exc:
             logger.warning("Audit log write failed for policy check: %s", exc)
 
-    @staticmethod
-    def list_rules(claude_reason: str = "") -> dict:
+    def list_rules(self, claude_reason: str = "") -> dict:
+        # Forces this principal's ConnectorRegistry entry (and the
+        # auto_accept.init_config_path() call daemon_main.py's per-
+        # principal factory makes as a side effect of building it) to
+        # exist first -- same reasoning as propose_rule_change above:
+        # get_current_config() raises "auto_accept config path not
+        # initialized" without it, for a principal whose first-ever MCP
+        # call in this process is this one.
+        _ = self.connectors
         result = get_current_config()
         try:
             get_audit_logger().record(AuditEntry(
@@ -323,6 +330,23 @@ class McpDispatcher:
         # ("If ... this connection is in an unattended session, the call
         # throws"). Needs session_key threaded through from
         # routes_mcp._dispatch_meta_tool for is_unattended() to see it.
+        #
+        # Forces this principal's ConnectorRegistry entry to exist (a
+        # no-op if a connector tool call already built it this session) --
+        # daemon_main.py's own per-principal factory is what calls
+        # auto_accept.init_config_path() for whichever principal
+        # ConnectorRegistry.get() builds, and gate.propose_rule_change()
+        # below (target="rule"/"grant") reaches add_auto_accept_rule/
+        # mutate_grants, both of which raise "auto_accept config path not
+        # initialized" if that never happened. Unlike a real connector
+        # tool call (routes_mcp._dispatch_connector_tool already touches
+        # self.connectors before dispatching), this meta tool has no
+        # connector of its own to force that same lazy bootstrap, so it
+        # has to ask for it directly -- discovered by docs/automated-test-
+        # strategy-plan.md Phase 8's own release-workflow smoke test: a
+        # principal whose very first MCP call was this one had never had
+        # this side effect run at all.
+        _ = self.connectors
         with unattended_scope(session_key in self._unattended_sessions):
             return await propose_rule_change(
                 target=params["target"],

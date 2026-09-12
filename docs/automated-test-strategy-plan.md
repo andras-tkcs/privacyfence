@@ -303,13 +303,14 @@ shipped, versus what was originally planned here:
 ### Residual work
 
 1. **Apps Script fixture coverage** — genuinely still open. Add `apps_script` to both
-   `CONNECTOR_CHECKS` and `EXPECTED_FIXTURES` in `scripts/qa_fixture_recorder.py`, record its first
-   fixture once a QA Apps Script project exists, and update `manual-pre-release-test-plan.md` §1's
-   connector count accordingly. Small, standalone follow-up — no dependency on anything else in
-   this plan. Blocked on a live QA Apps Script project existing to record against (both edits have
-   to land together — `EXPECTED_FIXTURES`/`CONNECTOR_CHECKS` self-check at import time, so adding
-   `apps_script` to one without a fixture already committed for the other fails every PR, not just
-   this connector's).
+   `CONNECTOR_CHECKS` and `EXPECTED_FIXTURES` in `scripts/qa_fixture_recorder.py` and record its
+   first fixture once a QA Apps Script project exists. Small, standalone follow-up — no dependency
+   on anything else in this plan. Blocked on a live QA Apps Script project existing to record
+   against (both edits have to land together — `EXPECTED_FIXTURES`/`CONNECTOR_CHECKS` self-check at
+   import time, so adding `apps_script` to one without a fixture already committed for the other
+   fails every PR, not just this connector's). Since Phase 9's rewrite of
+   `manual-pre-release-test-plan.md` no longer enumerates connectors by name or count, this item no
+   longer needs a matching doc edit there.
 2. **1.8 — bounded lifecycle tests for write-capable providers** (create/read/update/delete a
    uniquely-tagged QA object, verify cleanup) — done. `scripts/qa_fixture_recorder.py`'s
    `--lifecycle` mode (`LIFECYCLE_CHECKS`) covers `calendar`, `confluence`, `jira`, and `tasks` — the
@@ -688,6 +689,7 @@ layer, no new file):
 - **Failure-artifact capture**: neither this file nor `tests.yml`'s own Playwright step had any of
   screenshot/console/DOM/daemon-log capture on a failing test before this landed — checked, not
   assumed, so this is new infrastructure, not a duplicate. `tests/integration/conftest.py`'s
+  (moved up to the repo-wide `tests/conftest.py` by Phase 10, so `tests/system/` could reuse it too)
   `pytest_runtest_makereport` hook (hook implementations are only ever collected from
   `conftest.py`/plugins, never an ordinary test module) stashes each phase's own outcome onto the
   test item; `test_browser_smoke.py`'s `page` fixture now buffers every `console`/`pageerror` event
@@ -1150,30 +1152,48 @@ remaining-work entry above.
 Treat org mode as its own deployment shape, provisioned and exercised from scratch, entirely in
 automated Linux infrastructure.
 
-### Already in this repo
+### Status: done
 
-`tests/integration/test_org_ubuntu_release_smoke.py` already does almost exactly what this phase
-describes, per its own docstring: `daemon_main.main()` end to end, a real synthetic Ed25519-signed
+`tests/integration/test_org_ubuntu_release_smoke.py` already did almost exactly what this phase
+described, per its own docstring: `daemon_main.main()` end to end, a real synthetic Ed25519-signed
 `org_config.json`, a real loopback mocked IdP (`tests/integration/mock_idp.py`), strict fail-closed
 startup on a malformed/unsigned/incomplete bundle, reverse-proxy Host-header handling, org-only
-route mounting, and per-principal session isolation. This is the single largest instance in this
-whole plan of a proposed deliverable already substantially built.
+route mounting, and per-principal session isolation — the single largest instance in this whole
+plan of a proposed deliverable already substantially built. This phase closed the three gaps its
+own "Remaining work" named:
 
-### Remaining work
+1. **The four-scenario check.** Unauthenticated request rejected and authenticated MCP request
+   resolving to the correct principal were already covered. Added: **app-level authz policy**
+   (`TestAppLevelAuthzPolicy`, its own daemon since `authz.allowed_domains` is fixed at startup) —
+   an allowed-domain principal signs in, one outside every allowed domain is turned away with no
+   session; **an approval exercised with audit-principal correctness**
+   (`test_an_approval_is_exercised_by_the_correct_principal_and_audited_there`) — a real MCP
+   `privacyfence_propose_auto_accept_rule_change` call blocks on a human confirmation the way a
+   gated tool's popup does, a different principal can't decide it, the right one can, and the
+   resulting audit entry lands under that principal's own per-principal log directory; and
+   **persisted state surviving a restart** (`test_persisted_state_survives_a_restart`) — a
+   confirmed rule and its audit trail (byte-identical up to that point, then longer) both outlive a
+   SIGTERM/restart cycle. Grounding these against the real subprocess (not an in-process shortcut)
+   surfaced two real, previously-uncaught bugs, both fixed as part of this phase:
+   `gate._run_in_popup_executor` ran its callable in a bare thread-pool thread with no `contextvars`
+   propagation, so a confirmation dialog registered with no pre-registered `PendingApproval`
+   (`show_rule_confirmation_popup`, `show_pii_confirmation_popup` — the main gated-call popup path
+   was unaffected, since it always pre-registers before this function is ever called) silently
+   attributed itself to the wrong principal and could never be decided by anyone; and neither
+   `McpDispatcher.propose_rule_change` nor `.list_rules` forced their principal's
+   `ConnectorRegistry` entry (and the `auto_accept.init_config_path()` side effect of building it)
+   to exist first, so either raised "auto_accept config path not initialized" if called as a
+   principal's very first MCP interaction. Both single-principal-only in-process tests could never
+   have caught, by construction.
+2. **CI promotion.** This test was dispatch/tag-only (`build.yml`'s `build-deb` job), the same gap
+   `test-windows` had before Phase 2.1 — promoted the same way, as its own permanent `org-mode-smoke`
+   job in `tests.yml`, on every PR (Ubuntu only; `build-deb` still runs it too, unchanged, at release
+   time).
+3. **Readiness doc.** `org-mode-operational-readiness.md`'s "Automated evidence" section now cites
+   this module by name for each claim it backs, instead of a generic pointer to "broader unit/
+   security tests."
 
-1. Read the rest of `test_org_ubuntu_release_smoke.py` (it was only partially read while grounding
-   this plan) and check it against the full scenario the source strategy lists: unauthenticated
-   request rejected, authenticated MCP request with identity/policy applied, an approval exercised
-   with audit principal correctness, daemon restart with state survival. Add whichever of those
-   isn't already present as a case in this file — extend it, don't fork a second org-mode system
-   test module.
-2. Confirm this test already runs as a permanent Ubuntu PR job (not dispatch-gated) — if it's
-   currently dispatch-only like `test-windows` was before Phase 2.1, promote it the same way.
-3. Update `org-mode-operational-readiness.md` to reference this test module as the automated
-   evidence for whatever readiness claims it makes, rather than leaving org-mode readiness resting
-   on a claim with no cited test.
-
-### Exit criteria
+### Exit criteria (met)
 
 Org mode can be provisioned and exercised from scratch entirely in automated Linux CI, with no real
 Google/Microsoft identity login required for routine coverage.
@@ -1187,28 +1207,39 @@ Google/Microsoft identity login required for routine coverage.
 Shrink manual release validation to minutes, now that Phases 0–8 have replaced most of what
 `manual-pre-release-test-plan.md` and `connector-qa-testing.md` currently ask a human to do by hand.
 
-### Remaining work
+### Status: done
 
-Do this only after Phases 1–8 actually ship — rewriting these documents first would leave them
-describing automation that doesn't exist yet.
+1. **`manual-pre-release-test-plan.md`**: rewritten from a five-section, half-day walkthrough into a
+   three-section, minutes-long checklist — §1 "Automated prerequisites" (confirm `tests.yml`'s
+   merge-gate jobs and `connector-live-check.yml`'s scheduled run are green/recent, no unresolved
+   `chore/connector-live-fixture-drift` PR, no open gate/auto-accept/approval-UI PR that skipped the
+   required full `connector-qa-testing.md` pass, nothing known-broken in `build.yml`'s
+   packaged-artifact path), §2 "Human QA" (visual UI sanity if the web surface changed, one real
+   MCP-client compatibility smoke — unconditional, since no automated test in this repo drives a
+   real third-party MCP client — OS-native UX smoke if packaging/autostart changed, a drift-PR
+   re-skim), and §3 "Tag and release" (unchanged release mechanics). The old §0's
+   `pre_release_check.py` step is gone outright, not just folded — that script's own docstring
+   already dropped its version-consistency check once `setuptools_scm` replaced the hand-bumped
+   scheme (see this repo's `CLAUDE.md`), so by this phase it reran nothing the merge gate hadn't
+   already run on the same commit; §1 points at confirming that merge gate directly instead. The old
+   §1 fixture-recording walkthrough folded into a single §1 bullet, since Phase 1's scheduled
+   recorder (`connector-live-check.yml`) already does this weekly. The old §3 live-Cowork prompt
+   folded away entirely — Phase 5 confirmed `test_gate.py` already proves gate-state coverage
+   deterministically, so re-proving it by hand added nothing; what survives from that section is
+   only the genuinely unautomatable part (a real MCP client's compatibility), generalized rather than
+   run as a connector-specific popup script.
+2. **`connector-qa-testing.md`**: reframed. Its title now parenthesizes "Extended Connector/Gate
+   Exploratory QA," and it opens with a "When to use this" section stating outright that routine
+   releases need none of it, naming the four cases that do (new connector, material connector/gate
+   change, unexplained regression, or the broad gate/auto-accept/approval-UI change
+   `testing-policy.md` §3 already required this for).
+3. **`testing-policy.md`**: consistency pass done. The "Checked against `manual-pre-release-test-plan.md`"
+   section (Phase 0) now maps each *old* section to where its coverage lives post-rewrite instead of
+   describing a still-pending rewrite; §3's closing paragraph and the Quick-reference table's
+   `connector-qa-testing.md` row both dropped their "before a release" framing in favor of the same
+   four trigger conditions as item 2 above.
 
-1. **`manual-pre-release-test-plan.md`**: reduce to an automated-prerequisites checklist (PR CI
-   green, cross-platform system CI green, connector live CI recent and green, packaged-artifact
-   tests green, no unresolved provider-drift PR) plus a short human-QA section (visual UI sanity if
-   UI changed, one real MCP-client compatibility smoke, OS-native UX smoke if packaging/autostart
-   changed, review of any provider/fixture drift). Its current §0 (`pre_release_check.py`) and the
-   fixture-recording section fold into the automated-prerequisites list once Phase 1 lands the
-   scheduled recorder; its live-Cowork sections fold away once Phase 5's gate matrix and Phase 1's
-   connector CI cover what they currently prove by hand.
-2. **`connector-qa-testing.md`**: reframe from a routine release checklist to "Extended
-   Connector/Gate Exploratory QA," used only for a new connector, a major gate/approval
-   architecture change, or an unexplained integration regression — its opening "When to use this"
-   section already gestures at this; make it explicit that routine releases no longer require it.
-3. **`testing-policy.md`**: by this point it should already describe all seven layers, both CI trust
-   tiers, and which checks are release-blocking versus manual (Phases 0, 1, 2–8 each touch it
-   incrementally) — this step is a final consistency pass, not new content.
-
-### Exit criteria
+### Exit criteria (met)
 
 Routine manual release validation takes minutes, not hours; both documents above accurately
 describe a *reduced*, not aspirational, manual surface.
@@ -1222,21 +1253,97 @@ describe a *reduced*, not aspirational, manual surface.
 Make test failures diagnosable entirely from cloud CI, since this project is developed
 cloud-first without dedicated physical test machines.
 
-### Remaining work
+### Status: done
 
-1. On every system/packaged-artifact test failure, capture and upload as CI artifacts: daemon logs,
-   audit logs, pytest output, browser console (where applicable, reuse Phase 4's existing capture),
-   screenshots where applicable, an installed-file manifest (packaged tests), OS/runtime versions,
-   and a test-run identifier. Bounded retention (`retention-days`, matching the existing pattern in
-   `.github/workflows/connector-live-check.yml` already establishes for that job).
-2. Every failure message states what failed, expected vs. actual state, and where its diagnostic
-   artifacts landed — a small convention to apply across the new test modules from Phases 3, 4, 6,
-   7, 8, not a framework to build.
-3. Do not auto-retry deterministic tests. For live-provider tests specifically (Phase 1), a narrowly
-   scoped retry/backoff for known-transient conditions (rate limiting, transient network failure) is
-   acceptable — `scripts/qa_fixture_recorder.py` is the place for that, not a blanket CI-level retry.
+New shared module `tests/diagnostics.py`, wired in via `tests/conftest.py`'s own
+`pytest_runtest_makereport` hook (moved up from `tests/integration/conftest.py`, which this phase
+deleted, to cover `tests/system/` too — see that hook's own comment). On a failing
+`pytest.mark.packaged`/`pytest.mark.system` test that took `tmp_path` (directly, or indirectly via
+a fixture it depends on — confirmed empirically: `item.funcargs` carries it either way), the hook
+writes, under `test-results/<suite>/<nodeid>/`:
 
-### Exit criteria
+- `environment.txt` — OS/runtime versions and a test-run identifier (`GITHUB_RUN_ID`-
+  `GITHUB_RUN_ATTEMPT` in CI, a random id locally);
+- `manifest.txt` — a flat `<relative path>\t<size>` listing of everything under that test's own
+  `tmp_path`, covering item 1's "installed-file manifest" for every module whose install
+  directory already lives there (`test_windows_packaged_smoke.py`, `test_org_ubuntu_release_
+  smoke.py`, `tests/system/test_local_mode_system.py`) *without* also re-uploading the installed
+  binaries themselves as a CI artifact (a listing, never a copy — see that function's own
+  docstring for why: a PyInstaller onedir build or an extracted `.deb` easily runs to hundreds of
+  MB);
+- `logs/` — every file under that `tmp_path` named `daemon.log`, `install*.log`, `uninstall*.log`,
+  or `*.jsonl` (an audit log), copied out in full and flattened by path so two same-named logs
+  from the same test (e.g. an upgrade test's N and N+1 boots) don't collide.
+
+Nothing is written on a passing run — matching the posture `test_browser_smoke.py`'s own Phase 4.5
+`_capture_failure_artifacts` fixture already established for the browser suite, which this phase
+deliberately left untouched (its own screenshot/DOM/console capture already satisfies item 1's
+"browser console... reuse Phase 4's existing capture"). The hook also appends a report section
+naming exactly where the diagnostics landed — CI's own failure output now answers item 2's "where
+its diagnostic artifacts landed" directly, not just "what failed" (pytest's own assertion-rewriting
+already gives the expected-vs-actual half of that for every plain `assert`, and every module this
+phase touches already embeds it explicitly wherever it raises `AssertionError` by hand).
+
+This generic, per-`tmp_path` mechanism needed no per-test-module code for
+`test_windows_packaged_smoke.py`, `test_org_ubuntu_release_smoke.py`, and `tests/system/
+test_local_mode_system.py` — all three already isolated their own daemon home/install directory
+under `tmp_path` and already named their subprocess log `daemon.log`/`install*.log`.
+`test_macos_packaged_smoke.py`'s `running_packaged_daemon` fixture was switched from a bare
+`tempfile.mkdtemp()` + manual `shutil.rmtree()` to `tmp_path` for exactly this reason (matching
+`test_macos_upgrade_preserves_user_state`'s own `home`, which already used `tmp_path`), and its
+`_running_daemon_at` helper now redirects the daemon's stdout/stderr straight to a `daemon.log`
+file instead of an in-memory buffer read only from the exception message itself.
+
+Three modules needed their own small, explicit capture call instead, because their installed/
+runtime state genuinely isn't under any single test's `tmp_path`:
+
+- `test_deb_packaged_lifecycle.py` installs via a real `dpkg -i` into real system paths — its
+  `_clean_package_state` fixture now calls `dpkg -s`/`dpkg -L` on a failing test, before its own
+  teardown purge, and writes both into the same `test-results/` directory (via `tests.diagnostics
+  .failure_dir()`/`suite_name_for()`, so a module needing this doesn't have to recompute that path
+  by hand).
+- `test_linux_graphical_session_autostart.py`'s own `_real_home_state` fixture deliberately boots
+  into the *real* `$HOME` (see that fixture's own docstring — the whole point of that test is a
+  real, un-injected login), and its daemon is started by a real `systemd --user` unit, which logs
+  to the user's own journal, not a file — its teardown now writes a manifest of the real
+  `$HOME/.privacyfence` plus a `journalctl --user -u <unit>` dump.
+- `test_windows_graphical_session_autostart.py`'s daemon boots into a real throwaway Windows
+  user's own profile directory (not known until the test body calls `_wait_for_profile_dir`,
+  and a different profile than the test's own `tmp_path`) via a Scheduled Task, which likewise has
+  no stdout log file of its own — a small `_graphical_diagnostics` fixture (a mutable dict the test
+  registers `home` into once known, then reads back from teardown — the same "register, then
+  capture from teardown" shape as `test_deb_packaged_lifecycle.py`'s own pair above) captures a
+  manifest of that profile's `.privacyfence` directory plus a `schtasks /query ... /v` dump of the
+  task's own last-run result, before `_throwaway_user`'s own finalizer deletes the account and its
+  profile (confirmed, not assumed: pytest fixture teardown order is the reverse of setup order, and
+  this fixture is requested after `_throwaway_user` in the test's own signature).
+
+Every CI job that runs one of these suites (`tests.yml`'s `test`, `test-python-compat`,
+`platform-windows`, `platform-macos`, `org-mode-smoke`; `build.yml`'s `build`, `build-windows`,
+`build-deb`; `linux-graphical-session.yml`, `windows-graphical-session.yml`) now has its own
+`if: failure()` / `if-no-files-found: ignore` / `retention-days: 30` upload step for `test-results/`
+— the same bounded-retention convention `connector-live-check.yml`'s own report upload already
+established (item 1's "bounded retention... matching the existing pattern"), and the same posture
+`tests.yml`'s pre-existing browser-smoke upload step already had (now widened to cover the whole
+tree rather than just `test-results/browser-smoke/`, since both live under the same root and one
+step covers both). `tests.yml`'s `test-python-compat` matrix folds its own Python version into the
+artifact name, since `actions/upload-artifact` needs a unique name per matrix leg in the same job.
+
+Known, deliberately accepted gap: `test_macos_packaged_smoke.py`'s `installed_app`/`signed_app_
+copy` fixtures (the mounted/copied `.app` bundle itself, as opposed to the daemon's own runtime
+`home`) stay on `tempfile.mkdtemp()`, module-scoped and shared across several tests in that file —
+not one test's own `tmp_path`, so a failure there doesn't get an installed-file manifest of the
+`.app` bundle itself the way Windows/`.deb`/org-mode's own install directories do. Revisit only if
+a real failure in that fixture ever turns out to need one; the daemon's own `home`/`daemon.log`
+(what actually varies at runtime, and what every other failure in this module needs) is already
+fully covered.
+
+Item 3 needed no code change: nothing in this repo's CI auto-retries a deterministic test today —
+`scripts/qa_fixture_recorder.py`'s own narrowly-scoped retry/backoff (rate limiting, transient
+network failure) is, and remains, the only retry logic anywhere in this test suite, confirmed by
+grep across every workflow file rather than assumed.
+
+### Exit criteria (met)
 
 Most CI failures are diagnosable without local reproduction.
 
@@ -1374,13 +1481,18 @@ Phase 6  Packaged-artifact lifecycle                              (DONE — macO
 Phase 7  Graphical-session/autostart                              (Done for both Linux (P7.2) and
    ↓                                                               Windows (8.2); macOS deliberately
    ↓                                                               not built.)
-Phase 8  Org-mode system CI                                       (mostly an audit/extend of
+Phase 8  Org-mode system CI                                       (DONE — audit/extend of
    ↓                                                               test_org_ubuntu_release_smoke.py,
-   ↓                                                               already largely built)
-Phase 9  Retire obsolete manual QA
-   ↓
-Phase 10 Observability and maintenance polish
-   ↓
+   ↓                                                               promoted to a permanent per-PR job)
+Phase 9  Retire obsolete manual QA                                (DONE — manual-pre-release-
+   ↓                                                                test-plan.md rewritten to a
+   ↓                                                                minutes-long checklist,
+   ↓                                                                connector-qa-testing.md reframed
+   ↓                                                                as exploratory-only, testing-
+   ↓                                                                policy.md consistency pass)
+Phase 10 Observability and maintenance polish                    (DONE — tests/diagnostics.py's
+   ↓                                                               generic per-tmp_path capture, wired
+   ↓                                                               into every packaged/system CI job)
 Phase 11 Update branch-protection required checks                (incremental — starts as soon as
    ↓                                                               platform-windows is stable, keeps
    ↓                                                               picking up each phase's job as it
@@ -1450,9 +1562,16 @@ plan's grounding pass found the work already done, and a note on which remain ge
 22. ~~Windows graphical-session/autostart CI~~ — **done** (Phase 7 item 2): closes
     `windows-support-plan.md` 8.2, `tests/integration/test_windows_graphical_session_autostart.py`,
     its own `.github/workflows/windows-graphical-session.yml`
-23. Org-mode system test audit/extension — likely small (Phase 8)
-24. Manual QA documentation reduction (Phase 9)
-25. CI diagnostic/observability polish (Phase 10)
+23. ~~Org-mode system test audit/extension~~ — **done** (Phase 8): closed the four-scenario gap,
+    promoted `test_org_ubuntu_release_smoke.py` to a permanent `org-mode-smoke` per-PR job, and
+    updated `org-mode-operational-readiness.md`
+24. ~~Manual QA documentation reduction~~ — **done** (Phase 9): `manual-pre-release-test-plan.md`
+    rewritten to a three-section checklist, `connector-qa-testing.md` reframed as exploratory-only,
+    `testing-policy.md` consistency pass
+25. ~~CI diagnostic/observability polish~~ — **done** (Phase 10): `tests/diagnostics.py`'s generic
+    per-`tmp_path` failure capture, wired in via `tests/conftest.py`, plus the three modules
+    (`test_deb_packaged_lifecycle.py`, both graphical-session-autostart modules) that needed their
+    own explicit capture call for real installed/runtime state no `tmp_path` isolates
 26. Update branch-protection required status checks (Phase 11) — not one PR but a small addition
     riding alongside each of PRs 12, 17-18, 13, 23 above as their job proves stable, plus a final
     documentation-consistency PR once every addition has landed
@@ -1492,10 +1611,13 @@ combination.
 - Package upgrade tests prove user state survives, on all three platforms (Phase 6, done).
 - Local-mode autostart has automated platform-specific coverage (Phase 7, done for Linux and Windows;
   macOS deliberately not built).
-- Org mode executes an authenticated synthetic end-to-end request in CI (Phase 8, mostly already
-  true — confirm and close remaining gaps).
-- `connector-qa-testing.md` is exploratory, not mandatory, for routine releases (Phase 9).
-- Routine manual release validation takes minutes, not hours (Phase 9).
+- Org mode executes an authenticated synthetic end-to-end request in CI, on every PR (Phase 8,
+  done).
+- `connector-qa-testing.md` is exploratory, not mandatory, for routine releases (Phase 9, done).
+- Routine manual release validation takes minutes, not hours (Phase 9, done).
+- A system/packaged-artifact test failure is diagnosable from its own CI run alone — daemon/install/
+  audit logs, an installed-file manifest, OS/runtime versions, and a test-run identifier, all
+  uploaded as a bounded-retention build artifact — without re-running it locally (Phase 10, done).
 - PrivacyFence can be confidently released without owning physical Windows, Linux, or macOS
   development machines.
 - GitHub's required-status-checks list on `main` names every blocking per-PR job, not just `test` —
