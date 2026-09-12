@@ -9,15 +9,15 @@ dialogs, and return a decision. ApprovalUI is that something.
 
 Through P9 this had two implementations: NativeApprovalUI (macOS AppKit/
 WKWebView dialogs, via approval_popup.py) and WebApprovalUI (the same card
-stack, served over HTTP). P10 (docs/https-connector-refactor-plan.md §12,
-decision D6 in §15) deleted the native one -- "two approval surfaces means
-two places for a security fix to land" -- leaving WebApprovalUI
-(web_approval_ui.py) as the sole implementation. The ABC stays here, and
-gate.py still reaches it through get_approval_ui() rather than importing
-WebApprovalUI directly, on purpose: D6's own reasoning was "the ApprovalUI
-seam lets it come back if that proves wrong", so a future implementation
-(e.g. a Windows-native dialog for #121, once that's revisited per §14) only
-needs to implement this interface and call init_approval_ui() with an
+stack, served over HTTP). P10 deleted the native one -- "two approval
+surfaces means two places for a security fix to land" -- leaving
+WebApprovalUI (web_approval_ui.py) as the sole implementation. The ABC
+stays here, and gate.py still reaches it through get_approval_ui() rather
+than importing WebApprovalUI directly, on purpose: that decision's own
+reasoning was "the ApprovalUI seam lets it come back if that proves
+wrong", so a future implementation (e.g. a Windows-native dialog for #121,
+once that's revisited) only needs to implement this interface and call
+init_approval_ui() with an
 instance of it -- gate.py's own call sites never change.
 """
 from __future__ import annotations
@@ -102,9 +102,9 @@ class ApprovalUI(ABC):
     @property
     def deferred_registry(self):  # -> approvals.PendingApprovalRegistry | None
         """A ``PendingApprovalRegistry`` (approvals.py) this backend is
-        registered with, if it supports the deferred/hold-window protocol
-        (docs/https-connector-refactor-plan.md §5) -- ``None`` (the
-        default) means this backend only ever blocks until a human decides.
+        registered with, if it supports the deferred/hold-window protocol --
+        ``None`` (the default) means this backend only ever blocks until a
+        human decides.
         WebApprovalUI (the only implementation since P10) always overrides
         this with a real registry; the default stays here for whatever
         future implementation the seam's own docstring anticipates, in case

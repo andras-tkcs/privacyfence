@@ -1,6 +1,6 @@
-"""Tests for secure_files.py (SEC-09, docs/security-remediation-plan.md
-Phase 1 item 1.4): the shared atomic-write and directory-permission helpers
-every credential/token/config writer in this codebase now routes through.
+"""Tests for secure_files.py: the shared atomic-write and directory-permission
+helpers every credential/token/config writer in this codebase now routes
+through.
 
 The two invariants that matter most, and that most of the tests below exist
 to pin down: a reader can never observe a partially-written file (atomic

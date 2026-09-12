@@ -417,8 +417,7 @@ class TestRevokeToken:
 
 
 class TestDcrResourceControls:
-    """SEC-16 (docs/security-remediation-plan.md, Phase 3 item 3.3):
-    unauthenticated ``/register`` gets a total-client cap, a
+    """SEC-16: unauthenticated ``/register`` gets a total-client cap, a
     per-registration size cap, and stale-client pruning; unauthenticated
     ``/authorize`` gets a count bound on ``_pending`` on top of its
     existing TTL prune."""

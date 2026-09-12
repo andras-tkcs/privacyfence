@@ -15,7 +15,7 @@ job) before describing new work, so the plan says only what's actually left to b
 and this revision. Its residual work (1.8 bounded lifecycle tests, 1.9 fixture freshness reporting)
 has since landed too, in a follow-up PR — as has the pytest-marker backfill on the TST-08–13
 modules, which landed as part of Phase 0 rather than as a Phase 1 follow-up (see below). See
-[Phase 1](#phase-1--complete-live-connector-ci-and-close-security-remediation-plan-312-—-done)
+[Phase 1](#phase-1--complete-live-connector-ci-—-done)
 below for what shipped, what deviated from the original design, and the one item still open (Apps
 Script fixture coverage, blocked on a live QA Apps Script project to record against).
 [Phase 0](#phase-0--establish-the-test-taxonomy) is also now done — see that section's own status
@@ -72,16 +72,15 @@ that gap anywhere — and Phase 12 is the renumbered "retire the platform-specif
   versus by hand, now including the §0 runner-local live tier Phase 1 added. Phase 0 below further
   rewrites its framing into the finer-grained seven-layer taxonomy this plan needs; every later
   phase updates its "Quick reference" table as new automated tiers come online.
-- `security-remediation-plan.md` and `connector-ci-integration-plan.md` — **both removed from
-  `docs/` by [PR #284](https://github.com/privacyfence/privacyfence/pull/284)**, once every finding
-  in the former's coverage matrix (SEC-01..23, TST-01..16, DOC-01..04, ORP-01..06) had a landed
-  commit on `main` and the live-connector-CI infrastructure the latter designed was confirmed
-  working end to end on the real self-hosted runner. Both are kept only as git history now, not as
-  files to link to. [`connector-live-check-setup.md`](connector-live-check-setup.md) is the
+- `connector-ci-integration-plan.md` — **removed from
+  `docs/` by [PR #284](https://github.com/privacyfence/privacyfence/pull/284)**, once the
+  live-connector-CI infrastructure it designed was confirmed
+  working end to end on the real self-hosted runner. It is kept only as git history now, not as
+  a file to link to. [`connector-live-check-setup.md`](connector-live-check-setup.md) is the
   document that replaced `connector-ci-integration-plan.md` — it carries forward only the pieces
   that still need standing documentation (account acquisition, runner provisioning/troubleshooting)
   now that the workflow file itself is the authoritative source for what the live-check tier does.
-  This plan's references below to either removed document are historical — describing what the
+  This plan's references below to that removed document are historical — describing what the
   work looked like when planned, before Phase 1 below records what it looked like once shipped.
 
 ## Core testing principle
@@ -210,12 +209,11 @@ implements Phase 2 should decide whether `platform` becomes an eighth registered
 
 ---
 
-## Phase 1 — Complete live connector CI and close Security Remediation Plan 3.12
+## Phase 1 — Complete live connector CI
 
 ### Objective
 
-Finish the scheduled live-connector workflow and TST-08 through TST-13, then close out
-`security-remediation-plan.md` entirely — it had no other open item.
+Finish the scheduled live-connector workflow and TST-08 through TST-13.
 
 ### Status: done
 
@@ -225,8 +223,8 @@ C) and update testing-policy.md (Phase D)", [#278](https://github.com/privacyfen
 "TST-08/09/10/11/12/13: Systemic test coverage for security invariants" (in two commits, `9d3ef19`
 covering TST-08–TST-11/TST-13 and `e5b5f21` adding TST-12 as a deliberate follow-up once adding
 `hypothesis` as a dependency was flagged rather than bundled silently), and
-[#284](https://github.com/privacyfence/privacyfence/pull/284) "Close out security-remediation-plan.md
-and connector-ci-integration-plan.md", which verified every finding in the remediation plan's
+[#284](https://github.com/privacyfence/privacyfence/pull/284) (closing out the completed remediation
+plan and connector-ci-integration-plan.md), which verified every finding in the remediation plan's
 coverage matrix had a landed commit and removed both source-planning documents. What actually
 shipped, versus what was originally planned here:
 
@@ -287,7 +285,7 @@ shipped, versus what was originally planned here:
 - **1.8/1.9 (bounded lifecycle tests, fixture freshness reporting)** — not part of this batch of
   PRs; still open, tracked below.
 - **1.10 (close the remediation plan)** — done, but as a full removal rather than an in-place
-  "mark complete": `docs/security-remediation-plan.md` and `docs/connector-ci-integration-plan.md`
+  "mark complete": the completed remediation plan and `docs/connector-ci-integration-plan.md`
   are both deleted from `main`, with every dangling cross-reference elsewhere in `docs/` (
   `security-and-compliance.md`, `org-mode-operational-readiness.md`, `testing-policy.md`,
   `coding-and-testing-guidelines.md`, the now-removed `windows-linux-support-plan.md`, `adr/0001`,
@@ -356,7 +354,7 @@ whole.
   one residual gap above.
 - ✅ TST-09 through TST-13 pass.
 - ✅ `testing-policy.md` describes both CI trust tiers.
-- ✅ `security-remediation-plan.md`'s Phase 3.12, and the whole plan, are complete — the document
+- ✅ The remediation plan's Phase 3.12, and the whole plan, are complete — the document
   itself is removed rather than left marked-complete in place, per PR #284's own judgment call that
   a fully-landed tracking document is better retired than kept as dead weight.
 
@@ -1486,7 +1484,7 @@ exactly matching this phase's original design.
 All four documents are deleted; `docs/README.md`'s doc index and "active implementation plans" note
 drop the four retired entries; every cross-reference to the four documents elsewhere in the repo —
 this file included — is converted to a plain "now-removed" citation, the same convention Phase
-1.10's removal of `security-remediation-plan.md`/`connector-ci-integration-plan.md` already
+1.10's removal of the completed remediation plan and `connector-ci-integration-plan.md` already
 established, rather than left as a link to a deleted file.
 
 ### Exit criteria (met)

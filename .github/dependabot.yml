@@ -1,7 +1,6 @@
 version: 2
 
-# SEC-19 (docs/security-remediation-plan.md, Phase 2.4). Four ecosystems,
-# matching the four places this repo declares a dependency version:
+# Four ecosystems, matching the four places this repo declares a dependency version:
 # pyproject.toml (the daemon), mcpb/shim/package.json (the .mcpb shim),
 # cloudflare/downloads/package.json (the downloads.privacyfence.eu Worker,
 # docs/release-publishing-kpi-plan.md Phase 1), and the SHA-pinned `uses:`

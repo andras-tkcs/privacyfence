@@ -1,7 +1,6 @@
-"""Tests for web/csp.py -- the shared nonce/CSP helpers (SEC-08, docs/
-security-remediation-plan.md Phase 3.1). web/test_server.py covers the
-middleware/header-emission side end-to-end; this module covers the small
-pure helpers in isolation.
+"""Tests for web/csp.py -- the shared nonce/CSP helpers (SEC-08).
+web/test_server.py covers the middleware/header-emission side end-to-end;
+this module covers the small pure helpers in isolation.
 """
 from __future__ import annotations
 

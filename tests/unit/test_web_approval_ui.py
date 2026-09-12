@@ -160,8 +160,7 @@ class TestResolve:
 
     def test_second_resolve_for_the_same_card_is_rejected(self):
         # Idempotent decisions -- the first accepted decision for an id
-        # wins, any later one is rejected (see
-        # docs/https-connector-refactor-plan.md §7.1).
+        # wins, any later one is rejected.
         ui = WebApprovalUI()
         t = _thread(lambda: ui.show_popup("t", {}, "d"))
         t.start()

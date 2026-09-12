@@ -1,7 +1,6 @@
 """Org-mode download staging: an in-memory registry plus per-principal,
 encrypted-at-rest disk storage for file bytes that are too large to return
-inline in an MCP tool result (docs/org-mode-download-delivery-plan.md,
-Phase 1). Mirrors approvals.py's ``PendingApprovalRegistry`` shape --
+inline in an MCP tool result. Mirrors approvals.py's ``PendingApprovalRegistry`` shape --
 same TTL-sweep pattern, same "ephemeral state lost on daemon restart is
 acceptable" posture (an interrupted download just means the human re-runs
 the tool call) -- but this registry's payload is real file content, not a
@@ -19,10 +18,9 @@ except inside the caller's own return value (which flows into a tool-call
 result and, from there, into the human's one-time download URL). A
 snapshot of this server's disk, a backup, or a forensic recovery of a
 "deleted" file therefore all yield AES-GCM ciphertext, never plaintext --
-see docs/org-mode-download-delivery-plan.md's "Encryption at rest" section
-for the full threat model and its one explicit caveat (a live compromise
+with one explicit caveat: a live compromise
 of this daemon process itself, which necessarily holds plaintext briefly
-around encrypt/decrypt, same as any encryption-at-rest scheme).
+around encrypt/decrypt, same as any encryption-at-rest scheme.
 
 ``claim()`` is single-use: a successful claim deletes both the ciphertext
 file and the registry entry before returning, so nothing meant to be
@@ -54,7 +52,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# docs/org-mode-download-delivery-plan.md's default -- 5 minutes, shorter
+# Default -- 5 minutes, shorter
 # than an earlier draft's 15: staging means an encrypted-but-real copy of
 # the file exists on the server's disk for this long, so the window is set
 # by how fast a human can open the link, not by generous UX slack.

@@ -1,5 +1,5 @@
 """web_prompt.py -- the generalized blocking-prompt mechanism factored out
-of web_approval_ui.py (docs/https-connector-refactor-plan.md §16.2.2/W5).
+of web_approval_ui.py.
 """
 from __future__ import annotations
 

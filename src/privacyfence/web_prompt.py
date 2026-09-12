@@ -1,8 +1,8 @@
-"""Generalized "block a worker thread on a human's choice" helper
-(docs/https-connector-refactor-plan.md §16.2.2), factored out of
+"""Generalized "block a worker thread on a human's choice" helper,
+factored out of
 web_approval_ui.py -- ``WebApprovalUI._run_card``/``_run_confirm`` are now
 thin wrappers around ``block_on_card``/``block_on_confirm`` below, with no
-behavior change (§16.5's W5 "Done when": no behavior change to approvals).
+behavior change ("Done when": no behavior change to approvals).
 
 The insight §16.2.2 names: a worker thread blocked on a human's answer is
 the same mechanism whether the answer is "accept/deny/accept_all" (a card),

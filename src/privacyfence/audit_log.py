@@ -4,8 +4,7 @@ Entries are appended to JSON-lines files in logs/audit/YYYY-WNN.jsonl
 (one file per ISO week). A weekly Excel export (openpyxl) is generated
 at daemon startup for any week that has a .jsonl but no .xlsx yet.
 
-SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6) added
-append-integrity to that JSONL file: every entry is chained to the one
+SEC-23 added append-integrity to that JSONL file: every entry is chained to the one
 before it with a keyed hash (HMAC-SHA256, see AuditLogger._compute_entry_
 hash), so a line inserted, edited, or removed after the fact -- without
 also holding this install's own signing key (AuditLogger's
@@ -107,9 +106,9 @@ class AuditEntry:
                             # "grant_changed_via_bridge_proposal" | "grant_removed_via_bridge_proposal" |
                             # "bridge_proposal_no_op" | "error" |
                             # "approval_pending" | "expired"
-                            # ("approval_pending": gate.py's deferred-approval protocol (P3,
-                            #  docs/https-connector-refactor-plan.md §5) -- a human didn't decide
-                            #  within the registry's hold window, so gated_call() returned a
+                            # ("approval_pending": gate.py's deferred-approval protocol (P3)
+                            #  -- a human didn't decide within the registry's hold window,
+                            #  so gated_call() returned a
                             #  structured pending result to Claude instead of continuing to block.
                             #  The eventual real decision -- approved/rejected/accepted_via_accept_all/
                             #  auto_accepted -- gets its OWN entry, sharing this one's request_id, once
@@ -158,10 +157,9 @@ class AuditEntry:
                             #  show_rule_confirmation_popup() the "Always allow" flow uses, and that
                             #  actually changed something (config's own `changed` return value was
                             #  True). "rejected" is reused, not a new value, when the human declines
-                            #  instead. NOTE (docs/security-remediation-plan.md Phase 3 PR3.9,
-                            #  ORP-06): "bridge_proposal" here is legacy vocabulary from when this
-                            #  flow really was posted by a separate Node bridge process over IPC
-                            #  (pre-P5, see docs/https-connector-refactor-plan.md §12) -- Claude now
+                            #  instead. NOTE: "bridge_proposal" here is legacy vocabulary from when
+                            #  this flow really was posted by a separate Node bridge process over
+                            #  IPC (pre-P5) -- Claude now
                             #  reaches propose_rule_change() via web/mcp_dispatch.py's MCP meta-tool,
                             #  over ``/mcp`` rather than the bridge socket. The four decision strings
                             #  above and "bridge_proposal_no_op" below are deliberately NOT renamed to
@@ -222,10 +220,9 @@ class AuditEntry:
                               # invocation now releasing (or expiring) on the strength of it. Empty
                               # for every ordinary decided-inline entry, where the two timestamps
                               # would be the same instant and a second field would say nothing new.
-                              # See gate.py's own module docstring and
-                              # docs/https-connector-refactor-plan.md §5.4.
-    delivery: str = ""       # "local_disk" | "inline_base64" | "staged_link" | "" -- docs/org-mode-
-                              # download-delivery-plan.md's Phase 3: for drive_download_file/
+                              # See gate.py's own module docstring.
+    delivery: str = ""       # "local_disk" | "inline_base64" | "staged_link" | "" -- for
+                              # drive_download_file/
                               # gmail_download_attachment/confluence_download_attachment only, which
                               # transport actually moved (or -- for a denied/expired/pending entry --
                               # would have moved) this call's file bytes. "" for every other tool
@@ -236,7 +233,7 @@ class AuditEntry:
                               # tool-call args, which isn't what the audit log is for. Set by gate.py's
                               # gated_call() (its own ``delivery`` kwarg) -- never inferred here.
 
-    # ---- SEC-23 fields (docs/security-remediation-plan.md, Phase 3 item 3.6) ----
+    # ---- SEC-23 fields ----
     # All six below default to a value meaning "not yet stamped" and are
     # filled in by AuditLogger.record() itself (see its docstring) rather
     # than at each of this dataclass's ~15 call sites -- record() is
@@ -809,9 +806,9 @@ def _fallback_log_dir() -> str:
     """Used only if get_audit_logger() is ever called before daemon_main.py's
     run_app() has called init_audit_logger() -- which shouldn't happen in
     practice, but this is the same last-resort fallback the original bare
-    ``_INSTANCE`` singleton had, just principal-aware now (P6, docs/
-    https-connector-refactor-plan.md §9.2): the local principal keeps the
-    exact original hardcoded path, so an install that somehow only ever hit
+    ``_INSTANCE`` singleton had, just principal-aware now (P6): the local
+    principal keeps the exact original hardcoded path, so an install that
+    somehow only ever hit
     this fallback stays byte-identical; any other principal falls back to
     its own storage root instead of writing into the local principal's
     directory."""

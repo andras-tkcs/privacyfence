@@ -1,10 +1,10 @@
-"""Tests for web/routes_settings.py -- settings on the web
-(docs/https-connector-refactor-plan.md §16, W3/W4): the allowlisted action
-dispatcher, CSRF/Origin checks, per-action argument validation, the org
-config upload, the audit log download, and quit_app's confirmation gate.
+"""Tests for web/routes_settings.py -- settings on the web (W3/W4): the
+allowlisted action dispatcher, CSRF/Origin checks, per-action argument
+validation, the org config upload, the audit log download, and quit_app's
+confirmation gate.
 
-SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2): this module's
-own create_app() no longer takes a shared ``token`` -- it authenticates
+SEC-06: this module's own create_app() no longer takes a shared ``token``
+-- it authenticates
 against a web/session_auth.py ``LocalSessionStore`` instead, the same store
 test_routes_approvals.py's own tests use (this surface shares the approval
 surface's one session by design, see build_routes()'s own docstring).

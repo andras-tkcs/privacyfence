@@ -1,5 +1,5 @@
-"""Tests for scripts/verify_audit_log.py -- SEC-23's chain-verification CLI
-(docs/security-remediation-plan.md, Phase 3 item 3.6).
+"""Tests for scripts/verify_audit_log.py -- the audit-log chain-verification
+CLI.
 
 Imported by file path (importlib), same as test_build_org_bundle.py, since
 scripts/ isn't part of the installed ``privacyfence`` distribution.

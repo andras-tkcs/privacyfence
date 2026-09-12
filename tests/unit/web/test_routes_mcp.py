@@ -3,12 +3,10 @@ the wire-protocol/auth layer sitting on top of McpDispatcher (see
 test_mcp_dispatch.py for the dispatch logic itself).
 
 Drives the real ASGI app with the official `mcp` Python client over an
-in-process ASGI transport (httpx.ASGITransport) -- no real socket, per
-docs/https-connector-refactor-plan.md §13 ("web/ unit tests: routes tested
-against an in-process ASGI/HTTP test client, no real socket"). This is the
-in-process equivalent of what P0 validated by hand (§11/§12 of that
-document) and of what tests/integration/test_bridge_daemon_contract.py does
-for the bridge, but for /mcp directly and without spawning a real process.
+in-process ASGI transport (httpx.ASGITransport) -- no real socket. This is
+the in-process equivalent of what P0 validated by hand and of what
+tests/integration/test_bridge_daemon_contract.py does for the bridge, but
+for /mcp directly and without spawning a real process.
 """
 from __future__ import annotations
 

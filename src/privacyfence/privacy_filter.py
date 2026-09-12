@@ -58,7 +58,7 @@ _GROUP_NAMES = (
 # (fail open on missing config, same posture pii_detector.py takes when
 # disabled -- this module only ever narrows what already ships, it never
 # adds a new default-block surface a pre-existing install didn't have). One
-# dict per principal (P6, docs/https-connector-refactor-plan.md §9.2), not
+# dict per principal (P6), not
 # one per process -- each user's own privacy policy, isolated the same way
 # their auto-accept rules already are.
 _REGISTRY: PrincipalRegistry[dict[str, dict[str, Any]]] = PrincipalRegistry(dict)
