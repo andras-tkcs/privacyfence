@@ -25,6 +25,15 @@ directory that already existed (e.g. one created by a pre-SEC-09 install).
 
 A permissions failure that used to be logged at ``debug`` (effectively
 invisible) is now a ``warning`` in both helpers below, per SEC-09.
+
+The final ``os.replace`` itself gets a short Windows-only retry (see
+``_replace_with_retries``): unlike POSIX ``rename``, Windows' replace can
+transiently fail with ``PermissionError`` (``WinError 5``) when the
+destination is momentarily held open by another process -- exactly the
+"two just-started daemon instances racing to touch the same config file"
+scenario this module exists to make safe, plus routine AV/indexer scans of
+a freshly-created file. ``tests/platform/test_atomic_write_concurrency.py``
+exercises this with two genuinely separate OS processes.
 """
 from __future__ import annotations
 
@@ -33,6 +42,7 @@ import logging
 import os
 import secrets
 import stat
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -40,6 +50,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DIR_MODE = 0o700
 DEFAULT_FILE_MODE = 0o600
+
+# Windows-only: number of times to retry a transient PermissionError on the
+# final os.replace(), and the base delay (doubled each attempt) between
+# retries. POSIX rename has no equivalent failure mode, so these are unused
+# there -- see _replace_with_retries.
+_REPLACE_RETRY_ATTEMPTS = 5
+_REPLACE_RETRY_BASE_DELAY_SECONDS = 0.02
 
 
 def secure_mkdir(path: Path | str, mode: int = DEFAULT_DIR_MODE) -> Path:
@@ -94,13 +111,38 @@ def atomic_write_bytes(path: Path | str, data: bytes, *, mode: int = DEFAULT_FIL
             os.chmod(tmp_path, mode)
         except OSError as exc:  # pragma: no cover -- best effort on non-POSIX
             logger.warning("Could not set permissions %04o on %s: %s", mode, path, exc)
-        os.replace(tmp_path, path)
+        _replace_with_retries(tmp_path, path)
     except BaseException:
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
             pass
         raise
+
+
+def _replace_with_retries(tmp_path: Path, path: Path) -> None:
+    """``os.replace(tmp_path, path)``, with a short retry-with-backoff on
+    Windows if it raises ``PermissionError`` (``WinError 5``).
+
+    POSIX ``rename(2)`` is atomic and simply succeeds regardless of who
+    else has ``path`` open. Windows' replace is implemented differently
+    (roughly ``MoveFileEx`` with ``MOVEFILE_REPLACE_EXISTING``) and can
+    transiently fail with access-denied if another process or thread has
+    ``path`` open without ``FILE_SHARE_DELETE`` at that exact instant -- a
+    real, if narrow, window that a concurrent reader or a second writer
+    racing the same destination can hit, and that AV/indexer scanning of a
+    just-created file can trigger too. Retrying briefly resolves it without
+    changing behavior on every other platform (one attempt, no sleep).
+    """
+    attempts = _REPLACE_RETRY_ATTEMPTS if os.name == "nt" else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            os.replace(tmp_path, path)
+            return
+        except PermissionError:
+            if attempt == attempts:
+                raise
+            time.sleep(_REPLACE_RETRY_BASE_DELAY_SECONDS * attempt)
 
 
 def atomic_write_text(
