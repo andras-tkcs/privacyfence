@@ -1,5 +1,5 @@
 """Deferred-approval registry: the domain object P3 adds on top of gate.py's
-existing decision loop (docs/https-connector-refactor-plan.md §5-§6).
+existing decision loop.
 
 Principal dimension (P9, not P6/P7/P8): ``approval_ui.py``'s own module
 docstring already promised this -- "``WebApprovalUI`` stays a true
@@ -26,9 +26,9 @@ current_principal()").
 The coalescing/ledger key also gained a principal dimension for the same
 reason web/mcp_dispatch.py's retry-dedupe cache did at P7: ``(connector,
 tool, canonical(args))`` alone collides across two principals who happen to
-call the same tool with the same arguments, which P7's own fix note (see
-docs/https-connector-refactor-plan.md's P7 section) already named as
-exactly this codebase's recurring failure mode once a second principal
+call the same tool with the same arguments, which P7's own fix note
+already named as exactly this codebase's recurring failure mode once a
+second principal
 becomes real. ``_by_key`` is keyed on ``(principal_id, dedupe_key)`` here
 for the same reason.
 
@@ -93,15 +93,14 @@ from .principal import current_principal
 
 logger = logging.getLogger(__name__)
 
-# Defaults per D3 (docs/https-connector-refactor-plan.md §15) -- "what P3's
+# Defaults per D3 -- "what P3's
 # beta measures against", all overridable by daemon_main.py from
 # settings.yaml's web.approvals.* keys.
 DEFAULT_HOLD_WINDOW_SECONDS = 30.0
 DEFAULT_PENDING_TTL_SECONDS = 15 * 60.0
 DEFAULT_LEDGER_TTL_SECONDS = 5 * 60.0
 DEFAULT_MAX_PENDING = 50
-# SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): DEFAULT_MAX_
-# PENDING alone is a single shared budget across every principal a
+# DEFAULT_MAX_PENDING alone is a single shared budget across every principal a
 # registry serves. In org mode (one registry, many principals -- see
 # module docstring) that means one noisy or malicious principal issuing a
 # burst of distinct gated calls can fill the entire registry and lock

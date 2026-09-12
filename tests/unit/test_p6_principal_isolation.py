@@ -1,10 +1,9 @@
-"""Cross-cutting P6 exit criterion (docs/https-connector-refactor-plan.md
-§12: "Two principals isolated in tests; local mode byte-identical to
-before"): every per-principal registry de-singletoned in this phase --
-auto_accept, audit_log, pii_detector, privacy_filter, resource_names --
-actually isolates two principals from each other, and the local principal's
-own behavior is unchanged from calling the same accessor with no
-principal_scope() at all.
+"""Cross-cutting exit criterion: "Two principals isolated in tests; local
+mode byte-identical to before" -- every per-principal registry
+de-singletoned along the way -- auto_accept, audit_log, pii_detector,
+privacy_filter, resource_names -- actually isolates two principals from
+each other, and the local principal's own behavior is unchanged from
+calling the same accessor with no principal_scope() at all.
 
 Each module already has its own focused unit tests (test_auto_accept.py,
 test_audit_log.py, test_pii_detector.py, test_privacy_filter.py,

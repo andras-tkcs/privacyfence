@@ -1,6 +1,5 @@
-"""Org-mode browser sessions (P7, docs/https-connector-refactor-plan.md
-§9.4: "Session cookie: Secure, HttpOnly, SameSite=Strict, short idle
-timeout"). A server-side session store mapping an opaque, unguessable
+"""Org-mode browser sessions (P7): the session cookie is Secure, HttpOnly,
+SameSite=Strict, with a short idle timeout. A server-side session store mapping an opaque, unguessable
 session id to the ``Principal`` that authenticated it via web/routes_org_
 identity.py's ``/login`` -- deliberately not the local-mode ``session_
 auth.py`` model of "the cookie's own value is the one shared secret
@@ -37,12 +36,12 @@ from ..principal import Principal
 
 SESSION_COOKIE = "pf_org_session"
 
-# §9.4's own words: "short idle timeout". 30 minutes -- renewed on every
+# Short idle timeout by design. 30 minutes -- renewed on every
 # authenticated request (see get() below), so an active user is never
 # logged out mid-task; an abandoned tab is.
 DEFAULT_IDLE_TIMEOUT_SECONDS = 30 * 60
 
-# SEC-13 (docs/security-remediation-plan.md, Phase 1 item 1.6): a hard cap
+# SEC-13: a hard cap
 # from creation, regardless of activity -- the sliding idle timeout above
 # is not enough on its own, since a session an attacker (or a script) keeps
 # "active" by polling never idles out. Same figure and rationale as

@@ -1,7 +1,7 @@
 """A minimal, real OIDC identity provider double, listening on a real
 loopback socket -- the "mocked IdP boundary" tests/integration/
-test_org_ubuntu_release_smoke.py (TST-16, docs/security-remediation-plan.md
-Phase 3 item 3.11) drives the daemon-under-test against.
+test_org_ubuntu_release_smoke.py (TST-16) drives the daemon-under-test
+against.
 
 Deliberately a real HTTP server, not a monkeypatch of ``requests.get``/
 ``requests.post`` the way tests/unit/test_org_identity.py and

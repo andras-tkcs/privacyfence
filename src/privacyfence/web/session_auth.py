@@ -1,12 +1,12 @@
 """Shared local-mode session/CSRF/bootstrap helpers for every route in the
-combined web app (docs/https-connector-refactor-plan.md §16.3: "/approvals
-and /settings are one application: one header, one nav, one palette, one
-session, links both ways") -- factored out of web/routes_approvals.py,
+combined web app -- "/approvals and /settings are one application: one
+header, one nav, one palette, one session, links both ways" -- factored
+out of web/routes_approvals.py,
 which owned this logic alone before web/routes_settings.py needed the exact
 same posture on a second set of routes sharing the same session and the
 same ``pf_session`` cookie.
 
-**SEC-06 (docs/security-remediation-plan.md, Phase 1 item 1.2).** Through
+**SEC-06.** Through
 v4.0.0a12 this module's whole model was "the cookie's own value is the one
 shared secret everyone in the install has" -- the persistent, never-
 rotated ``web_token`` itself, carried in the ``?token=`` query string the
@@ -218,7 +218,7 @@ def unauthorized_html(request: Request) -> Response:
         f"{origin}/api/bootstrap</pre>"
         "</body></html>",
         status_code=401,
-        # SEC-18 (docs/security-remediation-plan.md, Phase 3 item 3.5): this
+        # SEC-18: this
         # page carries a live bearer-secret path (the exact curl command a
         # reader is meant to copy-paste) -- no-store even on the 401 branch,
         # not just the authenticated pages it stands in for.

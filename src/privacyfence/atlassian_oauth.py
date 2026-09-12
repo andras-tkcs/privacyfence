@@ -84,10 +84,9 @@ def build_authorize_url(
     client_id: str, redirect_uri: str, state: str, code_challenge: str, scopes: list[str] | None = None,
 ) -> str:
     """Atlassian's OAuth 2.0 (3LO) authorize URL -- factored out of
-    ``authorize_interactive`` (P8, docs/https-connector-refactor-plan.md
-    §9.3) so ``web/routes_connect.py``'s org-mode server-redirect flow can
-    build the same URL without going through ``oauth_loopback.
-    run_browser_oauth``'s local listener."""
+    ``authorize_interactive`` so ``web/routes_connect.py``'s org-mode
+    server-redirect flow can build the same URL without going through
+    ``oauth_loopback.run_browser_oauth``'s local listener."""
     scope_str = " ".join(scopes or DEFAULT_SCOPES)
     params = {
         "audience": "api.atlassian.com",

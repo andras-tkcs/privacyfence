@@ -1,5 +1,5 @@
-"""Unit tests for privacyfence.audit_forwarding -- SEC-23's centralized
-audit-log forwarding (docs/security-remediation-plan.md, Phase 3 item 3.6)."""
+"""Unit tests for privacyfence.audit_forwarding -- centralized
+audit-log forwarding."""
 from __future__ import annotations
 
 import json
@@ -203,7 +203,7 @@ class TestBuildSender:
 class TestAuditForwarder:
     @pytest.mark.timeout(5)  # TST-11: bounded by its own internal Event.wait(timeout=2.0), not the 30s suite default
     def test_submit_delivers_payload_to_sender(self):
-        # TST-11 (docs/security-remediation-plan.md Phase 3.12): an Event
+        # TST-11: an Event
         # the worker thread itself sets, waited on with a generous timeout,
         # rather than polling calls in a fixed-interval loop for up to 1s --
         # this resolves the instant the sender actually runs instead of on

@@ -7,8 +7,7 @@
  * (protocol.ts) written by web/server.py's WebServer.start(). The probe
  * itself stays a plain TCP connect, not an HTTP request -- the shim has no
  * HTTP/MCP protocol knowledge of its own before it hands off to
- * StreamableHTTPClientTransport in index.ts (D11,
- * docs/https-connector-refactor-plan.md §12).
+ * StreamableHTTPClientTransport in index.ts.
  */
 
 import { spawn } from "node:child_process";

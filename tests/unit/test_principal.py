@@ -1,6 +1,5 @@
 """Tests for principal.py: Principal identity, principal_scope, and the
-PrincipalRegistry de-singleton-ing helper (P6, docs/
-https-connector-refactor-plan.md §9.1-§9.2).
+PrincipalRegistry de-singleton-ing helper.
 """
 from __future__ import annotations
 

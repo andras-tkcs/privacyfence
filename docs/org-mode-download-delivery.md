@@ -10,9 +10,11 @@ The relevant defaults are:
 
 - `inline_max_bytes = 8_000_000`
 - `link_ttl_seconds = 300`
-- disk staging enabled
+- `allow_disk_staging = true`
 
 If a payload is at or below the configured inline limit, PrivacyFence can return it inline. Larger payloads are staged and returned as a temporary authenticated download URL. Setting `inline_max_bytes` to `0` forces the staging path.
+
+Setting `allow_disk_staging` to `false` disables the staging path itself: a payload too large to return inline is refused outright rather than ever being written to disk.
 
 Configuration validation requires a non-negative inline limit and a positive link TTL.
 
@@ -26,7 +28,10 @@ The staging path:
 - assigns an opaque, short-lived token;
 - serves the content from `GET /downloads/{token}`;
 - expires staged content according to the configured TTL;
-- keeps download authorization separate from the connector's original provider credential.
+- keeps download authorization separate from the connector's original provider credential;
+- returns an identical 404 for a missing, expired, or wrong-principal token, so the response never discloses which case applies.
+
+At-rest encryption protects a staged file against recovery from disk, a backup, or forensic imaging of the storage medium. It does not protect against compromise of the live daemon process itself: content necessarily exists in plaintext in memory for the brief window between decrypting it and streaming it to the requester.
 
 ## Local mode
 

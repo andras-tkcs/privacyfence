@@ -147,15 +147,13 @@ class StepUpConfig:
         )
 
 
-# docs/org-mode-download-delivery-plan.md's Phase 1 default -- deliberately
-# *larger* than connectors/drive.py's/connectors/gmail.py's/connectors/
-# confluence.py's own pre-approval prefetch caps (5MB), reflecting that in
-# org mode, inline delivery is the primary transport for
-# drive_download_file/gmail_download_attachment/confluence_download_
-# attachment, not a small-file convenience -- see that plan's "What these
-# tools are actually for" section. The real ceiling here is practical MCP
-# Streamable HTTP response size and base64's ~33% inflation, not a privacy
-# argument for staying small.
+# Deliberately *larger* than connectors/drive.py's/connectors/gmail.py's/
+# connectors/confluence.py's own pre-approval prefetch caps (5MB),
+# reflecting that in org mode, inline delivery is the primary transport
+# for drive_download_file/gmail_download_attachment/confluence_download_
+# attachment, not a small-file convenience. The real ceiling here is
+# practical MCP Streamable HTTP response size and base64's ~33%
+# inflation, not a privacy argument for staying small.
 DEFAULT_INLINE_MAX_BYTES = 8_000_000
 
 # 5 minutes -- see download_staging.DEFAULT_TTL_SECONDS's own docstring for
@@ -232,7 +230,7 @@ DEFAULT_SYSLOG_PORT = 6514
 
 @dataclass(frozen=True)
 class AuditForwardingConfig:
-    """SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6): org
+    """SEC-23: org
     mode's centralized audit-log forwarding destination. Lives in
     ``org_config.json``'s ``audit_forwarding`` section, org-mode-only like
     ``ServerConfig``/``StepUpConfig``/``DownloadDeliveryConfig`` above --
@@ -306,7 +304,7 @@ class AuditForwardingConfig:
 
 @dataclass(frozen=True)
 class AuthzPolicyConfig:
-    """SEC-22 (docs/security-remediation-plan.md, Phase 3 item 3.7): an
+    """SEC-22: an
     optional PrivacyFence-level allowlist layered *on top of* the IdP's own
     authentication, not a replacement for it -- the IdP has already decided
     who this human is by the time anything here runs (org_identity.py's

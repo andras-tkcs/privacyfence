@@ -130,8 +130,7 @@ class TestResolvePath:
         assert daemon_main._resolve_path("credentials/x.json") == "/tmp/pf-root/credentials/x.json"
 
     def test_relative_path_for_a_non_local_principal_uses_its_own_storage_root(self, monkeypatch, tmp_path):
-        # P6, docs/https-connector-refactor-plan.md §9.2 -- the branch
-        # connector_registry.py's ConnectorRegistry.get() relies on;
+        # The branch connector_registry.py's ConnectorRegistry.get() relies on;
         # PROJECT_ROOT (the local-principal path above) must stay
         # untouched by this.
         from privacyfence import paths
@@ -1037,8 +1036,7 @@ class TestSetupLogging:
         assert (tmp_path / "logs" / "privacyfence.log").exists()
 
     def test_a_secret_logged_anywhere_is_redacted_in_the_log_file(self, tmp_path):
-        # SEC-10 (docs/security-remediation-plan.md Phase 1.7): the root
-        # logger's formatter is safe_errors.SecretRedactingFormatter, so
+        # The root logger's formatter is safe_errors.SecretRedactingFormatter, so
         # this holds for every logger in the process, not just routes_mcp.py's
         # own tool-call-failure log line.
         log_file = tmp_path / "privacyfence.log"
@@ -1182,8 +1180,7 @@ class TestMaybeStartWebServer:
         assert registry.max_pending_per_principal == 2
 
     def test_max_pending_per_principal_defaults_when_not_configured(self, monkeypatch, tmp_path):
-        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8): an
-        # install that never sets this key still gets the lower per-
+        # An install that never sets this key still gets the lower per-
         # principal cap, not an unbounded one.
         from privacyfence.approvals import DEFAULT_MAX_PENDING_PER_PRINCIPAL
         from privacyfence.web_approval_ui import get_web_approval_ui
@@ -1390,8 +1387,7 @@ class TestMaybeStartWebServerOrgMode:
         assert registry.approval_url("abc") == f"{result.base_url}/approvals/abc"
 
     def test_org_mode_registry_gets_the_per_principal_approval_cap(self, monkeypatch, tmp_path):
-        # SEC-15 (docs/security-remediation-plan.md, Phase 1 item 1.8):
-        # this is the mode the cap actually matters in -- one registry
+        # This is the mode the cap actually matters in -- one registry
         # shared by every principal -- so it must be wired through org
         # mode's own registry construction, not just local mode's.
         from privacyfence.web_approval_ui import get_web_approval_ui
@@ -1439,9 +1435,9 @@ class TestMaybeStartWebServerOrgMode:
 
 
 # ---------------------------------------------------------------------------- #
-# _start_org_web_server -- per-principal ConnectorRegistry wiring (P8, docs/
-# https-connector-refactor-plan.md §9.3). connector_registry.py's own
-# ConnectorRegistry existed since P6 but was never plugged into org mode's
+# _start_org_web_server -- per-principal ConnectorRegistry wiring.
+# connector_registry.py's own ConnectorRegistry existed already but was never
+# plugged into org mode's
 # actual /mcp dispatch until now -- see that module's own docstring.
 # ---------------------------------------------------------------------------- #
 
@@ -2250,8 +2246,7 @@ class TestRunApp:
         # rule_suggestion_priority (every matching auto-accept rule now gets
         # its own "Always allow" button, so there's nothing left to
         # prioritize or exclude). The dedicated "ignoring this key" log
-        # notice that once called this out by name was itself removed at
-        # docs/security-remediation-plan.md Phase 3 PR3.9 (ORP-04) -- a
+        # notice that once called this out by name was itself removed -- a
         # pre-existing rule_suggestion_priority block in a user's
         # settings.yaml must still load without error, now via the same
         # silent "unknown key is inert" handling as any other retired key,

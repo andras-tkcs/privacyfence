@@ -145,8 +145,7 @@ jobs:
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: bash scripts/build_dmg.sh
 
-      # TST-15 (docs/security-remediation-plan.md, Phase 3 item 3.10): the one
-      # place the actual packaged artifact -- not a source checkout, not a dev
+      # The one place the actual packaged artifact -- not a source checkout, not a dev
       # install -- gets exercised at all. Mounts the DMG just built above,
       # runs the real frozen daemon binary from it, connects the real .mcpb
       # shim, and drives one real Allow/Deny round trip through a real
@@ -446,10 +445,9 @@ jobs:
         # .deb) on top -- see that step's comment.
         run: pip install -e ".[dev,test]" pyinstaller
 
-      # TST-16 (docs/security-remediation-plan.md Phase 3 item 3.11): the
-      # "release-workflow smoke test for the Ubuntu org-mode service" the
-      # plan's own wording asks for -- strict startup, reverse-proxy/Host
-      # handling, route mounting, per-principal session creation, MCP OAuth
+      # The release-workflow smoke test for the Ubuntu org-mode service --
+      # strict startup, reverse-proxy/Host handling, route mounting,
+      # per-principal session creation, MCP OAuth
       # discovery, clean shutdown/restart, against a synthetic org config
       # and a mocked IdP boundary (see that test module's own docstring).
       # Placed right after dependencies are installed and ahead of the .deb
@@ -550,8 +548,7 @@ jobs:
         with:
           prerelease: true
 
-  # SEC-19 (docs/security-remediation-plan.md, Phase 2.4): one CycloneDX SBOM
-  # per ecosystem this repo ships code from. Independent of the `build`,
+  # One CycloneDX SBOM per ecosystem this repo ships code from. Independent of the `build`,
   # `build-windows`, and `build-deb` jobs above -- doesn't need the macOS
   # runner, code signing, or notarization, just the same tagged source tree
   # -- so it runs in parallel rather than gating on (or blocking) any of

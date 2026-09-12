@@ -820,7 +820,7 @@ class TestAcceptAllPersistsARealRuleForWrites:
     # Always allow, serialized deterministically by _popup_lock so the
     # second was guaranteed to see the first's freshly-created rule via the
     # in-lock re-check rather than showing its own dialog. P3 removes
-    # _popup_lock entirely (docs/https-connector-refactor-plan.md §6) and
+    # _popup_lock entirely and
     # with it the guaranteed ordering this test depended on -- two
     # concurrent calls for genuinely different args now race independently,
     # with no serialization point left to assert a fixed outcome against.

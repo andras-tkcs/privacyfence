@@ -325,7 +325,7 @@ def wrap(
     docs/approval-list-ui-ux.md §4.3) -- see _STREAM_JS's own
     notificationBody() for exactly what each level is allowed to say.
 
-    ``nonce`` (SEC-08, docs/security-remediation-plan.md Phase 3.1): the
+    ``nonce``: the
     current response's CSP nonce (``request.state.csp_nonce``, set by
     web/server.py's ``_SecurityHeadersMiddleware``) -- this document is
     rendered fresh on every request, so unlike approval_window_html.py's

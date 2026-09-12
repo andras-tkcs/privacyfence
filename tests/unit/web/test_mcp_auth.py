@@ -1,6 +1,5 @@
-"""Unit tests for web/mcp_auth.py's principal_from_access_token (P6/P7,
-docs/https-connector-refactor-plan.md §9.1) -- see
-test_routes_mcp_principal.py for the wire-level proof that routes_mcp.py
+"""Unit tests for web/mcp_auth.py's principal_from_access_token (P6/P7)
+-- see test_routes_mcp_principal.py for the wire-level proof that routes_mcp.py
 actually calls this per request, and web/test_oauth_provider.py for the
 org-mode ``OrgOAuthProvider`` tokens this function is actually built to
 read (``subject``/``claims``), end to end.

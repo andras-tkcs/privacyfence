@@ -1,14 +1,14 @@
-"""Settings on the web (docs/https-connector-refactor-plan.md §16, W3/W4):
+"""Settings on the web (W3/W4):
 ``GET /settings`` serves settings_window_html.build_html(), wrapped in
 web_shell.wrap() so it reads as the same application as ``/approvals``;
 ``POST /api/settings/{action}`` is the mechanical two-thirds of
 SettingsController's ~30 actions, dispatched through an **explicit
-allowlist** (§16.2.5) rather than the native dispatcher's bare
+allowlist** rather than the native dispatcher's bare
 ``getattr(controller, action)`` -- see _ALLOWED_ACTIONS below for why a
 frozenset here, not a decorator on the controller.
 
 Everything that isn't "POST an action, get a fresh snapshot back" gets its
-own route instead of being force-fit into that shape (§16.2.4): the org
+own route instead of being force-fit into that shape: the org
 config bundle is a multipart upload, not a JSON action (there is no
 osascript "choose file" dialog to trigger from an HTTP request -- see
 settings_controller.install_org_config_bytes's own docstring); the audit
@@ -240,7 +240,7 @@ def build_routes(
     async def settings_page(request: Request) -> Response:
         if not _authenticated(request):
             return _unauthorized_response(request)
-        # SEC-08 (docs/security-remediation-plan.md Phase 3.1): one nonce
+        # SEC-08: one nonce
         # for the whole document -- web/server.py's _SecurityHeadersMiddleware
         # already put one in request.state for this exact response, and
         # every <style>/<script> tag below (settings_window_html.build_html's

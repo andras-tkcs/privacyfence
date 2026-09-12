@@ -340,10 +340,10 @@ class TestGetChannelHistory:
         assert result == {"messages": [_message_to_dict(msg)], "has_more": False}
 
     async def test_has_more_is_surfaced_to_claude_with_a_note(self, gated_call_spy):
-        # docs/slack-performance-review.md's item #4: Slack's own has_more
-        # signal (not a len(messages) vs. limit comparison -- a small
-        # channel legitimately returns fewer messages than asked for) must
-        # reach what Claude actually gets back, not just the human's popup.
+        # Slack's own has_more signal (not a len(messages) vs. limit
+        # comparison -- a small channel legitimately returns fewer messages
+        # than asked for) must reach what Claude actually gets back, not
+        # just the human's popup.
         connector, client = make_connector()
         client.get_channel_history.return_value = ([make_message()], True)
 
@@ -774,7 +774,7 @@ class TestSendMessage:
     async def test_thread_reply_preview_shows_the_root_message(self, gated_call_spy):
         # A single get_message lookup (one conversations.history call for
         # just this one message), not a full get_thread_replies fetch of
-        # the whole thread -- see docs/slack-performance-review.md's bug #3.
+        # the whole thread.
         connector, client = make_connector()
         client.send_message.return_value = {"ts": "123.456", "channel_id": "C123"}
         client.get_message.return_value = make_message(text="Kicking off the thread")

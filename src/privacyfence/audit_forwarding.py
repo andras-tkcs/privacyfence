@@ -1,6 +1,5 @@
-"""SEC-23 (docs/security-remediation-plan.md, Phase 3 item 3.6): forward each
-audit-log entry to a centralized syslog server or a generic HTTP/webhook log
-collector, for org mode.
+"""Forward each audit-log entry to a centralized syslog server or a generic
+HTTP/webhook log collector, for org mode.
 
 Before this, org mode's audit log (docs/security-and-compliance.md's own,
 formerly accurate, description) was "a local file on that server, not

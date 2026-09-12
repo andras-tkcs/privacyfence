@@ -11,14 +11,13 @@ permissions:
 
 jobs:
   test:
-    # P10 (docs/https-connector-refactor-plan.md §12, D6) deleted the last
+    # A prior refactor deleted the last
     # AppKit-tainted code in this repo -- the native menu bar/approval
     # dialogs/settings window -- so nothing here depends on real AppKit/
     # PyObjC behavior any more, and the whole suite is platform-independent.
     # rumps/pyobjc-framework-* aren't installed here or anywhere else --
     # the macos-native extra that used to declare them was removed outright
-    # (docs/security-remediation-plan.md Phase 3 PR3.9, ORP-02; the exact
-    # package set is preserved in docs/adr/0001-remove-macos-native-extra.md).
+    # (the exact package set is preserved in docs/adr/0001-remove-macos-native-extra.md).
     # Runs on ubuntu-latest for the same reason any other
     # platform-independent Python project would: it's the cheaper, faster
     # runner, and there's no longer a platform split to test across two
@@ -29,9 +28,8 @@ jobs:
     # This is the full suite (Python tests + the Node shim's own tests,
     # typecheck and build) and runs on 3.13 only -- the version
     # pyproject.toml's [project.optional-dependencies].dev/build tooling
-    # and the packaging workflows (build.yml) target. TST-05
-    # (docs/security-remediation-plan.md, phase 2.2) covers the other
-    # supported versions (3.11, the `requires-python` floor, and 3.12) via
+    # and the packaging workflows (build.yml) target. The other
+    # supported versions (3.11, the `requires-python` floor, and 3.12) are covered via
     # the `test-python-compat` job below with a reduced, Node-free suite --
     # running the Node/shim steps again per Python version would be pure
     # cost with no signal, since the shim is a separate Node runtime not
@@ -74,8 +72,7 @@ jobs:
         working-directory: mcpb/shim
 
       # mcpb/shim/'s own suite (daemon discovery/launch, the stdio<->
-      # Streamable HTTP proxy — see docs/https-connector-refactor-plan.md
-      # §12, D11) runs against mcpb/shim/src/*.ts directly via tsx. It's the
+      # Streamable HTTP proxy) runs against mcpb/shim/src/*.ts directly via tsx. It's the
       # only Node suite left in this repo since P5 retired the bridge.
       - name: Run shim test suite
         run: npm test
@@ -98,8 +95,7 @@ jobs:
       # failing test — no extra flags needed to enforce a 100% pass rate.
       # pytest-timeout (configured in pyproject.toml) also fails any test
       # that hangs, so a stuck test can't stall the job indefinitely.
-      # --cov-branch (TST-03, docs/security-remediation-plan.md Phase 2.1)
-      # catches the class of gap line coverage alone misses -- a branch
+      # --cov-branch catches the class of gap line coverage alone misses -- a branch
       # that's reached but whose other arm never runs. The json/html reports
       # feed the coverage-floor check and the uploaded artifact below; this
       # step itself still only gates on the pass rate, not coverage.
@@ -159,14 +155,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # TST-05 (docs/security-remediation-plan.md, phase 2.2): prove the
+  # Prove the
   # package actually works on every Python version pyproject.toml's
   # `requires-python = ">=3.11"` claims to support, not just the 3.13 the
   # `test` job above happens to pin. Deliberately independent of `test`
   # (no `needs:`) so this runs in parallel and a failure here doesn't hide
   # behind/wait on the full job.
   #
-  # This is the "reduced core suite" the plan allows for when CI cost
+  # This is a reduced core suite for when CI cost
   # matters: the Python test suite only, no Node/npm setup and no shim
   # build. tests/integration/test_shim_mcp_contract.py is explicitly
   # excluded below rather than left to run -- its built_shim_entry fixture
@@ -308,8 +304,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # docs/automated-test-strategy-plan.md Phase 8 item 2 (TST-16, docs/
-  # security-remediation-plan.md Phase 3 item 3.11): tests/integration/
+  # docs/automated-test-strategy-plan.md Phase 8 item 2: tests/integration/
   # test_org_ubuntu_release_smoke.py gates its whole module behind
   # PRIVACYFENCE_RUN_RELEASE_SMOKE_TESTS -- unset everywhere else in this
   # file, so the `test` job's own full-suite run above always skips it
@@ -352,8 +347,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # docs/security-remediation-plan.md, Phase 2 item 2.3 (TST-07). Separate
-  # job (not a step tacked onto `test` above) so a lint failure is reported
+  # A separate job (not a step tacked onto `test` above) so a lint failure is reported
   # on its own line in the checks list, and so it doesn't need the Node/npm
   # setup or shim build the `test` job carries for pytest's sake.
   static-analysis:

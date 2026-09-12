@@ -8,8 +8,7 @@ shared secret -- the same "possession of this file is the authority"
 posture ``web_token`` has for the approval surface (see server.py's module
 docstring), and the same one ``~/.privacyfence/ipc_token`` had for the
 bridge before P5 retired both. Not real OAuth 2.1 -- that's org mode
-(D5 in docs/https-connector-refactor-plan.md §15, landed at P7 as
-``OrgOAuthProvider``, which satisfies the exact same ``TokenVerifier``
+(landed at P7 as ``OrgOAuthProvider``, which satisfies the exact same ``TokenVerifier``
 protocol via its own ``verify_token``). Using the SDK's own
 ``TokenVerifier``/``BearerAuthBackend``/``RequireAuthMiddleware`` here
 meant P7 only had to swap this one class for a real verifier;
@@ -68,9 +67,8 @@ class StaticTokenVerifier(TokenVerifier):
 
 
 def principal_from_access_token(token: AccessToken | None) -> Principal:
-    """The ``/mcp`` endpoint's principal_scope() entry point (P6, docs/
-    https-connector-refactor-plan.md §9.1: "entered once per HTTP request,
-    in exactly one place per surface") -- routes_mcp.py calls this once per
+    """The ``/mcp`` endpoint's principal_scope() entry point (P6: "entered
+    once per HTTP request, in exactly one place per surface") -- routes_mcp.py calls this once per
     tool call, wrapping dispatch in ``principal_scope(...)`` around it.
 
     Local mode: ``StaticTokenVerifier`` above only ever mints

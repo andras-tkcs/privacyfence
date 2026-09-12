@@ -1,6 +1,5 @@
 """Tests for download_staging.py: the encrypted-at-rest staging store
-behind org-mode download delivery (docs/org-mode-download-delivery-plan.md,
-Phase 1)."""
+behind org-mode download delivery."""
 from __future__ import annotations
 
 import pytest
