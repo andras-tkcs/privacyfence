@@ -27,9 +27,11 @@ The staging path:
 - encrypts staged content at rest;
 - assigns an opaque, short-lived token;
 - serves the content from `GET /downloads/{token}`;
-- expires staged content according to the configured TTL;
+- enforces the configured TTL: a token past its expiry is never claimable, whatever else has happened;
 - keeps download authorization separate from the connector's original provider credential;
 - returns an identical 404 for a missing, expired, or wrong-principal token, so the response never discloses which case applies.
+
+Expiry itself is enforced opportunistically, not by a background reaper: `DownloadStagingStore` sweeps expired entries (removing both the registry entry and the on-disk ciphertext) only at the top of `stage()` and `claim()`, mirroring the same pattern `PendingApprovalRegistry` already uses for approvals. Claim-time authorization is unaffected — the sweep runs before every claim check, so an expired token is always rejected. What can lag is disk cleanup: a staged file nobody ever claims, on a principal whose staging store sees no further activity, keeps its encrypted ciphertext on disk until *something* stages or claims again for that principal (or the daemon restarts).
 
 At-rest encryption protects a staged file against recovery from disk, a backup, or forensic imaging of the storage medium. It does not protect against compromise of the live daemon process itself: content necessarily exists in plaintext in memory for the brief window between decrypting it and streaming it to the requester.
 
