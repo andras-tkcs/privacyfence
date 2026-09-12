@@ -276,8 +276,8 @@ def _real_home_state(request):
     reason="systemd-xdg-autostart-generator not present -- needs systemd >= 247 on a desktop-capable Ubuntu/Debian",
 )
 @pytest.mark.skipif(
-    shutil.which("loginctl") is None or shutil.which("systemctl") is None,
-    reason="loginctl/systemctl not on PATH",
+    shutil.which("loginctl") is None or shutil.which("systemctl") is None or shutil.which("systemd-run") is None,
+    reason="loginctl/systemctl/systemd-run not on PATH",
 )
 async def test_deb_autostart_activates_daemon_via_real_login_session(_real_home_state):
     home = _real_home_state
@@ -353,7 +353,29 @@ async def test_deb_autostart_activates_daemon_via_real_login_session(_real_home_
 
     # The actual "login" moment -- the same target a real GNOME/KDE/Sway
     # session starts once its compositor/session manager comes up.
-    systemctl_user("start", "xdg-desktop-autostart.target")
+    #
+    # xdg-desktop-autostart.target ships from systemd itself with
+    # RefuseManualStart=yes (see units/user/xdg-desktop-autostart.target in
+    # the systemd source): a plain `systemctl --user start` against it is
+    # refused outright -- exit 4 (EXIT_NOPERMISSION) -- on *any* real
+    # systemd, not just in CI. That's by design: it exists to be pulled in
+    # as a *dependency* of a real desktop session's own session-tracking
+    # unit, never started directly -- and RefuseManualStart explicitly still
+    # permits dependency-triggered starts. A transient oneshot unit that
+    # simply Wants= it, started via systemd-run, is exactly that dependency
+    # trigger -- the same mechanism a real compositor/session-manager unit's
+    # own static Wants= achieves, just assembled on the fly here instead of
+    # shipped on disk.
+    subprocess.run(
+        [
+            "systemd-run", "--user", "--collect", "--quiet",
+            "--unit=privacyfence-test-session-trigger",
+            "--property=Type=oneshot",
+            "--property=Wants=xdg-desktop-autostart.target",
+            "/bin/true",
+        ],
+        env=user_env, check=True, capture_output=True, text=True, timeout=15,
+    )
 
     _wait_for_unit_property(systemctl_user, unit, "ActiveState", "active", timeout=20)
     main_pid = systemctl_user("show", unit, "-p", "MainPID", "--value").stdout.strip()
