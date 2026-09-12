@@ -656,6 +656,15 @@ class TestApprovalListBehavior:
             web_ui.resolve(card_a.id, "deny")
             thread_a.join(timeout=5)
             page.wait_for_selector(f'[data-approval-id="{card_a.id}"]', state="detached", timeout=5000)
+            # state_stream.py's poll-based approvals stream can land two
+            # snapshots close enough together that a transient
+            # card_a-detached-but-card_b-not-yet-repainted render (or even
+            # a momentary empty-list render, between two poll ticks) is on
+            # screen right after the line above -- wait card_b's row back
+            # in explicitly, the same way card_a's own detachment is
+            # already waited out, instead of asserting against whatever
+            # snapshot happens to be current.
+            page.wait_for_selector(f'[data-approval-id="{card_b.id}"]', timeout=5000)
             assert page.locator(f'[data-approval-id="{card_b.id}"]').count() == 1
 
             web_ui.resolve(card_b.id, "deny")
