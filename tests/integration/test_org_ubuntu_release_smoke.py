@@ -170,7 +170,14 @@ from mcp.client.streamable_http import streamable_http_client  # noqa: E402
 
 from tests.integration.mock_idp import MockIdp  # noqa: E402
 
-pytestmark = pytest.mark.timeout(300)
+# `system`, not `packaged`: this module drives the installable `privacyfence`
+# package directly, via a `--target` install (see this module's own "Why a
+# --target install, not the .deb" docstring section), not a built artifact --
+# same taxonomy tier as tests/system/test_local_mode_system.py's own daemon/
+# MCP/approval/audit scenario, just against a real Ubuntu org-mode service
+# instead of local mode. Also what docs/automated-test-strategy-plan.md
+# Phase 10's own CI-diagnostics capture (tests/diagnostics.py) keys off of.
+pytestmark = [pytest.mark.system, pytest.mark.timeout(300)]
 
 ISSUER_HOST = "pf.example.internal"
 ISSUER_URL = f"https://{ISSUER_HOST}"

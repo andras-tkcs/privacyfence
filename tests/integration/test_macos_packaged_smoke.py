@@ -95,7 +95,6 @@ import shutil
 import socket
 import subprocess
 import tempfile
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -226,24 +225,31 @@ class RunningDaemon:
         return f"{self.base_url}/mcp"
 
 
-def _wait_for_file(path: Path, proc: subprocess.Popen, output: list[str], timeout: float = 30.0) -> str:
+def _wait_for_file(path: Path, proc: subprocess.Popen, log_path: Path, timeout: float = 30.0) -> str:
     """Polls for a file the daemon writes early in its own startup (the web/
     MCP token files, ``load_or_create_token()``/``web/mcp_auth.py``) --
     these are written before the server starts accepting connections, but
     poll rather than assume either is already flushed to disk the instant
-    the socket answers."""
+    the socket answers. ``log_path`` (docs/automated-test-strategy-plan.md
+    Phase 10) is the daemon's own redirected stdout/stderr, embedded in
+    either failure message below -- same shape
+    test_windows_packaged_smoke.py's identically-named helper already
+    uses, and (unlike the in-memory buffer this replaced) still readable
+    after the fact from wherever ``log_path`` lives under this test's own
+    ``tmp_path``, not just from the exception message itself."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise AssertionError(
-                f"daemon exited early (code {proc.poll()}) instead of starting -- log:\n" + "".join(output)
+                f"daemon exited early (code {proc.poll()}) instead of starting -- log:\n"
+                f"{log_path.read_text(errors='replace')}"
             )
         if path.exists():
             content = path.read_text(encoding="utf-8").strip()
             if content:
                 return content
         time.sleep(0.1)
-    raise AssertionError(f"{path} never appeared within {timeout}s -- log:\n" + "".join(output))
+    raise AssertionError(f"{path} never appeared within {timeout}s -- log:\n{log_path.read_text(errors='replace')}")
 
 
 @contextlib.contextmanager
@@ -300,18 +306,22 @@ def _running_daemon_at(exe: Path, home: Path):
     base_url = f"http://localhost:{port}"  # WebServer.base_url's own construction, host defaults to "localhost"
 
     env = {**os.environ, "HOME": str(home)}
-    proc = subprocess.Popen(
-        [str(exe)], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    )
-    output: list[str] = []
-    threading.Thread(target=lambda: output.extend(iter(proc.stdout.readline, "")), daemon=True).start()
+    # Redirected straight to a file under `home` (docs/automated-test-
+    # strategy-plan.md Phase 10), not `subprocess.PIPE` read on a background
+    # thread -- the same daemon.log convention every other packaged/system
+    # module in this repo already uses, which is what lets Phase 10's own
+    # tests/diagnostics.py find and capture it on a failing test without
+    # this module needing any capture code of its own.
+    log_path = home / "daemon.log"
+    log_fh = open(log_path, "wb")
+    proc = subprocess.Popen([str(exe)], env=env, stdout=log_fh, stderr=subprocess.STDOUT)
 
     try:
         _wait_until_connectable("localhost", port)
 
         data_dir = home / ".privacyfence"
-        web_token = _wait_for_file(data_dir / WEB_TOKEN_FILE_NAME, proc, output)
-        mcp_token = _wait_for_file(data_dir / MCP_TOKEN_FILE_NAME, proc, output)
+        web_token = _wait_for_file(data_dir / WEB_TOKEN_FILE_NAME, proc, log_path)
+        mcp_token = _wait_for_file(data_dir / MCP_TOKEN_FILE_NAME, proc, log_path)
 
         resp = httpx.post(
             f"{base_url}/api/bootstrap", headers={"Authorization": f"Bearer {web_token}"}, timeout=10,
@@ -330,21 +340,26 @@ def _running_daemon_at(exe: Path, home: Path):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+        log_fh.close()
 
 
 @pytest.fixture
-def running_packaged_daemon(installed_app):
+def running_packaged_daemon(installed_app, tmp_path):
     """The primary round-trip test's own daemon: ``installed_app``'s exe, a
     fresh scratch ``$HOME`` per test. Thin wrapper around
     ``_running_daemon_at`` -- see that function's own docstring for the
-    actual mechanism."""
+    actual mechanism. ``home`` lives under this test's own ``tmp_path``
+    (docs/automated-test-strategy-plan.md Phase 10), not a bare
+    ``tempfile.mkdtemp()`` this fixture used to manually ``shutil.rmtree()``
+    on the way out -- pytest already owns ``tmp_path``'s own lifecycle
+    (rotated, not deleted immediately), which is what lets a failing test's
+    ``daemon.log`` still be there afterward for tests/diagnostics.py to
+    capture, same as ``test_macos_upgrade_preserves_user_state``'s own
+    ``home`` already does."""
     exe = installed_app / "Contents" / "MacOS" / "PrivacyFenceApp"
-    home = Path(tempfile.mkdtemp(prefix="pf-smoke-home-"))
-    try:
-        with _running_daemon_at(exe, home) as daemon:
-            yield daemon
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
+    home = tmp_path / "home"
+    with _running_daemon_at(exe, home) as daemon:
+        yield daemon
 
 
 @pytest.fixture(scope="module")

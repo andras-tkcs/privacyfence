@@ -72,3 +72,22 @@ jobs:
 
       - name: Run Linux graphical-session/autostart test (Phase 7, P7.2)
         run: pytest tests/integration/test_linux_graphical_session_autostart.py -v
+
+      # docs/automated-test-strategy-plan.md Phase 10: same tests/
+      # diagnostics.py capture as tests.yml/build.yml's own steps -- this
+      # module carries `pytest.mark.packaged`, and its own $HOME (systemd
+      # --user login-equivalent session) lives under each test's own
+      # tmp_path, so the generic per-tmp_path manifest/log capture applies
+      # here unchanged. This workflow's own flaky/scheduled-not-release-
+      # gating posture (see the module-level comment above) is exactly why
+      # this diagnosability matters more here, not less -- a flaky run still
+      # needs to be tellable apart from a real regression without re-running
+      # locally.
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-graphical-session-failure-diagnostics
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 30
