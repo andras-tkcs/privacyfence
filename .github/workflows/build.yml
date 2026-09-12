@@ -231,7 +231,11 @@ jobs:
         run: choco install innosetup --no-progress -y
 
       - name: Install Python dependencies
-        run: pip install -e ".[dev]"
+        # `test` extra (not just `dev`) so the packaged smoke test below --
+        # tests/integration/test_windows_packaged_smoke.py, Phase 6.2 -- has
+        # pytest/pytest-timeout available; `mcp` (the client it needs) is
+        # already a runtime dependency.
+        run: pip install -e ".[dev,test]"
 
       # Same version/channel resolution as the `build` job's identically-
       # named step -- see its comments for why the channel lookup is
@@ -288,6 +292,15 @@ jobs:
         if: always()
         shell: pwsh
         run: Remove-Item -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP\certificate.pfx"
+
+      # docs/automated-test-strategy-plan.md Phase 6 item 6.2: the one place the actual packaged
+      # artifact -- not a source checkout, not a dev install -- gets exercised at all on Windows.
+      # A real silent install (schtasks-registered autostart task included), the real installed
+      # daemon started and driven through a daemon/MCP/approval/audit round trip, then a real
+      # silent uninstall with both package removal and untouched-user-state checked. A failure
+      # here fails this job before the installer reaches R2/GitHub Releases below.
+      - name: Run packaged installer smoke test (Phase 6.2)
+        run: pytest tests/integration/test_windows_packaged_smoke.py -v
 
       - name: Upload installer as artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
