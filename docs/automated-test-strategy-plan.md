@@ -1108,43 +1108,39 @@ originally planned.
    the now-removed `windows-support-plan.md` if that document doesn't already have a home for it.~~ **Done** —
    `tests/integration/test_windows_graphical_session_autostart.py`, closing the now-removed `windows-support-plan.md`
    8.2 (that document already had a home for this item — it just needed converting from manual QA to
-   automated CI). There's no physical sign-in to drive on a GitHub-hosted Windows runner, so this
-   makes two deliberate substitutions rather than one hand-rolled workaround: a throwaway local
-   account stands in for "someone signs in" (this test mints and knows its password, unlike the CI
-   runner's own already-logged-on account, and the task `installer/privacyfence.iss` registers names
-   `Builtin\Users` as its principal's `GroupId` — since superseded in form, not in meaning: this was
-   a `/ru "BUILTIN\Users"` CLI flag when this item was written and is the XML definition's own
-   `<Principal><GroupId>` now — the built-in group rather than one specific account, so the
-   trigger fires for *any* interactive logon — the same "whichever account is at the keyboard" scope
-   the macOS LaunchAgent and Linux XDG autostart already have, so a throwaway account is a valid
-   stand-in, not a special case. This line originally omitted `/RU` entirely on the mistaken
-   assumption that the unqualified default already meant "any user" — Microsoft's own documentation
-   says the opposite, that it scopes the task to whichever account ran `schtasks /create`; this
-   module's own first real run against a real Windows runner is what caught that, alongside the
-   separate `/ri`/`/du` registration bug Phase 12's own verification pass found and fixed — see that
-   phase's own status note and `platform-support.md`'s "Known open items"); and that throwaway
-   account is added to local Administrators purely to satisfy
-   this Windows Server base image's default "Log on locally" policy (denied to plain standard
-   accounts), not to change how the daemon itself runs — the scheduled task's own `/rl limited`
-   still governs that regardless of the account's own group membership (this module now asserts it,
-   out of the registered definition). **The second substitution has since been replaced**: this
-   module originally drove PowerShell's `Start-Process -Credential` (`CreateProcessWithLogonW`) as a
-   stand-in for signing in, and was red on every run because of it — that call creates a logon
-   session but not the Terminal Services *session* logon a `LogonTrigger` subscribes to, so Task
-   Scheduler never evaluated the trigger at all (`Last Result: 267011`, `SCHED_S_TASK_HAS_NOT_RUN`,
-   on a task `schtasks /query /v` reported as registered, enabled and correctly scoped). Nothing on
-   the installer side could fix that, and a hosted runner cannot produce a real session logon
-   (RDP loopback needs an RDP client that can run without a desktop of its own), so the trigger's own
-   firing is now covered by `release-testing.md`'s Windows human checks on a real machine, and this
-   module asks Task Scheduler to run the installed task on demand instead — from inside a real logon
-   of the throwaway account, so everything after the decision to run is the same code path the
-   trigger uses. Everything else is the real, unmocked mechanism: the task definition **Task
-   Scheduler itself stored** (`schtasks /query /xml`, not this repo's template) asserted element by
-   element, the real packaged `privacyfence-app.exe` alias Task Scheduler launches for an account
-   that installed nothing (confirmed running as that account, via `Win32_Process`'s `GetOwner`, not
-   assumed), a real daemon/MCP/approval/audit round trip against it (Phase 3's own contract shape,
-   reusing `test_windows_packaged_smoke.py`'s own helpers), "Quit PrivacyFence" confirmed to actually
-   end that real process, and — Phase 13 item 4 — a real crash and the relaunch Task Scheduler
+   automated CI). There's no physical sign-in to drive on a GitHub-hosted Windows runner, and the
+   history of this module is mostly the history of finding that out. The scope the shipped task
+   wants is "whichever account is at the keyboard" — the same scope the macOS LaunchAgent and Linux
+   XDG autostart already have — expressed first as `schtasks /create`'s `/ru "BUILTIN\Users"` flag
+   (this line originally omitted `/RU` entirely, on the mistaken assumption that the unqualified
+   default already meant "any user"; Microsoft's own documentation says the opposite, and this
+   module's own first real run caught it), and now as the XML definition's own
+   `<Principal><GroupId>`. What took several more real runs to establish is that **a group principal
+   runs with the interactive token of a member who is signed in** — which a hosted runner has
+   exactly one of, its own account, and cannot be given another. Two substitutions built on not
+   knowing that are now gone: a throwaway local account (added to Administrators to satisfy the
+   Windows Server image's "Log on locally" policy), and PowerShell's `Start-Process -Credential`
+   (`CreateProcessWithLogonW`) standing in for signing in. The second is why this workflow was red
+   on every run: that call creates a logon session but not the Terminal Services *session* logon a
+   `LogonTrigger` subscribes to, so Task Scheduler never evaluated the trigger at all
+   (`Last Result: 267011`, `SCHED_S_TASK_HAS_NOT_RUN`, on a task `schtasks /query /v` reported as
+   registered, enabled and correctly scoped); the first is why asking for the run as that account
+   returned `ERROR: Access is denied.` Nothing on the installer side could fix either, so the
+   trigger's own firing is now covered by `release-testing.md`'s Windows human checks on a real
+   machine, and **the one substitution that remains is asking Task Scheduler to run the installed
+   task on demand** — everything after that decision (resolving the group principal to a signed-in
+   member, its `LeastPrivilege` token, its profile, the action launch) is the code path the trigger
+   uses. Everything else is the real, unmocked mechanism: the task definition **Task Scheduler
+   itself stored** (`schtasks /query /xml`, not this repo's template) asserted element by element —
+   which is how the `<DisallowStartIfOnBatteries>`/`<StopIfGoingOnBatteries>` defaults were caught,
+   a task that would not have started on a laptop running on battery — the real packaged
+   `privacyfence-app.exe` alias Task Scheduler launches into the signed-in account's own profile
+   with no injected environment (confirmed running as that account, via `Win32_Process`'s
+   `GetOwner`, not assumed; like the Linux module, and for the same reason, this one deliberately
+   does not isolate the daemon's home under `tmp_path`), a real daemon/MCP/approval/audit round trip
+   against it (Phase 3's own contract shape, reusing `test_windows_packaged_smoke.py`'s own
+   helpers), "Quit PrivacyFence" confirmed to actually end that real process, and — Phase 13 item 4
+   — a real crash and the relaunch Task Scheduler
    performs afterwards. Scheduled the same way as the Linux module — its own
    `.github/workflows/windows-graphical-session.yml`, packaging-related `main` pushes, weekly, and on
    demand, deliberately out of both `tests.yml`'s per-PR jobs and `build.yml`'s tag-triggered release
@@ -1323,16 +1319,17 @@ runtime state genuinely isn't under any single test's `tmp_path`:
   real, un-injected login), and its daemon is started by a real `systemd --user` unit, which logs
   to the user's own journal, not a file — its teardown now writes a manifest of the real
   `$HOME/.privacyfence` plus a `journalctl --user -u <unit>` dump.
-- `test_windows_graphical_session_autostart.py`'s daemon boots into a real throwaway Windows
-  user's own profile directory (not known until the test body calls `_wait_for_profile_dir`,
-  and a different profile than the test's own `tmp_path`) via a Scheduled Task, which likewise has
-  no stdout log file of its own — a small `_graphical_diagnostics` fixture (a mutable dict the test
-  registers `home` into once known, then reads back from teardown — the same "register, then
-  capture from teardown" shape as `test_deb_packaged_lifecycle.py`'s own pair above) captures a
-  manifest of that profile's `.privacyfence` directory plus a `schtasks /query ... /v` dump of the
-  task's own last-run result, before `_throwaway_user`'s own finalizer deletes the account and its
-  profile (confirmed, not assumed: pytest fixture teardown order is the reverse of setup order, and
-  this fixture is requested after `_throwaway_user` in the test's own signature).
+- `test_windows_graphical_session_autostart.py`'s daemon is launched by Task Scheduler, into the
+  signed-in account's own real profile rather than the test's `tmp_path` (it has to be: the service
+  starts the action with no injected environment, which is the point of that module), and likewise
+  has no stdout log file of its own. Its `_real_home_state` fixture — the same fixture that refuses
+  to run against an account with existing PrivacyFence state and removes what the test creates,
+  modelled on `test_linux_graphical_session_autostart.py`'s identically-named one — doubles as the
+  capture point on failure: a manifest of that profile's `.privacyfence` directory, a
+  `schtasks /query ... /v` dump of the task's own last-run result, the definition Task Scheduler
+  actually stored (`schtasks /query /xml`), and `query user` (a group-principal task runs for a
+  member who is *signed in*, so "nobody is signed in" and "the action is broken" are otherwise the
+  same empty result).
 
 Every CI job that runs one of these suites (`tests.yml`'s `test`, `test-python-compat`,
 `platform-windows`, `platform-macos`, `org-mode-smoke`; `build.yml`'s `build`, `build-windows`,

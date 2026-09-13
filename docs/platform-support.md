@@ -86,6 +86,12 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
   root `<Task>` element (the schema version `<RestartOnFailure>` and `<MultipleInstancesPolicy>`
   actually need), `id` on `<Principal>`, and the matching `Context` on `<Actions>` — without that
   id/Context pair, the registered `GroupId` principal is never actually bound to anything that runs.
+  **One more real defect came out of asserting the definition Task Scheduler stored rather than the
+  one this repo ships**: `<DisallowStartIfOnBatteries>` and `<StopIfGoingOnBatteries>` both default
+  to `true` and the template had never mentioned either, so on a laptop the shipped task would not
+  start PrivacyFence at sign-in while on battery, and would stop it the moment the machine was
+  unplugged — a privacy gate quietly not running, with the MCP client simply finding no daemon. Both
+  are now explicitly `false`, and the contract asserts them with no default fallback.
   **Real crash-restart-on-failure is implemented and now proven**: the task definition carries
   `<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>`, and
   `windows-graphical-session.yml` kills the Scheduler-started daemon outright and watches Task
@@ -107,12 +113,15 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
   run without a desktop of its own, which a hosted runner does not have; retiring the workflow would
   have given up the Scheduler-driven coverage below as well. What CI now proves, every run: the
   definition **Task Scheduler itself stored** (`schtasks /query /xml`, not this repo's template)
-  matches the autostart contract element by element; Task Scheduler starts the daemon for an account
-  that installed nothing, in that account's own profile, running as that account, serving the full
-  daemon/MCP/approval/audit round trip and ending on "Quit PrivacyFence"; and the crash-restart above.
-  The one substitution left is asking Task Scheduler to run the task on demand, from inside a real
-  logon of that account, instead of the trigger asking it — everything after the decision to run is
-  the same code path. The cheap half of the same coverage also runs on every PR, on any OS:
+  matches the autostart contract element by element; Task Scheduler itself starts the daemon, into the
+  real signed-in account's own profile with no injected environment, running as that account, serving
+  the full daemon/MCP/approval/audit round trip and ending on "Quit PrivacyFence"; and the
+  crash-restart above. The one substitution left is asking Task Scheduler to run the task on demand
+  instead of the trigger asking it — everything after that decision (resolving the `Builtin\Users`
+  principal to a signed-in member, its `LeastPrivilege` token, its profile, the action launch) is the
+  same code path. A group principal runs as a member who is *signed in*, so the signed-in account is
+  the only one a hosted runner can have it run for — an attempt with a throwaway account returned
+  `ERROR: Access is denied.` The cheap half of the same coverage also runs on every PR, on any OS:
   `tests/unit/test_windows_autostart_task_template.py` holds the shipped template to the same
   contract (`tests/windows_task_contract.py`), so a regression in it no longer waits for a scheduled
   Windows-only workflow to notice. Check `windows-graphical-session.yml`'s own run history for the

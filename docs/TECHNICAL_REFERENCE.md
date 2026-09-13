@@ -1024,7 +1024,11 @@ template's own header comment and `platform-support.md`'s "Known open items" for
 in their own session, at the non-elevated `LeastPrivilege` run level, and
 `<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>` gives it real
 crash-restart behavior — parity with the macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and
-the Linux `.deb`'s systemd restart policy, closing
+the Linux `.deb`'s systemd restart policy. `<DisallowStartIfOnBatteries>` and
+`<StopIfGoingOnBatteries>` are both set to `false`, inverting Task Scheduler's own defaults: left at
+the defaults, a laptop on battery power would not start PrivacyFence at sign-in and would stop it
+when unplugged — a privacy gate that quietly isn't running, with the MCP client simply finding no
+daemon. This closes
 [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13. See
 [`platform-support.md`](platform-support.md)'s "Known open items" for this mechanism's current
 verification status. In short: `windows-graphical-session.yml` verifies the definition Task

@@ -136,6 +136,7 @@ pytest.importorskip("mcp", reason="mcp (Python MCP client, test-only) not instal
 
 from tests.diagnostics import (  # noqa: E402
     capture_directory_manifest,
+    copy_named_logs,
     failure_dir,
     suite_name_for,
     write_environment_info,
@@ -294,6 +295,26 @@ def _registered_task_xml_or_error() -> str:
         return _registered_task_xml()
     except Exception as exc:  # noqa: BLE001 -- diagnostics only, any failure is itself the datum
         return f"(could not read the registered task XML: {exc!r})"
+
+
+def _daemon_log_tail(home: Path, *, max_chars: int = 4000) -> str:
+    """The daemon's own log, which is the only thing it leaves behind when
+    Task Scheduler starts it.
+
+    ``daemon_main.setup_logging`` writes to ``<data dir>/logs/
+    privacyfence.log`` -- for a bundled app, ``%USERPROFILE%\\.privacyfence\\
+    logs\\privacyfence.log`` -- and ``main()`` logs an explicit
+    ``Fatal error: ...`` with a traceback there before returning 1. A
+    Scheduler-launched process has no console and no redirected stdout, so
+    unlike ``test_windows_packaged_smoke.py`` (which captures the daemon's
+    stdout to a file it can quote on failure) this file is the *only* place
+    a daemon that died on startup says why. ``Last Result: 1`` from
+    ``schtasks /query`` says only that it did."""
+    log_path = home / ".privacyfence" / "logs" / "privacyfence.log"
+    if not log_path.exists():
+        return f"({log_path} missing -- the daemon never got as far as setting up logging)"
+    text = log_path.read_text(errors="replace")
+    return text[-max_chars:] if text else "(empty)"
 
 
 def _install_log_tail(log_path: Path, *, max_chars: int = 8000) -> str:
@@ -484,6 +505,10 @@ def _real_home_state(request):
                 _registered_task_xml_or_error(), encoding="utf-8",
             )
             (dest / "logs" / "query-user.txt").write_text(_session_table(), encoding="utf-8")
+            # The daemon's own log, if it got far enough to write one -- see
+            # _daemon_log_tail for why this is the only thing a
+            # Scheduler-launched daemon leaves behind.
+            copy_named_logs(state_dir, dest / "logs")
         shutil.rmtree(state_dir, ignore_errors=True)
 
 
@@ -592,7 +617,8 @@ def _start_task_and_wait_for_daemon(installed: _Installed) -> tuple[str, str]:
         f"{installed.alias_exe} never appeared as a running process within 30s of Task Scheduler "
         f"being asked to run {TASK_NAME!r}\n"
         f"---- who is signed in (query user) ----\n{_session_table()}\n"
-        f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}"
+        f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}\n"
+        f"---- daemon log (tail) ----\n{_daemon_log_tail(installed.home)}"
     )
     pid, owner = found
     # A group principal runs the action as a signed-in member, in that
@@ -678,7 +704,8 @@ async def test_task_scheduler_restarts_the_daemon_after_it_crashes(_installed):
     assert restarted, (
         f"Task Scheduler never relaunched {ALIAS_EXE_NAME} within 180s of pid {first_pid} being killed -- "
         f"the task's <RestartOnFailure> (PT1M, 3 attempts) did not take effect\n"
-        f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}"
+        f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}\n"
+        f"---- daemon log (tail) ----\n{_daemon_log_tail(_installed.home)}"
     )
     restarted_pid, restarted_owner = restarted
     assert restarted_pid != first_pid
