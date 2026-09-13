@@ -1,6 +1,6 @@
 # PII detection keywords
 
-Reference table for exactly what the [PII detection gate](TECHNICAL_REFERENCE.md#pii-detection-gate)
+Reference table for exactly what the [PII detection gate](TECHNICAL_REFERENCE.md#privacy-filtering-and-pii)
 matches, category by category and language by language. The gate itself is implemented in
 [`src/privacyfence/pii_detector.py`](../src/privacyfence/pii_detector.py); this doc is a
 human-readable index of the same patterns, not a copy the code reads from — if the two drift,
@@ -64,7 +64,7 @@ independent of the gate as a whole, via the **PII Detection Gate** section of Pr
 ordinary business correspondence — server logs, invoices, budgets — without being personal data
 about anyone, which is what makes them worth muting independently rather than only as part of
 disabling the whole gate. Every other category in this doc has no such toggle: it's on whenever
-the gate itself is enabled. See the ["PII detection gate"](TECHNICAL_REFERENCE.md#pii-detection-gate)
+the gate itself is enabled. See the ["PII detection gate"](TECHNICAL_REFERENCE.md#privacy-filtering-and-pii)
 section of `TECHNICAL_REFERENCE.md` for the full toggle reference.
 
 ---
@@ -75,7 +75,7 @@ section of `TECHNICAL_REFERENCE.md` for the full toggle reference.
 email content, and nearly every signature carries the sender's own address and phone number —
 matching those formats flagged almost every `review` popup regardless of whether the message
 actually contained anything sensitive, training users to click through without reading. See the
-module docstring in `pii_detector.py` and [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#pii-detection-gate)
+module docstring in `pii_detector.py` and [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#privacy-filtering-and-pii)
 for the full reasoning.
 
 ---
@@ -90,6 +90,6 @@ the matched text itself is never returned, stored, or audited.
 
 **One opt-in exception:** `pii_detection.audit_match_details` in `settings.yaml`, off by default
 and meant only for a bounded refinement-trial window — see
-[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#pii-detection-gate) for the full contract (what
+[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#privacy-filtering-and-pii) for the full contract (what
 gets recorded, when, and how national IDs/IBANs/credit card numbers/IP addresses/currency figures
 are redacted even then).
