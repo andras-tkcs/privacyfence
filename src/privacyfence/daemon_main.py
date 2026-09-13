@@ -1346,9 +1346,21 @@ def run_telegram_setup() -> int:
 
 def run_app(config: dict[str, Any], config_path: str) -> int:
     if not _acquire_instance_lock():
-        logger.error("Another instance is already running; exiting.")
+        # Windows' autostart task (installer/privacyfence-task.xml.tmpl)
+        # carries a repeating <TimeTrigger> as its real crash-restart
+        # mechanism (automated-test-strategy-plan.md Phase 13): every tick
+        # launches this daemon, and finding one already running is the
+        # expected outcome on every tick but the one that actually needed a
+        # relaunch, not a failure. Logging it at ERROR and exiting 1, as
+        # this used to do, would write an error line and fail the
+        # Scheduler-started task run on every single tick, forever. INFO
+        # plus exit 0 lets Task Scheduler log a clean success instead; the
+        # stderr message stays, since a human who ran the CLI or
+        # double-clicked the exe a second time still wants to know why
+        # nothing happened.
+        logger.info("Another instance is already running; exiting.")
         print("PrivacyFence daemon is already running.", file=sys.stderr)
-        return 1
+        return 0
 
     init_config_path(_resolve_path(config_path))
 

@@ -1963,16 +1963,26 @@ class TestRunApp:
         monkeypatch.setattr(daemon_main, "_maybe_start_web_server", fake_maybe_start_web_server)
         return fake_audit_logger
 
-    def test_lock_already_held_returns_1_without_building_connectors(self, monkeypatch, capsys):
+    def test_lock_already_held_returns_0_without_building_connectors(self, monkeypatch, capsys, caplog):
+        # Exit 0, not 1: Windows' autostart task (Phase 13) re-launches this
+        # daemon on a repeating trigger as its real crash-restart mechanism,
+        # so finding an instance already running is the expected outcome on
+        # every tick but the one that actually needed a relaunch -- not a
+        # failure Task Scheduler should log as one. Logged at INFO rather
+        # than ERROR for the same reason; the stderr message stays for a
+        # human running the CLI a second time.
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: False)
         build_calls = []
         monkeypatch.setattr(daemon_main, "build_connectors", lambda cfg, org: build_calls.append(1))
 
-        result = daemon_main.run_app({}, "config.yaml")
+        with caplog.at_level(logging.INFO):
+            result = daemon_main.run_app({}, "config.yaml")
 
-        assert result == 1
+        assert result == 0
         assert build_calls == []
         assert "already running" in capsys.readouterr().err
+        assert "already running" in caplog.text
+        assert not any(record.levelno >= logging.ERROR for record in caplog.records)
 
     def test_successful_startup_waits_for_shutdown_and_releases_lock(self, monkeypatch):
         monkeypatch.setattr(daemon_main, "_acquire_instance_lock", lambda: True)

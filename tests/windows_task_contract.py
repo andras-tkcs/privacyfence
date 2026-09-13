@@ -10,6 +10,18 @@ absence left the group principal bound to nothing that runs -- and every one
 of those registered without complaint, so "the task exists" never caught any
 of them.
 
+Phase 13 added a further element that shipped looking like a fix but was
+not one: ``<RestartOnFailure>`` reads as the Windows analogue of the macOS
+LaunchAgent's ``KeepAlive``/``SuccessfulExit=false`` and the Linux
+``.deb``'s systemd ``Restart=on-failure``, but a real ``windows-latest``
+run killing a Scheduler-started daemon found that Task Scheduler logs a
+killed action as a *successfully completed* task, so the setting never
+engages for a crashed daemon at all -- it only ever answers a task that
+fails to launch in the first place. Real crash-restart is the
+``<TimeTrigger>``/``<Repetition>`` pair asserted below: an indefinitely
+repeating trigger that relaunches the daemon on its own schedule, with the
+already-running case a no-op thanks to the single-instance lock.
+
 This module states what the definition has to say, so two very different
 tests can assert the same thing about two different documents:
 
@@ -67,6 +79,37 @@ def assert_task_xml_matches_autostart_contract(xml_text: str, *, exec_path: str)
     # windows-graphical-session.yml.
     assert logon_trigger.find(f"{TASK_NS}UserId") is None, (
         f"<LogonTrigger> is scoped to one account; it must fire for any interactive logon\n{context}"
+    )
+
+    # Real crash-restart (automated-test-strategy-plan.md Phase 13): the
+    # LogonTrigger above only ever fires once per sign-in, so it cannot
+    # bring a daemon back after it dies mid-session -- and RestartOnFailure
+    # (asserted below) was measured on a real windows-latest runner not to
+    # cover that case at all (Task Scheduler logs a killed action as a
+    # successfully completed task). A TimeTrigger with an indefinite
+    # Repetition is what actually relaunches a dead daemon: no default
+    # fallback on Repetition/Interval or StartBoundary below, since a
+    # missing or misconfigured element there silently means "no
+    # crash-restart," exactly the failure mode this phase exists to close.
+    time_triggers = triggers.findall(f"{TASK_NS}TimeTrigger")
+    assert len(time_triggers) == 1, f"expected exactly one <TimeTrigger>\n{context}"
+    time_trigger = time_triggers[0]
+    # Same "None means the schema default of true" fallback as LogonTrigger's
+    # own Enabled check above, not a looser standard invented for this
+    # element: a real windows-latest run confirmed Task Scheduler stores
+    # neither trigger's <Enabled> at all when it is true, the same way it
+    # normalizes away any other schema-default value.
+    time_trigger_enabled = time_trigger.findtext(f"{TASK_NS}Enabled")
+    assert time_trigger_enabled is None or time_trigger_enabled.strip().lower() == "true", (
+        f"<TimeTrigger> is disabled\n{context}"
+    )
+    assert (time_trigger.findtext(f"{TASK_NS}StartBoundary") or "").strip(), (
+        f"<TimeTrigger> has no <StartBoundary>\n{context}"
+    )
+    repetition = time_trigger.find(f"{TASK_NS}Repetition")
+    assert repetition is not None, f"<TimeTrigger> has no <Repetition>: it will only ever fire once\n{context}"
+    assert (repetition.findtext(f"{TASK_NS}Interval") or "").strip() == "PT5M", (
+        f"<TimeTrigger><Repetition><Interval> is not PT5M\n{context}"
     )
 
     principals = root.find(f"{TASK_NS}Principals")
