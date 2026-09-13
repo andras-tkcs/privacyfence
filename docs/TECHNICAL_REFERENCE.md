@@ -1021,18 +1021,28 @@ account), both superseded by this XML-based rewrite rather than patched in place
 template's own header comment and `platform-support.md`'s "Known open items" for the full history.
 `<LogonTrigger>` with no `<UserId>` fires for any interactive logon, `<Principal>` uses `GroupId`
 (`Builtin\Users`) rather than a specific account so the task runs as whichever user just signed in,
-in their own session, at the non-elevated `LeastPrivilege` run level, and
-`<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>` was intended as
+in their own session, at the non-elevated `LeastPrivilege` run level.
+`<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>` was first added as
 parity with the macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and the Linux `.deb`'s systemd
 restart policy, but **does not actually restart a crashed daemon** — Task Scheduler logs an action
-that ran and then died as a successfully completed task, so the setting never engages (measured, with
-the event-log evidence, in `platform-support.md`'s "Known open items"; Windows has no crash-restart
-today). `<DisallowStartIfOnBatteries>` and
+that ran and then died as a successfully completed task, so the setting never engages for that case
+(measured, with the event-log evidence, in `platform-support.md`'s "Known open items"). It stays in
+the definition anyway, for the narrower thing it still does: a faster (`PT1M`) retry of a launch
+failure right at logon. Real crash-restart is a second trigger,
+`<TimeTrigger><StartBoundary>2020-01-01T00:00:00</StartBoundary><Enabled>true</Enabled>
+<Repetition><Interval>PT5M</Interval></Repetition></TimeTrigger>`, alongside the `<LogonTrigger>`: a
+past `StartBoundary` and an indefinite `<Repetition>` make it live immediately rather than waiting for
+a sign-in, and every tick relaunches the daemon (a tick that finds one already running exits at once,
+via the single-instance lock) — `daemon_main.run_app()` logs that case at INFO and exits `0` rather
+than ERROR/`1`, so Task Scheduler logs a clean success on every ordinary tick. `<DisallowStartIfOnBatteries>` and
 `<StopIfGoingOnBatteries>` are both set to `false`, inverting Task Scheduler's own defaults: left at
 the defaults, a laptop on battery power would not start PrivacyFence at sign-in and would stop it
 when unplugged — a privacy gate that quietly isn't running, with the MCP client simply finding no
 daemon. This closes
-[`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13. See
+[`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13, including its
+crash-restart half — measured, not assumed, on a real `windows-latest` runner: killing the
+Scheduler-started daemon produces a new pid, under the same signed-in account, before the
+`<TimeTrigger>`'s own next tick would otherwise be due. See
 [`platform-support.md`](platform-support.md)'s "Known open items" for this mechanism's current
 verification status. In short: `windows-graphical-session.yml` verifies the definition Task
 Scheduler itself stored, that Task Scheduler really starts the daemon for an account that installed
