@@ -83,6 +83,7 @@ import yaml
 
 from . import audit_forwarding, org_bundle_signing, org_mode
 from .paths import data_dir, org_dir, user_dir
+from .std_streams import ensure_std_streams
 from .principal import LOCAL_PRINCIPAL_ID, current_principal
 from .app_credentials import telegram_app_credentials
 from .approval_ui import init_approval_ui
@@ -1518,6 +1519,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A windowed Windows build started with no console has no std streams
+    # at all -- see std_streams.py. src/_daemon_entry.py already calls this
+    # before importing anything; repeating it here covers every other way
+    # main() is reached (the `privacyfence-app` console script, a dev run).
+    ensure_std_streams()
     args = parse_args(argv)
 
     oauth_flag = (
