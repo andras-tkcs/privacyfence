@@ -181,25 +181,31 @@ the Worker's dev tree blocks on high/critical (defensible, given the deploy cred
 informational like the shim's (defensible, given it never reaches an end user) — then wire
 whichever you pick. Add the two path entries either way, so the workflow at least runs.
 
-**2. The Worker's tests are a post-merge gate, not a pre-merge one.**
-`deploy-download-worker.yml` runs `typecheck`, `npm test` and the dry-run bundle before deploying,
-and a failure there does correctly stop the deploy. But its only triggers are `push` to `main` and
-`workflow_dispatch` — there is no `pull_request:` trigger, so it cannot report on a PR and cannot
-be a required check (it is correctly absent from `scripts/update_branch_protection.py`'s
-`REQUIRED_STATUS_CHECKS`). A PR that breaks the Worker merges green and fails afterwards, on
-`main`.
+**2. ~~The Worker's tests are a post-merge gate, not a pre-merge one.~~ Done** — `3ae2544`.
+`deploy-download-worker.yml` now splits into `verify` (typecheck, `npm test`, dry-run bundle;
+triggered on `pull_request` as well as `push`) and `deploy` (`needs: verify`, still `main`/dispatch
+only), so a PR that breaks the Worker fails its own checks instead of surfacing the break on `main`
+afterwards — and the Cloudflare credentials `deploy` needs never reach a fork PR's run. Same fix
+`docs/automated-test-strategy-plan.md` Phase 2.1 applied to `platform-windows` and Phase 8 to
+`org-mode-smoke`.
 
-That is the same gap `docs/automated-test-strategy-plan.md` Phase 2.1 closed for
-`platform-windows` and Phase 8 for `org-mode-smoke`, both promoted from dispatch-only to per-PR on
-the reasoning that waiting for a tag — or a merge — to find out something broke is too late. Apply
-the same fix: split test/typecheck/dry-run into a `pull_request`-triggered job (no credentials
-needed — the suite runs entirely against local Miniflare/workerd), leave deploy on `main`, and add
-the new job to `REQUIRED_STATUS_CHECKS` in the same PR.
+One thing that fix deliberately does *not* do, and the reason this item is worth reading rather
+than just ticking: **`verify` reports, but it does not gate.** It carries the same `paths:` filter
+as `push`, so it is absent from `scripts/update_branch_protection.py`'s `REQUIRED_STATUS_CHECKS`
+for exactly the reason that list's own comment now gives for the `dependency-audit.yml` jobs — a
+`paths:`-filtered context never reports at all on a PR that misses the filter, and a required check
+that never reports blocks the merge indefinitely. So a red `verify` is visible on the PR but will
+not stop it merging. Making it genuinely gating needs a job that always runs and short-circuits
+when the paths don't match, so the context always reports; that is a separate, deliberate change,
+not an oversight in the split above.
 
 **Exit criteria:** a Worker dependency change triggers `dependency-audit.yml` and is audited under
-a written, deliberate severity policy; the Worker's tests and typecheck run on every PR that
-touches `cloudflare/downloads/**` and gate the merge; `deploy-download-worker.yml` still runs the
-same checks before deploying, so a direct push to `main` cannot deploy an untested Worker.
+a written, deliberate severity policy (item 1, open). Item 2's own criteria are met: the Worker's
+tests and typecheck run on every PR that touches `cloudflare/downloads/**`, and
+`deploy-download-worker.yml` still runs them before deploying, so a direct push to `main` cannot
+deploy an untested Worker. Whether that per-PR check should also *block* the merge — which needs an
+always-reporting job, not a `paths:`-filtered one — is left as a deliberate open choice above rather
+than folded into this phase's exit.
 
 ## Phase 2 — Release metadata pipeline
 
