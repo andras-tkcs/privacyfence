@@ -39,12 +39,21 @@ This module does both:
    formatter to probe, and the daemon exited 1 before binding its port (see
    ``privacyfence/std_streams.py``). Every other automated start of this app
    in this repo hands it a redirected stdout, so nothing else could have.
-3. **What ``<RestartOnFailure>`` actually does after a crash**, which is
-   nothing (Phase 13 item 4). The second test kills the Scheduler-started
-   daemon and asserts that Task Scheduler does *not* bring it back, because
-   the measured behavior is that it logs the dead action as a successfully
-   completed task. That test's own docstring carries the event-log evidence
-   and says what has to replace it once a real keep-alive exists.
+3. **Real crash-restart** (Phase 13 item 4). The second test kills the
+   Scheduler-started daemon outright and asserts that a *new* pid turns up,
+   still running as the same signed-in account, with no further action from
+   this test. This is the positive assertion a first measurement pass could
+   not make: killing the action showed ``<RestartOnFailure>`` does nothing
+   for a crashed daemon at all (Task Scheduler logs the dead action as a
+   *successfully completed* task, so the setting never engages), which is
+   why real crash-restart is a repeating ``<TimeTrigger>`` instead -- see
+   ``installer/privacyfence-task.xml.tmpl``'s own header comment for that
+   design and ``platform-support.md``'s "Known open items" for the
+   measurement that found ``<RestartOnFailure>`` did not work. This test is
+   the direct successor of, and replaces, the negative assertion this
+   module used to carry (``test_restart_on_failure_does_not_cover_a_
+   crashed_daemon``, preserved in git history) once that measurement made
+   the positive assertion provable.
 
 **The one deliberate substitution, and the history behind it.** Task
 Scheduler is asked to run the task *on demand* rather than by a user signing
@@ -482,9 +491,9 @@ def _remove_task() -> None:
     """Stop and delete the task *before* uninstalling, not after.
 
     The uninstaller removes it too ([UninstallRun]), but the crash-restart
-    test deliberately leaves a task with pending restart attempts behind:
-    left registered, Task Scheduler can relaunch the daemon out of the
-    directory the uninstaller is in the middle of deleting."""
+    test leaves a just-relaunched daemon running when it finishes: left
+    registered, the task's own <TimeTrigger> can relaunch the daemon again
+    out of the directory the uninstaller is in the middle of deleting."""
     subprocess.run(["schtasks", "/end", "/tn", TASK_NAME], capture_output=True, text=True, timeout=20)
     subprocess.run(["schtasks", "/delete", "/tn", TASK_NAME, "/f"], capture_output=True, text=True, timeout=20)
 
@@ -715,23 +724,24 @@ async def test_installed_task_definition_starts_the_packaged_daemon(_installed):
     assert "autologon.example.com" in settings_path.read_text(encoding="utf-8")
 
 
-# The wait below spans more than two of the task's own
-# <RestartOnFailure><Interval>PT1M</Interval> windows, on top of an install
-# and a cold daemon start -- well past this module's own 300s default, let
-# alone the suite's 30s one.
-@pytest.mark.timeout(480)
-async def test_restart_on_failure_does_not_cover_a_crashed_daemon(_installed):
-    """docs/automated-test-strategy-plan.md Phase 13 item 4, as measured
-    rather than as assumed -- and the assertion is deliberately negative.
-
-    The shipped task carries
-    ``<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>``,
-    added as the Windows analogue of the macOS LaunchAgent's
-    ``KeepAlive``/``SuccessfulExit=false`` and the Linux ``.deb``'s systemd
-    ``Restart=on-failure``. It is not one. Kill the Scheduler-started daemon
-    outright and Task Scheduler does not bring it back -- because it does not
-    consider the task to have failed at all. Its own operational log, from
-    the run that established this::
+# The <TimeTrigger><Repetition><Interval>PT5M</Interval> below is anchored
+# to the trigger's own StartBoundary, not to when this test kills the
+# daemon, so the next tick can land anywhere up to one full interval later.
+# The wait below clears a whole PT5M window with margin, on top of an
+# install and a cold daemon start -- well past this module's own 300s
+# default, let alone the suite's 30s one.
+@pytest.mark.timeout(600)
+async def test_crash_restart_relaunches_a_killed_daemon(_installed):
+    """docs/automated-test-strategy-plan.md Phase 13 item 4 -- the positive
+    assertion, and the direct successor of this module's own negative test,
+    ``test_restart_on_failure_does_not_cover_a_crashed_daemon`` (preserved in
+    git history, not this file). That test measured, rather than assumed,
+    that the shipped ``<RestartOnFailure><Interval>PT1M</Interval>
+    <Count>3</Count></RestartOnFailure>`` -- added as the Windows analogue of
+    the macOS LaunchAgent's ``KeepAlive``/``SuccessfulExit=false`` and the
+    Linux ``.deb``'s systemd ``Restart=on-failure`` -- does nothing at all
+    for a crashed daemon: Task Scheduler logs a killed action as a
+    *successfully completed* task (its own operational log from that run::
 
         Event ID 201:  Task Scheduler successfully completed task
                        "\\PrivacyFence", instance "{63cf2afb-...}", action
@@ -741,18 +751,15 @@ async def test_restart_on_failure_does_not_cover_a_crashed_daemon(_installed):
                        instance of the "\\PrivacyFence" task for user
                        "...\\runneradmin".
 
-    ``2147942401`` is ``0x80070001`` -- the action's own non-zero exit,
-    surfaced as an HRESULT. Task Scheduler logged it as *successfully
-    completed* regardless, and never scheduled a restart: ``RestartOnFailure``
-    answers a task that fails to *run*, not an action that ran and then died.
-
-    So this test exists to pin that down, for two reasons. It stops the
-    setting from being re-added and re-declared a fix without anyone
-    measuring it again, and it fails loudly the day the mechanism actually
-    becomes a keep-alive -- at which point it should be replaced by the
-    positive assertion this file used to attempt (kill, wait, assert a new
-    pid). Phase 13's exit criteria stay open until then; see that phase's
-    status note for the design options and their trade-offs.
+    ``2147942401`` is ``0x80070001``, the action's own non-zero exit
+    surfaced as an HRESULT), so ``RestartOnFailure`` never engages: it only
+    ever answers a task that fails to *run*, not an action that ran and then
+    died. That test's own docstring said what would have to replace it once
+    a real keep-alive existed: kill, wait, assert a new pid. This is that
+    test, now that ``installer/privacyfence-task.xml.tmpl`` carries a
+    repeating ``<TimeTrigger>`` as the actual crash-restart mechanism
+    (``RestartOnFailure`` itself stays in the definition, but only for the
+    narrower thing it still does -- see that template's own header comment).
     """
     first_pid, _owner = _start_task_and_wait_for_daemon(_installed)
     _wait_until_connectable("localhost", _installed.port)
@@ -767,13 +774,18 @@ async def test_restart_on_failure_does_not_cover_a_crashed_daemon(_installed):
         f"{ALIAS_EXE_NAME} (pid {first_pid}) survived taskkill /f, so nothing crashed"
     )
 
-    # Two and a half PT1M windows, i.e. past the second of the three restart
-    # attempts the setting asks for. Nothing comes back.
-    relaunched = _wait_for_alias_process(_installed.alias_exe, timeout=150.0, different_from=first_pid)
-    assert relaunched is None, (
-        f"Task Scheduler relaunched {ALIAS_EXE_NAME} as pid {relaunched[0] if relaunched else None} "
-        f"after a crash -- <RestartOnFailure> now behaves as a keep-alive, which is what Phase 13 "
-        f"wanted all along. Replace this test with the positive assertion and close that phase.\n"
+    relaunched = _wait_for_alias_process(_installed.alias_exe, timeout=340.0, different_from=first_pid)
+    assert relaunched is not None, (
+        f"Task Scheduler never relaunched {ALIAS_EXE_NAME} after taskkill /pid {first_pid} /f, within "
+        f"340s of one <TimeTrigger><Repetition><Interval>PT5M</Interval></Repetition> window\n"
         f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}\n"
         f"---- Task Scheduler operational log (newest first) ----\n{_task_scheduler_events()}"
+    )
+    pid, owner = relaunched
+    # Same check as _start_task_and_wait_for_daemon's own: the relaunch is
+    # still the GroupId principal resolving to the one signed-in account
+    # this runner has, not some other identity.
+    assert getpass.getuser().lower() in owner.lower(), (
+        f"relaunched {ALIAS_EXE_NAME} (pid {pid}) is running as {owner!r}, not the signed-in account "
+        f"({getpass.getuser()!r}) the Builtin\\Users principal should have resolved to"
     )

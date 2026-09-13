@@ -64,11 +64,10 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
 
 ## Known open items
 
-- **Windows autostart — now actually works, verified end to end by real `workflow_dispatch` runs,
-  after a chain of independent bugs of which the last was in the daemon rather than the installer.
-  Two things remain: the `LogonTrigger`'s own firing, which a hosted runner cannot produce and the
-  Windows human checks cover instead, and crash-restart, which the shipped setting does not provide
-  (both below).** This
+- **Windows autostart — now actually works, including real crash-restart, verified end to end by real
+  `workflow_dispatch` runs, after a chain of independent bugs of which the last was in the daemon
+  rather than the installer. One thing remains: the `LogonTrigger`'s own firing, which a hosted runner
+  cannot produce and the Windows human checks cover instead (below).** This
   mechanism went through several real, independently-found-and-fixed bugs before
   landing where it is now — see `installer/privacyfence-task.xml.tmpl`'s own header comment and
   `installer/privacyfence.iss`'s `[Code]` section for the full detail — and the early ones are worth
@@ -110,13 +109,13 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
   start PrivacyFence at sign-in while on battery, and would stop it the moment the machine was
   unplugged — a privacy gate quietly not running, with the MCP client simply finding no daemon. Both
   are now explicitly `false`, and the contract asserts them with no default fallback.
-  **Crash-restart is *not* implemented, contrary to what this note and
-  [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13 both previously
-  claimed.** The task carries `<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>`,
+  **Crash-restart now works, via a different mechanism than the one first shipped — and that first
+  attempt's failure is worth keeping here precisely because it looked like a fix and was not one.**
+  The task shipped carrying `<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>`,
   added as the Windows analogue of the macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and the
-  Linux `.deb`'s systemd `Restart=on-failure`. It is not one, and the first test ever to kill a
+  Linux `.deb`'s systemd `Restart=on-failure`. It was not one, and the first test ever to kill a
   Scheduler-started daemon measured that directly: nothing came back, and Task Scheduler's own
-  operational log says why — it logged the dead action as a *success*:
+  operational log said why — it logged the dead action as a *success*:
 
   ```
   Event ID 201: Task Scheduler successfully completed task "\PrivacyFence", instance "{63cf2afb-…}",
@@ -124,19 +123,35 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
   ```
 
   `2147942401` is `0x80070001`, the action's own non-zero exit surfaced as an HRESULT. The setting
-  answers a task that fails to *run*, not an action that ran and then died, so it never engages.
-  `windows-graphical-session.yml` now pins that measured behavior with a deliberately negative
-  assertion, so the setting cannot be re-added and re-declared a fix without measuring it again.
-  **Real crash-restart needs a different mechanism, and picking one is an open product decision.**
-  The Task Scheduler idiom is a repeating trigger (a `<TimeTrigger>` with a past `StartBoundary` and
-  an indefinite `<Repetition>`, so it is live without waiting for a sign-in), which relaunches the
-  daemon on the next tick after it dies. Two sub-decisions come with it and both have real costs: the
-  interval trades restart latency against a no-op process spawn per signed-in user per tick (the
-  daemon already exits immediately when its single-instance lock is held, but every tick still pays a
-  PyInstaller cold start, and on a laptop that is battery), and `MultipleInstancesPolicy` has to stay
-  `Parallel` — `IgnoreNew` would suppress the spawn but also stop a second user's sign-in from ever
-  getting a daemon. Whoever takes it should also quiet the "another instance is already running"
-  path, which currently logs at ERROR and exits 1 on every tick.
+  answers a task that fails to *run*, not an action that ran and then died, so it never engaged. That
+  measurement was pinned by a deliberately negative test, so the setting could not be re-added and
+  re-declared a fix without measuring it again — until a real fix replaced it.
+  **Real crash-restart is a repeating `<TimeTrigger>`, and it now ships.** `installer/privacyfence-
+  task.xml.tmpl` carries `<TimeTrigger><StartBoundary>2020-01-01T00:00:00</StartBoundary>
+  <Enabled>true</Enabled><Repetition><Interval>PT5M</Interval></Repetition></TimeTrigger>` alongside
+  the existing `<LogonTrigger>` — a past `StartBoundary` and an indefinite `<Repetition>` so it is
+  live without waiting for a sign-in, relaunching the daemon on the next tick after it dies.
+  `<RestartOnFailure>` stays in the definition too, for the narrower thing it still does: a faster
+  (`PT1M`) retry of a launch failure right at logon, ahead of the `TimeTrigger`'s own next tick.
+  `MultipleInstancesPolicy` stays `Parallel`, unchanged: `IgnoreNew` would suppress a redundant tick's
+  spawn but also stop a second user's sign-in from ever getting a daemon.
+  `privacyfence.daemon_main.run_app()`'s "another instance is already running" path — the normal
+  outcome on every tick but the one that actually needed a relaunch, under this design — now logs at
+  INFO and exits `0` instead of ERROR/`1`, so Task Scheduler logs a clean success on every ordinary
+  tick instead of a failed run forever.
+
+  **Measured on a real `windows-latest` runner, not assumed — including the three specific things this
+  design could not have gotten right by reading documentation alone**: omitting `<Duration>` inside
+  `<Repetition>` really does mean "repeat indefinitely" as Task Scheduler stores it (no `<Duration>` or
+  `<StopAtDurationEnd>` appeared in the registered document); a `<TimeTrigger>` does fire for the
+  `GroupId` principal, and fires effectively immediately given a `StartBoundary` far in the past — the
+  crash-restart test killed the Scheduler-started daemon and saw a new pid, under the same signed-in
+  account, well inside its wait window; and a past `StartBoundary` behaves as intended rather than
+  being normalized or rejected. The one real bug that first `workflow_dispatch` run found was in the
+  test, not the task: the contract required `<TimeTrigger><Enabled>true</Enabled>` verbatim, but Task
+  Scheduler normalizes away `<Enabled>` on either trigger when it is `true` (the schema default) — the
+  same thing it already does for `<LogonTrigger>`, which the contract already tolerated. Fixed to use
+  the same fallback for `<TimeTrigger>`, confirmed by a second, fully green run.
   **One gap remains, and it is in what CI can observe, not in the installer: the `LogonTrigger`'s own
   firing.** The test used to claim it drove that, via PowerShell's `Start-Process -Credential`
   (`CreateProcessWithLogonW`) as a stand-in for signing in, and was red on every run because of it:

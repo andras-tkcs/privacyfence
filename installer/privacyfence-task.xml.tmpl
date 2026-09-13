@@ -1,6 +1,7 @@
 <?xml version="1.0"?>
 <!--
-PrivacyFence autostart Task Scheduler task definition (Phase 3.1, revised).
+PrivacyFence autostart Task Scheduler task definition (Phase 3.1, revised
+again by Phase 13).
 
 installer/privacyfence.iss's [Code] section extracts this template at
 install time, substitutes __EXEC_PATH__ with the real installed
@@ -32,9 +33,9 @@ revision of this file dropped all three at once:
     by that id reference. With a Principal that carries no id and an
     Actions element that names no Context, the GroupId below is not
     actually bound to anything that runs.
-  * The trigger's StartBoundary. LogonTrigger inherits it from the
-    abstract trigger type, where it is the point from which the
-    trigger is live at all.
+  * The triggers' StartBoundary. LogonTrigger and TimeTrigger both
+    inherit it from the abstract trigger type, where it is the point
+    from which the trigger is live at all.
 
 LogonTrigger with no UserId fires for any interactive logon, not just
 one specific account, and Principal uses GroupId (the built-in Users
@@ -56,16 +57,50 @@ MultipleInstancesPolicy is Parallel, not the schema default IgnoreNew,
 deliberately: this task can legitimately have more than one concurrent
 instance at once, one per user session, since GroupId, unlike a single
 UserId, can trigger for several different logged on users at the same
-time. RestartOnFailure is the piece plain schtasks /create CLI flags
-never had a way to express at all; there is no equivalent flag, see
-installer/privacyfence.iss's own comment history. It is the direct
-analogue of the macOS LaunchAgent's KeepAlive/SuccessfulExit=false and
-the Linux .deb plan's own systemd Restart=on-failure. Count is 3, the
-same value Task Scheduler's own UI offers by default, rather than an
-arbitrarily large number: the restart count is a bounded schema type,
-so a large value is a validation risk for no practical gain, and a
-daemon that has failed to stay up across three one minute retries is
-not going to be rescued by a fourth.
+time. It must stay Parallel even with the TimeTrigger below added:
+IgnoreNew would stop a redundant tick's spawn (harmless on its own,
+since the single-instance lock already makes it exit immediately) but
+would also stop a second user's sign-in from ever getting a daemon,
+which is a correctness regression this task cannot trade away for a
+smaller one.
+
+Phase 13: RestartOnFailure is not a keep-alive and never was, measured
+on a real windows-latest runner rather than assumed: Task Scheduler
+logs a killed action as a *successfully completed* task (its own
+operational log: "Task Scheduler successfully finished ... action
+... with return code 2147942401", 2147942401 being 0x80070001, the
+action's own non-zero exit as an HRESULT), so an action that ran and
+then died never engages this setting at all; it only ever answers a
+task that fails to *run*. It stays here anyway, for the narrower thing
+it actually does: a launch failure right at LogonTrigger's own moment
+(e.g. a locked file mid-upgrade) gets retried within a minute instead
+of waiting for the TimeTrigger's next tick. Count is 3, the same value
+Task Scheduler's own UI offers by default, rather than an arbitrarily
+large number: the restart count is a bounded schema type, so a large
+value is a validation risk for no practical gain, and a daemon that has
+failed to launch across three one minute retries is not going to be
+rescued by a fourth.
+
+Real crash-restart is the new TimeTrigger, added by Phase 13 once
+RestartOnFailure was measured not to provide it: an indefinitely
+repeating trigger, live immediately (a StartBoundary in the past, same
+convention the LogonTrigger already uses) rather than waiting for a
+sign-in, on a PT5M interval. Every tick launches the daemon; if one is
+already running, the single-instance lock (privacyfence.daemon_main.
+_acquire_instance_lock) makes the new process exit immediately, so this
+is normally a no-op cold start rather than a second daemon. PT5M is a
+deliberate middle point, not tuned by measurement: shorter buys faster
+recovery from a crash at the direct cost of a doomed-to-exit
+PyInstaller cold start per signed-in user every interval forever
+(battery, on a laptop), and this task has no signal at all for "a user
+is actively relying on the daemon right now" to trade against that
+cost adaptively. Five minutes is short enough that a user is unlikely
+to notice PrivacyFence was down, and long enough that the steady-state
+per-tick cost (one process spawn that exits at once) stays well below
+what a background Task Scheduler task is expected to cost on a laptop.
+The LogonTrigger stays alongside it rather than being replaced: without
+it, signing in could leave up to one whole PT5M interval of dead time
+before the first tick ever launches the daemon.
 
 The XML declaration deliberately carries no encoding attribute.
 schtasks.exe reads this file and hands it to MSXML as a Unicode stream,
@@ -91,13 +126,20 @@ XML comments may not contain anywhere in their body.
 -->
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Starts PrivacyFence when any user signs in, and restarts it if it exits unexpectedly.</Description>
+    <Description>Starts PrivacyFence when any user signs in, and keeps it running.</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
       <StartBoundary>2020-01-01T00:00:00</StartBoundary>
       <Enabled>true</Enabled>
     </LogonTrigger>
+    <TimeTrigger>
+      <StartBoundary>2020-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT5M</Interval>
+      </Repetition>
+    </TimeTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
