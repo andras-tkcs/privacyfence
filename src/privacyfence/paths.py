@@ -134,6 +134,38 @@ def downloads_dir(principal: "Principal | None" = None) -> Path:
     return secure_mkdir(user_dir(principal) / "downloads")
 
 
+def all_downloads_dirs() -> list[Path]:
+    """Every download-staging directory that currently exists on disk,
+    across every principal: the local principal's own ``downloads_dir()``
+    plus one per already-provisioned subdirectory of ``data_dir()/users/``.
+
+    Existence-only, unlike ``downloads_dir()``/``user_dir()``: a directory
+    that has never been provisioned is simply omitted rather than created,
+    so this is safe to call before any principal has ever staged a
+    download. ``download_staging.DownloadStagingStore.__init__`` uses this
+    to find ciphertext orphaned by a daemon restart -- see that class's
+    docstring -- so creating directories here would defeat the point.
+
+    Reuses ``_is_safe_principal_id`` to skip anything under ``users/`` that
+    isn't a directory name ``user_dir()`` could itself have produced,
+    rather than trusting arbitrary on-disk entries.
+    """
+    base = data_dir()
+    dirs = []
+    local_downloads = base / "downloads"
+    if local_downloads.is_dir():
+        dirs.append(local_downloads)
+    users_root = base / "users"
+    if users_root.is_dir():
+        for entry in sorted(users_root.iterdir()):
+            if not entry.is_dir() or not _is_safe_principal_id(entry.name):
+                continue
+            candidate = entry / "downloads"
+            if candidate.is_dir():
+                dirs.append(candidate)
+    return dirs
+
+
 def bundle_macos_dir() -> Path | None:
     """Path to Contents/MacOS inside the .app bundle, or None in dev."""
     if is_bundled():

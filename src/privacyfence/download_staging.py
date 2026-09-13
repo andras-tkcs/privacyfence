@@ -7,6 +7,17 @@ the tool call) -- but this registry's payload is real file content, not a
 decision, so it adds one more property approvals.py never needed:
 plaintext must never touch this server's disk.
 
+**Restart is not supposed to leak ciphertext.** The registry entry is
+ephemeral by design, but the file it names on disk is not -- so a naive
+restart would turn "lost the in-memory entry" into "orphaned the
+ciphertext forever," since nothing else ever revisits a principal's
+``downloads_dir()`` on its own. ``DownloadStagingStore.__init__`` closes
+that gap: a fresh instance has no ``self._pending`` entries yet, so any
+file already sitting in any principal's ``downloads_dir()`` at
+construction time cannot correspond to one -- it is unclaimable dead
+weight from a previous process life -- and gets deleted immediately,
+before the first ``stage()`` call could possibly have written anything.
+
 **Encryption at rest.** ``stage()`` generates a fresh 256-bit ``token``
 (``secrets.token_bytes(32)``) and returns it to the caller -- that return
 value is the *only* copy of the token that ever exists. The registry keys
@@ -107,6 +118,31 @@ class DownloadStagingStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pending: dict[str, StagedDownload] = {}
+        self._sweep_orphaned_from_previous_process()
+
+    def _sweep_orphaned_from_previous_process(self) -> None:
+        """Called once, from ``__init__``, before this instance's lock or
+        ``self._pending`` are ever touched by a caller. See the module
+        docstring's "Restart is not supposed to leak ciphertext" section:
+        every file this finds is unclaimable by construction, so it is
+        deleted outright rather than TTL-checked -- there is no persisted
+        ``expires_at`` to check it against, and every legitimate write goes
+        through ``stage()``, which cannot have run yet."""
+        for directory in paths.all_downloads_dirs():
+            try:
+                entries = list(directory.iterdir())
+            except OSError as exc:
+                logger.warning("download_staging: could not scan %s for startup cleanup: %s", directory, exc)
+                continue
+            for entry in entries:
+                if not entry.is_file():
+                    continue
+                try:
+                    entry.unlink()
+                except OSError as exc:
+                    logger.warning("download_staging: could not remove orphaned ciphertext %s: %s", entry, exc)
+                else:
+                    logger.info("download_staging: removed ciphertext orphaned by a previous process: %s", entry)
 
     # ------------------------------------------------------------------ #
     # Stage
