@@ -1368,8 +1368,9 @@ Most CI failures are diagnosable without local reproduction.
 
 ### Objective
 
-Keep GitHub's required-status-checks list (Settings → Branches, the branch protection rule on
-`main`) in step with which jobs in `.github/workflows/tests.yml` actually run, and are actually
+Keep GitHub's required-status-checks list (Settings → Rules → Rulesets, the `main` ruleset — *not*
+Settings → Branches, which holds the separate classic branch-protection resource and reads as empty
+on this repo) in step with which jobs in `.github/workflows/tests.yml` actually run, and are actually
 trustworthy, on every PR — so a job this plan promotes to per-PR (Phase 2's `platform-windows`, its
 `platform-macos` sibling, `test-python-compat`, the org-mode job from Phase 8) can't go red and
 still let a PR merge. This was a real, open gap: `testing-policy.md` stated plainly, "This `test`
@@ -1417,10 +1418,15 @@ described below, not skipped work.
 
 ### Remaining work
 
-1. A repo admin runs `python scripts/update_branch_protection.py show` against the live repo to see
-   the current vs. target diff, then `apply` (a `GITHUB_TOKEN` with branch-protection admin rights
-   is required; see the script's own docstring) to actually update `main`'s branch protection rule
-   to the target set above. This is the one step here that has to happen outside of a commit/PR.
+1. ~~A repo admin applies the target set to the live repo~~ — **done**, and the live setting was
+   confirmed by reading it back: the `main` ruleset (Settings → Rules → Rulesets) requires all
+   seven contexts with `strict_required_status_checks_policy: true` and an empty bypass list, so it
+   binds admins too. It is a **ruleset**, not a classic branch-protection rule — a distinction that
+   cost a false "branch protection is enforcing nothing" finding in review, because the classic
+   `/branches/main/protection` endpoint reports `enforcement_level: "off"` with empty `contexts` on
+   this repo purely because no classic rule exists. `scripts/update_branch_protection.py` now reads
+   and writes the ruleset accordingly; see its module docstring. Re-run its `show` after any change
+   to `REQUIRED_STATUS_CHECKS`.
 2. ~~Confirm required-check granularity~~ — done above, by inspection.
 3. ~~Update `testing-policy.md`~~ — done above.
 4. After item 1 is applied, confirm enforcement rather than trusting the setting alone: push a
