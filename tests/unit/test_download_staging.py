@@ -154,6 +154,66 @@ class TestClaimDiskFailures:
             monkeypatch.setattr(Path, "unlink", real_unlink)
 
 
+class TestStartupSweep:
+    """DownloadStagingStore.__init__ must not let a daemon restart turn a
+    lost registry entry into ciphertext that lingers forever -- see the
+    module docstring's "Restart is not supposed to leak ciphertext"
+    section. Each test writes the leftover file directly, simulating what
+    a *previous* store instance left behind, rather than going through
+    stage() on the same instance -- that's the one thing this sweep must
+    never touch (see test_does_not_touch_files_staged_after_construction
+    below)."""
+
+    def test_removes_a_ciphertext_file_left_by_a_previous_process(self):
+        downloads = paths.downloads_dir(ALICE)
+        leftover = downloads / "orphaned-lookup-id"
+        leftover.write_bytes(b"some old ciphertext")
+
+        DownloadStagingStore()
+
+        assert not leftover.exists()
+
+    def test_sweeps_every_principals_downloads_dir_not_just_one(self):
+        alice_leftover = paths.downloads_dir(ALICE) / "a"
+        alice_leftover.write_bytes(b"x")
+        bob_leftover = paths.downloads_dir(BOB) / "b"
+        bob_leftover.write_bytes(b"y")
+
+        DownloadStagingStore()
+
+        assert not alice_leftover.exists()
+        assert not bob_leftover.exists()
+
+    def test_does_not_touch_files_staged_after_construction(self):
+        store = DownloadStagingStore()
+        token = store.stage(ALICE, b"fresh data", "f.txt", "text/plain")
+
+        assert store.claim(token, ALICE.id) == (b"fresh data", "f.txt", "text/plain")
+
+    def test_a_fresh_store_with_nothing_on_disk_constructs_cleanly(self):
+        # No downloads/ or users/ directory exists at all yet -- must not
+        # raise just because there's nothing to sweep.
+        DownloadStagingStore()
+
+    def test_tolerates_an_unlink_failure_during_startup_sweep(self, monkeypatch):
+        leftover = paths.downloads_dir(ALICE) / "orphaned-lookup-id"
+        leftover.write_bytes(b"some old ciphertext")
+
+        from pathlib import Path
+        real_unlink = Path.unlink
+
+        def failing_unlink(self, *a, **k):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "unlink", failing_unlink)
+        try:
+            # Must not raise -- a startup cleanup failure logs and moves
+            # on rather than stopping the daemon from starting at all.
+            DownloadStagingStore()
+        finally:
+            monkeypatch.setattr(Path, "unlink", real_unlink)
+
+
 class TestSingleton:
     def test_get_download_staging_store_is_lazily_constructed_and_stable(self):
         download_staging._INSTANCE = None
