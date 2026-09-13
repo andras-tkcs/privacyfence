@@ -129,8 +129,7 @@ if [ -n "$SIGN_IDENTITY" ]; then
 fi
 
 # ── 6. Build the Claude Desktop extension (.mcpb) ─────────────────────────────
-# One extension since P5 retired the bridge (see
-# docs/https-connector-refactor-plan.md §12 — D11): the /mcp shim
+# One extension since P5 retired the bridge (decision D11): the /mcp shim
 # (PrivacyFence.mcpb). Until P5 this step built a second, "Legacy Bridge"
 # .mcpb alongside it as a rollback that needed no /mcp setup -- that lever
 # isn't needed any more now that the bridge itself no longer exists.
