@@ -88,15 +88,20 @@ def assert_task_xml_matches_autostart_contract(xml_text: str, *, exec_path: str)
     # cover that case at all (Task Scheduler logs a killed action as a
     # successfully completed task). A TimeTrigger with an indefinite
     # Repetition is what actually relaunches a dead daemon: no default
-    # fallback on any of these, since a missing or misconfigured element
-    # here silently means "no crash-restart," exactly the failure mode this
-    # phase exists to close.
+    # fallback on Repetition/Interval or StartBoundary below, since a
+    # missing or misconfigured element there silently means "no
+    # crash-restart," exactly the failure mode this phase exists to close.
     time_triggers = triggers.findall(f"{TASK_NS}TimeTrigger")
     assert len(time_triggers) == 1, f"expected exactly one <TimeTrigger>\n{context}"
     time_trigger = time_triggers[0]
+    # Same "None means the schema default of true" fallback as LogonTrigger's
+    # own Enabled check above, not a looser standard invented for this
+    # element: a real windows-latest run confirmed Task Scheduler stores
+    # neither trigger's <Enabled> at all when it is true, the same way it
+    # normalizes away any other schema-default value.
     time_trigger_enabled = time_trigger.findtext(f"{TASK_NS}Enabled")
-    assert time_trigger_enabled is not None and time_trigger_enabled.strip().lower() == "true", (
-        f"<TimeTrigger> is disabled or does not say so explicitly\n{context}"
+    assert time_trigger_enabled is None or time_trigger_enabled.strip().lower() == "true", (
+        f"<TimeTrigger> is disabled\n{context}"
     )
     assert (time_trigger.findtext(f"{TASK_NS}StartBoundary") or "").strip(), (
         f"<TimeTrigger> has no <StartBoundary>\n{context}"
