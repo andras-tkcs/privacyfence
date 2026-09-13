@@ -252,7 +252,7 @@ PrivacyFence is currently an open-source macOS/Linux implementation rather than 
 5. Install **PrivacyFence.mcpb** into Claude Desktop.
 
 Releases are code-signed and notarized by Apple, so this just works — no Gatekeeper warnings, no
-manual quarantine step. Full installation details are in [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation).
+manual quarantine step. Full installation details are in [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation-and-packaging).
 
 ### Install on Windows
 
@@ -265,7 +265,7 @@ manual quarantine step. Full installation details are in [Technical Reference](d
 5. Install **PrivacyFence.mcpb**, installed alongside the daemon, into Claude Desktop.
 
 Releases are Authenticode-signed. Full installation details, including what uninstalling does and
-doesn't remove, are in [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation).
+doesn't remove, are in [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation-and-packaging).
 
 ### Install from the `.deb` (Debian/Ubuntu desktop)
 
@@ -286,13 +286,13 @@ The package ships a self-contained PyInstaller build of the daemon — no `pytho
 required beyond what a normal Debian/Ubuntu desktop already has. `apt remove`/`dpkg -r` leaves
 your `~/.privacyfence` config, credentials, and audit log untouched; only `apt purge` is meant to
 also clean up anything package-owned, and there's no system-wide config here to purge either. See
-[Technical Reference](docs/TECHNICAL_REFERENCE.md#installation) for the full details, and
+[Technical Reference](docs/TECHNICAL_REFERENCE.md#installation-and-packaging) for the full details, and
 [Platform support](docs/platform-support.md#debianubuntu-local-mode) for how the
 package is built.
 
 Prefer a bare `pip`/`pipx install privacyfence` plus the repo-root `privacyfence.service`
 (`--user` systemd unit) instead? That path works too — see the same
-[Technical Reference](docs/TECHNICAL_REFERENCE.md#installation) section.
+[Technical Reference](docs/TECHNICAL_REFERENCE.md#installation-and-packaging) section.
 
 ### Run from source
 
@@ -316,7 +316,7 @@ pip install --upgrade pip
 pip install -e .
 ```
 
-Continue with the organization configuration and connector authentication steps in the [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation).
+Continue with the organization configuration and connector authentication steps in the [Technical Reference](docs/TECHNICAL_REFERENCE.md#installation-and-packaging).
 
 ---
 
