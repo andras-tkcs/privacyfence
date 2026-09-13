@@ -148,12 +148,18 @@ check); `org-mode-smoke` (`test_org_ubuntu_release_smoke.py`, see §3's row abov
 be required (`docs/automated-test-strategy-plan.md` Phase 11) — update it in the same PR whenever
 a job here is added, renamed, or removed.
 
-Whether `main`'s live branch protection rule actually requires all six today is a separate fact
-this repo doesn't track as a file, no CI job enforces, and nothing in a checkout can confirm.
-Applying `REQUIRED_STATUS_CHECKS` to the live setting is a deliberate, unautomated step a repo
-admin takes by running `scripts/update_branch_protection.py apply` against GitHub directly — see
-that script's own docstring for why this is intentionally not wired into CI. Treat this section as
-describing the *intended* gate, not a verified guarantee that it is currently enforced.
+The live setting is a **repository ruleset** (Settings → Rules → Rulesets, the `main` ruleset), not
+a classic branch-protection rule — reading the classic `/branches/main/protection` endpoint instead
+returns `enforcement_level: "off"` with empty `contexts` purely because no classic rule exists,
+which is a false negative that has already been reported as a finding once. The ruleset currently
+requires all of the checks above, with "require branches to be up to date" on and an empty bypass
+list, so it applies to admins too.
+
+That is still repo configuration this repo doesn't track as a file and no CI job enforces:
+`REQUIRED_STATUS_CHECKS` is the *intended* set, and applying it remains a deliberate, unautomated
+step a repo admin takes by running `scripts/update_branch_protection.py apply` against GitHub
+directly — see that script's own docstring for why this is intentionally not wired into CI. Run its
+`show` to compare the intent here against what is live.
 
 Through P9 this ran on `macos-latest` instead, and a second, non-blocking `test-linux` job carried
 the platform-independent subset (everything under `web/`, `web_approval_ui.py`, `card_builder.py`,
