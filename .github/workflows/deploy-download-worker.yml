@@ -4,9 +4,22 @@ name: Deploy download Worker
 # backing https://downloads.privacyfence.eu -- whenever it changes on `main`. Deliberately
 # separate from build.yml/publish-pypi.yml: this Worker ships on every merge to `main`, not on a
 # release tag, and has nothing to do with the daemon's own version/release mechanics.
+#
+# `verify` also runs on `pull_request` (same path filter as `push`) so a PR that breaks the
+# Worker fails its own checks instead of merging green and only surfacing the break on `main`
+# afterwards -- the same gap `platform-windows` and `org-mode-smoke` were promoted from
+# dispatch-only to per-PR to close (see scripts/update_branch_protection.py). `deploy` still only
+# runs on a push to `main` (or a manual dispatch): it needs `verify` to pass first and needs
+# Cloudflare credentials a fork PR's `pull_request` run must never receive. `verify`'s job name is
+# deliberately not `test` -- that name is already tests.yml's per-PR job, and reusing it here
+# would put two differently-scoped checks under one ambiguous name in the PR checks list.
 on:
   push:
     branches: [main]
+    paths:
+      - "cloudflare/downloads/**"
+      - ".github/workflows/deploy-download-worker.yml"
+  pull_request:
     paths:
       - "cloudflare/downloads/**"
       - ".github/workflows/deploy-download-worker.yml"
@@ -16,7 +29,7 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -51,6 +64,28 @@ jobs:
       # deploying or needing credentials.
       - name: Dry-run bundle
         run: npm run dry-run
+
+  deploy:
+    needs: verify
+    # Never on a `pull_request` run: deploying (and the Cloudflare credentials that requires)
+    # must not happen for an unmerged change, fork-authored or not -- only a push to `main` (via
+    # the trigger's own `branches: [main]` filter) or a manual dispatch reach this job.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare/downloads
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cloudflare/downloads/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
 
       # Idempotent: a rerun against migrations already applied is a no-op (see wrangler's own
       # d1 migrations apply docs). `--remote` targets the real, already-provisioned

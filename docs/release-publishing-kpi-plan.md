@@ -153,6 +153,54 @@ is not touched yet.
 `https://downloads.privacyfence.eu/health` (or the still-enabled `*.workers.dev` URL while
 testing) returns 200; all Worker unit tests pass in CI.
 
+## Phase 1.1 — Bring the Worker tree under the repo-wide CI gates
+
+Phase 1 added `cloudflare/downloads/` — this repo's second Node component — but the repo-wide
+gates that should have picked it up still only know about `mcpb/shim/`. Both gaps below were found
+by a code-review pass after Phase 1 landed; they belong to this plan rather than to that review,
+since this tree is this plan's to own.
+
+**1. `dependency-audit.yml` never sees this tree.** Its `paths:` triggers name only
+`mcpb/shim/package.json`/`package-lock.json`, and its `npm-audit` job is hard-scoped to
+`working-directory: mcpb/shim` — so a Worker dependency change triggers nothing, and the weekly
+scheduled run audits nothing here either. `.github/dependabot.yml` *does* cover the directory,
+which is how the `sharp`/libheif CVEs behind the `overrides.sharp` pin surfaced: a Dependabot
+alert, not this repo's own gate.
+
+Copying the shim's policy verbatim would not fix it. That policy audits `--omit=dev` on the
+reasoning that dev dependencies "run in CI and on contributors' machines, never on an end user's."
+This tree inverts that: `package.json` declares **zero runtime `dependencies`** — everything is
+`devDependencies` (`wrangler`, `vitest`, `@cloudflare/vitest-pool-workers`, `typescript`,
+`@cloudflare/workers-types`) — so `--omit=dev` here audits an empty set and always passes. And
+those dev dependencies are not build-time-only the way the shim's are: `wrangler` runs in a job
+holding `CLOUDFLARE_API_TOKEN` and pushes code to a public production endpoint. A compromised
+package in this dev tree has a materially larger blast radius than one in the shim's.
+
+So this needs its own severity decision rather than a copied one. Decide and write down whether
+the Worker's dev tree blocks on high/critical (defensible, given the deploy credential) or stays
+informational like the shim's (defensible, given it never reaches an end user) — then wire
+whichever you pick. Add the two path entries either way, so the workflow at least runs.
+
+**2. The Worker's tests are a post-merge gate, not a pre-merge one.**
+`deploy-download-worker.yml` runs `typecheck`, `npm test` and the dry-run bundle before deploying,
+and a failure there does correctly stop the deploy. But its only triggers are `push` to `main` and
+`workflow_dispatch` — there is no `pull_request:` trigger, so it cannot report on a PR and cannot
+be a required check (it is correctly absent from `scripts/update_branch_protection.py`'s
+`REQUIRED_STATUS_CHECKS`). A PR that breaks the Worker merges green and fails afterwards, on
+`main`.
+
+That is the same gap `docs/automated-test-strategy-plan.md` Phase 2.1 closed for
+`platform-windows` and Phase 8 for `org-mode-smoke`, both promoted from dispatch-only to per-PR on
+the reasoning that waiting for a tag — or a merge — to find out something broke is too late. Apply
+the same fix: split test/typecheck/dry-run into a `pull_request`-triggered job (no credentials
+needed — the suite runs entirely against local Miniflare/workerd), leave deploy on `main`, and add
+the new job to `REQUIRED_STATUS_CHECKS` in the same PR.
+
+**Exit criteria:** a Worker dependency change triggers `dependency-audit.yml` and is audited under
+a written, deliberate severity policy; the Worker's tests and typecheck run on every PR that
+touches `cloudflare/downloads/**` and gate the merge; `deploy-download-worker.yml` still runs the
+same checks before deploying, so a direct push to `main` cannot deploy an untested Worker.
+
 ## Phase 2 — Release metadata pipeline
 
 Rollout doc's "Phase B".
@@ -332,6 +380,9 @@ enough to trust the download counts.
 - The whole download/statistics infrastructure is fully reproducible from this repository (no
   manual dashboard-only state left uncommitted, other than the one-time Cloudflare provisioning
   in the Prerequisites section).
+- The `cloudflare/downloads/` tree is held to the same CI standard as the rest of the repo: its
+  dependencies are audited under a written severity policy, and its tests gate a PR rather than
+  only reporting after the merge (Phase 1.1).
 
 ## Minimum useful first milestone
 
