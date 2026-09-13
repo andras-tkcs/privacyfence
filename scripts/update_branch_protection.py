@@ -42,10 +42,11 @@ API_ROOT = "https://api.github.com"
 
 # Every job in tests.yml that runs on every PR (no job- or step-level `if:` restricts any of
 # these to a schedule or a path) and is meant to gate correctness. Requiring a job by name
-# requires its overall conclusion -- static-analysis's own mypy/bandit steps use
-# `continue-on-error: true` and so never turn the job red (Phase 11 exit criteria confirms this
-# is a job-level, not step-level, mechanism); only its blocking `ruff check .` step can fail the
-# job, so requiring the job is exactly "require ruff", as intended.
+# requires its overall conclusion -- static-analysis's own mypy step still uses
+# `continue-on-error: true` and so never turns the job red (Phase 11 exit criteria confirms this
+# is a job-level, not step-level, mechanism), but its `ruff check .` and `bandit` steps are both
+# blocking, so requiring the job means "require ruff and bandit" (mypy stays informational until
+# it gets the same per-module treatment -- see [tool.mypy] in pyproject.toml).
 #
 # test-python-compat's matrix (.github/workflows/tests.yml's `python-version: ['3.11', '3.12']`)
 # reports one check per leg, named from that job's own `name:` template -- both legs are listed

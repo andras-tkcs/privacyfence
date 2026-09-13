@@ -528,7 +528,8 @@ class OrgOAuthProvider:
             self._refresh_for_access[access_token_str] = refresh_token_str
             self._access_for_refresh[refresh_token_str] = access_token_str
         return OAuthToken(
-            access_token=access_token_str, token_type="Bearer", expires_in=_ACCESS_TOKEN_TTL_SECONDS,
+            access_token=access_token_str, token_type="Bearer",  # nosec B106 -- the OAuth token_type, not a credential
+            expires_in=_ACCESS_TOKEN_TTL_SECONDS,
             scope=" ".join(scopes) if scopes else None, refresh_token=refresh_token_str,
         )
 

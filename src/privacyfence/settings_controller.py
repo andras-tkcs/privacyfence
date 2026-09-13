@@ -415,7 +415,7 @@ RULE_NAME_TO_RESOURCE_TYPE: dict[str, GrantResourceType] = {
     for _op_key, rule_name in capability.targets
 }
 _drive_folder_rt = grant_resource_type("drive", "folders")
-assert _drive_folder_rt is not None
+assert _drive_folder_rt is not None  # nosec B101 -- invariant narrowing, not input validation; "drive"/"folders" is a literal above
 RULE_NAME_TO_RESOURCE_TYPE["parent_folder_allowlist"] = _drive_folder_rt
 
 # Drive/Sheets URLs paste-able into a grant's ID field, so the user can copy

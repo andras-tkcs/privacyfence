@@ -26,7 +26,7 @@ ATLASSIAN_OAUTH_PORT = 53684
 ATLASSIAN_REDIRECT_PATH = "/callback"
 
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
-TOKEN_URL = "https://auth.atlassian.com/oauth/token"
+TOKEN_URL = "https://auth.atlassian.com/oauth/token"  # nosec B105 -- an endpoint URL, not a credential
 ACCESSIBLE_RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 
 # Jira stays on classic scopes — its endpoints work fine with them, and

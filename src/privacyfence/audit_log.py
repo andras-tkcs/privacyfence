@@ -538,7 +538,7 @@ class AuditLogger:
                 if line:
                     try:
                         entries.append(AuditEntry(**json.loads(line)))
-                    except Exception:
+                    except Exception:  # nosec B110 -- one malformed audit line must not break the whole export
                         pass
         if not entries:
             return None
@@ -676,7 +676,7 @@ class AuditLogger:
                         continue
                     try:
                         week_entries.append(AuditEntry(**json.loads(line)))
-                    except Exception:
+                    except Exception:  # nosec B112 -- one malformed audit line must not break recent-entries listing
                         continue
             entries.extend(reversed(week_entries))
             if len(entries) >= limit:

@@ -141,8 +141,9 @@ ruff check .
 ```
 
 `pyproject.toml` is authoritative for Ruff, mypy, Bandit, pytest, and coverage configuration. Ruff
-is a blocking CI check; mypy and Bandit are visible informational checks in the current test
-workflow.
+and Bandit are blocking CI checks; mypy is still a visible informational check in the current
+test workflow, promoted per module as modules get cleaned up (see `[tool.mypy]`'s
+`[[tool.mypy.overrides]]` entries).
 
 For Node/TypeScript changes under `mcpb/shim/`, run:
 
@@ -259,9 +260,12 @@ A new connector's test module should include, at minimum:
 - [ ] `pytest -v --cov=src/privacyfence --cov-branch --cov-report=term-missing
       --cov-report=json:coverage.json` passes at 100%, and `python scripts/check_coverage_floor.py
       coverage.json` passes (the coverage ratchet — see `testing-policy.md`).
-- [ ] `ruff check .` passes (CI's `static-analysis` job blocks on this; `mypy`/`bandit` run in the
-      same job but are informational only for now — see `[tool.mypy]`/`[tool.bandit]` in
-      `pyproject.toml`).
+- [ ] `ruff check .` and `bandit -c pyproject.toml -r src` both pass (CI's `static-analysis` job
+      blocks on both; `mypy` runs in the same job but is informational only for now, except for
+      the modules with a `[[tool.mypy.overrides]]` entry — see `[tool.ruff.lint]`/`[tool.mypy]`/
+      `[tool.bandit]` in `pyproject.toml`). A new Bandit finding that's a genuine false positive
+      gets a `# nosec BXXX -- <reason>` comment at its call site, not a suppression in
+      `pyproject.toml`.
 - [ ] Every new/changed tool call still resolves through `gated_call` or an explicit
       always-auto-approve connector, and leaves an audit trail either way.
 - [ ] No preview dict carries full content; no log line carries a credential or a message/document
