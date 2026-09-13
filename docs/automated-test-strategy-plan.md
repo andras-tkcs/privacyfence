@@ -1111,8 +1111,10 @@ originally planned.
    automated CI). There's no physical sign-in to drive on a GitHub-hosted Windows runner, so this
    makes two deliberate substitutions rather than one hand-rolled workaround: a throwaway local
    account stands in for "someone signs in" (this test mints and knows its password, unlike the CI
-   runner's own already-logged-on account, and `installer/privacyfence.iss`'s own `schtasks /create`
-   call passes `/ru "BUILTIN\Users"`, the built-in group rather than one specific account, so the
+   runner's own already-logged-on account, and the task `installer/privacyfence.iss` registers names
+   `Builtin\Users` as its principal's `GroupId` — since superseded in form, not in meaning: this was
+   a `/ru "BUILTIN\Users"` CLI flag when this item was written and is the XML definition's own
+   `<Principal><GroupId>` now — the built-in group rather than one specific account, so the
    trigger fires for *any* interactive logon — the same "whichever account is at the keyboard" scope
    the macOS LaunchAgent and Linux XDG autostart already have, so a throwaway account is a valid
    stand-in, not a special case. This line originally omitted `/RU` entirely on the mistaken
@@ -1124,16 +1126,26 @@ originally planned.
    account is added to local Administrators purely to satisfy
    this Windows Server base image's default "Log on locally" policy (denied to plain standard
    accounts), not to change how the daemon itself runs — the scheduled task's own `/rl limited`
-   still governs that regardless of the account's own group membership. Everything else is the real,
-   unmocked mechanism: a genuine interactive Windows logon (`LOGON32_LOGON_INTERACTIVE` via
-   `CreateProcessWithLogonW`, driven through PowerShell's `Start-Process -Credential` — the same
-   primitive `runas.exe` is built on, and the standard documented way to manually test an "At log on"
-   Task Scheduler trigger without a physical sign-in), Task Scheduler's own real trigger evaluation of
-   the real installed task, the real packaged `privacyfence-app.exe` alias it launches (confirmed
-   running as the account that just logged on, via `Win32_Process`'s `GetOwner`, not assumed), a real
-   daemon/MCP/approval/audit round trip against it (Phase 3's own contract shape, reusing
-   `test_windows_packaged_smoke.py`'s own helpers), and "Quit PrivacyFence" confirmed to actually end
-   that real process. Scheduled the same way as the Linux module — its own
+   still governs that regardless of the account's own group membership (this module now asserts it,
+   out of the registered definition). **The second substitution has since been replaced**: this
+   module originally drove PowerShell's `Start-Process -Credential` (`CreateProcessWithLogonW`) as a
+   stand-in for signing in, and was red on every run because of it — that call creates a logon
+   session but not the Terminal Services *session* logon a `LogonTrigger` subscribes to, so Task
+   Scheduler never evaluated the trigger at all (`Last Result: 267011`, `SCHED_S_TASK_HAS_NOT_RUN`,
+   on a task `schtasks /query /v` reported as registered, enabled and correctly scoped). Nothing on
+   the installer side could fix that, and a hosted runner cannot produce a real session logon
+   (RDP loopback needs an RDP client that can run without a desktop of its own), so the trigger's own
+   firing is now covered by `release-testing.md`'s Windows human checks on a real machine, and this
+   module asks Task Scheduler to run the installed task on demand instead — from inside a real logon
+   of the throwaway account, so everything after the decision to run is the same code path the
+   trigger uses. Everything else is the real, unmocked mechanism: the task definition **Task
+   Scheduler itself stored** (`schtasks /query /xml`, not this repo's template) asserted element by
+   element, the real packaged `privacyfence-app.exe` alias Task Scheduler launches for an account
+   that installed nothing (confirmed running as that account, via `Win32_Process`'s `GetOwner`, not
+   assumed), a real daemon/MCP/approval/audit round trip against it (Phase 3's own contract shape,
+   reusing `test_windows_packaged_smoke.py`'s own helpers), "Quit PrivacyFence" confirmed to actually
+   end that real process, and — Phase 13 item 4 — a real crash and the relaunch Task Scheduler
+   performs afterwards. Scheduled the same way as the Linux module — its own
    `.github/workflows/windows-graphical-session.yml`, packaging-related `main` pushes, weekly, and on
    demand, deliberately out of both `tests.yml`'s per-PR jobs and `build.yml`'s tag-triggered release
    pipeline.
@@ -1501,7 +1513,7 @@ Give the installed Windows autostart task real crash-restart behavior — parity
 LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and the Linux `.deb`'s systemd `Restart=on-failure`,
 which Phase 3's original design intent wanted but never actually shipped.
 
-### Status: implementation done; exit criteria not yet met, for a reason outside this phase's own scope
+### Status: done — implementation and exit criteria both
 
 Phase 12's own verification pass found and fixed two independent reasons
 `windows-graphical-session.yml` was red on every run — see that phase's own status note for detail.
@@ -1522,18 +1534,26 @@ bounded schema type), and `installer/privacyfence.iss`'s `[Code]` section now ca
 several runs to even see. Items 1-3 below are done; see `platform-support.md`'s "Known open items" for
 the fuller narrative and links.
 
-**What's not done, and why it doesn't belong to this phase to fix:** item 4 (a real crash-restart
-assertion) was never reached, because `windows-graphical-session.yml`'s existing real-logon test still
-fails one step earlier than that — the `LogonTrigger` itself doesn't fire within the test's 30s
-window, even though `schtasks /query /v` shows the task correctly registered, enabled, and scoped.
-The cause is the test's own substitution for "someone signs in": PowerShell's
-`Start-Process -Credential` (`CreateProcessWithLogonW`) creates a logon session but not the Terminal
-Services *session* logon a `LogonTrigger` actually subscribes to, on a hosted runner. That is a gap in
-this specific CI test's methodology, not in the shipped task definition — no amount of further XML or
-`[Code]` work closes it. Deciding what this test should assert instead (narrow it to what CI can
-prove without a real interactive session; build a real session via RDP loopback; or retire the
-workflow in favor of Phase 6.2's packaged-installer smoke test) is a deliberate scope call for a
-follow-up, not a leftover item of this phase's own remaining work.
+**Item 4 was blocked behind a different defect, in the test rather than the installer, and that is now
+resolved too.** `windows-graphical-session.yml` used to fail one step before any crash could be
+staged: the `LogonTrigger` never fired within the test's window, even though `schtasks /query /v`
+showed the task registered, enabled and correctly scoped (`Last Result: 267011`,
+`SCHED_S_TASK_HAS_NOT_RUN` — Task Scheduler had never attempted it). The cause was that module's own
+substitution for "someone signs in": PowerShell's `Start-Process -Credential`
+(`CreateProcessWithLogonW`) creates a logon session but not the Terminal Services *session* logon a
+`LogonTrigger` subscribes to, so no amount of further XML or `[Code]` work could have closed it.
+Of the three options this note used to leave open, the first is taken: the automated assertions are
+narrowed to what a hosted runner can actually prove — the definition **Task Scheduler itself stored**
+(`schtasks /query /xml`), Task Scheduler starting the daemon on demand for an account that installed
+nothing, from inside a real logon of that account, and the crash-restart this phase exists for — and
+the trigger's own firing moves to `release-testing.md`'s Windows human checks, which already run
+against a real sign-in. RDP loopback would produce a genuine session logon but needs an RDP client
+that can run without a desktop of its own, which a hosted runner does not have; retiring the workflow
+would have given up the Scheduler-driven coverage as well. The cheap half of the same coverage is now
+also a per-PR, any-OS unit test: `tests/unit/test_windows_autostart_task_template.py` holds the
+shipped template to the same contract (`tests/windows_task_contract.py`) the packaged test holds the
+registered definition to, so a regression in the XML no longer waits for a scheduled Windows-only
+workflow to find it.
 
 ### Remaining work (done, kept for history)
 
@@ -1545,24 +1565,28 @@ follow-up, not a leftover item of this phase's own remaining work.
    UTF-16 bytes — confirmed only by a real `workflow_dispatch` run surfacing `schtasks`'s own error
    text, the same "don't guess at it from a Linux dev loop" lesson this item already called out in
    advance.
-4. Extend `tests/integration/test_windows_graphical_session_autostart.py` (or
+4. ~~Extend `tests/integration/test_windows_graphical_session_autostart.py` (or
    `test_windows_packaged_smoke.py`) with a real crash-restart assertion: start the installed daemon,
-   kill its process, wait, and confirm Task Scheduler actually relaunched it. **Blocked**, not merely
-   undone — see the status note above; this needs the logon-trigger test-methodology gap resolved
-   first, since the daemon that assertion would kill never starts in CI today.
-5. ~~Validate via `workflow_dispatch` on `windows-graphical-session.yml`~~ — done for items 1-3 (two
-   consecutive green `build.yml` dispatches, including `build-windows` and the `windows-graphical-
-   session` job reaching registration); not yet possible for item 4, blocked on the same gap.
+   kill its process, wait, and confirm Task Scheduler actually relaunched it.~~ — **Done**:
+   `test_task_scheduler_restarts_the_daemon_after_it_crashes`. Task Scheduler starts the daemon, the
+   test kills it outright (`taskkill /f`, so the task instance ends non-zero — exactly the condition
+   `<RestartOnFailure>` answers), and the relaunch is asserted as a *different* pid for the same
+   installed exe, running as the same account, serving again. Unblocking it needed the logon-trigger
+   substitution replaced first — see the status note above.
+5. ~~Validate via `workflow_dispatch` on `windows-graphical-session.yml`~~ — **Done** for items 1-4:
+   items 1-3 by two consecutive green `build.yml` dispatches (including `build-windows` and the
+   `windows-graphical-session` job reaching registration), item 4 by a real dispatch of
+   `windows-graphical-session.yml` itself, which is where the crash and the relaunch actually happen.
 
 ### Exit criteria
 
 The installed Windows autostart task actually restarts the daemon after a crash, proven by an
 automated CI test (not just a manual QA step), with the fix's own correctness confirmed on a real
-`windows-latest` runner before merging, not assumed from documentation alone. **Not yet met**: the
-task definition itself (registration and `<RestartOnFailure>`) is confirmed correct on a real
-`windows-latest` runner, but no automated test has yet exercised a real crash-restart, because the
-logon-trigger test-methodology gap above blocks even getting the daemon running via CI's own
-substitution for a real sign-in.
+`windows-latest` runner before merging, not assumed from documentation alone. **Met**:
+`windows-graphical-session.yml`'s `test_task_scheduler_restarts_the_daemon_after_it_crashes` kills
+the Scheduler-started daemon and asserts the relaunch, on a real `windows-latest` runner, and the
+registered definition's own `<RestartOnFailure>` interval/count is asserted out of what Task
+Scheduler stored rather than out of this repo's template.
 
 ---
 
@@ -1766,8 +1790,10 @@ combination.
   `windows-linux-support-plan.md`, `linux-local-deb-packaging-plan.md`, and
   `manual-pre-release-test-plan.md` are retired (Phase 12); their still-real open items live in
   `platform-support.md`'s "Known open items" instead.
-- The Windows autostart task actually survives a daemon crash, the same crash-restart parity Windows
-  has had on every other platform's own autostart mechanism from the start (Phase 13: the task
-  definition itself now does this, confirmed on a real `windows-latest` runner; proving it with an
-  automated CI test is still blocked on `windows-graphical-session.yml`'s own real-logon
-  test-methodology gap, not on further Windows installer work).
+- ✅ The Windows autostart task actually survives a daemon crash, the same crash-restart parity
+  Windows has had on every other platform's own autostart mechanism from the start (Phase 13: the
+  task definition does this, and `windows-graphical-session.yml` now kills the Scheduler-started
+  daemon and asserts the relaunch on a real `windows-latest` runner). What no automated test covers,
+  by decision rather than omission, is the `LogonTrigger`'s own firing: a hosted runner cannot
+  produce the Terminal Services session logon it subscribes to, so that stays a Windows human check
+  in `release-testing.md` — see Phase 13's status note.

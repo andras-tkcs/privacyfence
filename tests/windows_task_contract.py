@@ -33,6 +33,9 @@ TASK_NS = "{http://schemas.microsoft.com/windows/2004/02/mit/task}"
 # "{app}\{#AliasExeName}" path, substituted at install time.
 EXEC_PATH_PLACEHOLDER = "__EXEC_PATH__"
 
+# What `Builtin\Users` becomes once Task Scheduler has stored the task.
+BUILTIN_USERS_SID = "S-1-5-32-545"
+
 
 def assert_task_xml_matches_autostart_contract(xml_text: str, *, exec_path: str) -> None:
     """Assert *xml_text* is a task definition that autostarts *exec_path*
@@ -71,7 +74,11 @@ def assert_task_xml_matches_autostart_contract(xml_text: str, *, exec_path: str)
     principal = principals.find(f"{TASK_NS}Principal")
     assert principal is not None, f"no <Principal>\n{context}"
     group_id = (principal.findtext(f"{TASK_NS}GroupId") or "").strip()
-    assert group_id.lower().endswith("users"), (
+    # Task Scheduler stores the principal as the group's SID, not the name
+    # the template writes, so both spellings have to be accepted: this same
+    # contract is asserted against the template on one side and against the
+    # registered definition on the other.
+    assert group_id.lower().endswith("users") or group_id.upper() == BUILTIN_USERS_SID, (
         f"principal is {group_id!r}, not the built-in Users group -- the task would only ever run "
         f"for one account\n{context}"
     )
@@ -106,6 +113,18 @@ def assert_task_xml_matches_autostart_contract(xml_text: str, *, exec_path: str)
     # legitimately fire for several logged-on users at once, one instance per
     # session.
     assert (settings.findtext(f"{TASK_NS}MultipleInstancesPolicy") or "").strip() == "Parallel", context
+    # Both of these default to true, and both defaults are wrong for this
+    # task: on a laptop they mean "do not start PrivacyFence at sign-in while
+    # on battery" and "stop it when the user unplugs". Asserted explicitly
+    # (no `or "true"` fallback) because their absence is the bug -- that is
+    # exactly how they shipped, unnoticed, until a test read the definition
+    # back out of Task Scheduler rather than out of the template.
+    assert (settings.findtext(f"{TASK_NS}DisallowStartIfOnBatteries") or "").strip() == "false", (
+        f"DisallowStartIfOnBatteries is not false: autostart would not run on battery power\n{context}"
+    )
+    assert (settings.findtext(f"{TASK_NS}StopIfGoingOnBatteries") or "").strip() == "false", (
+        f"StopIfGoingOnBatteries is not false: the daemon would be stopped when the machine unplugs\n{context}"
+    )
     # Crash-restart -- the Windows analogue of the macOS LaunchAgent's
     # KeepAlive/SuccessfulExit=false and the .deb's systemd
     # Restart=on-failure (automated-test-strategy-plan.md Phase 13).

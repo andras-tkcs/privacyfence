@@ -1025,11 +1025,13 @@ in their own session, at the non-elevated `LeastPrivilege` run level, and
 `<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>` gives it real
 crash-restart behavior — parity with the macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and
 the Linux `.deb`'s systemd restart policy, closing
-[`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13's implementation. See
+[`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13. See
 [`platform-support.md`](platform-support.md)'s "Known open items" for this mechanism's current
-verification status — the installer/task definition itself is confirmed working via
-`workflow_dispatch`, but the one dedicated end-to-end CI test for it still fails on a hosted runner
-for a reason specific to that test's own real-logon substitution, not to the shipped task.
+verification status. In short: `windows-graphical-session.yml` verifies the definition Task
+Scheduler itself stored, that Task Scheduler really starts the daemon for an account that installed
+nothing, and that it really relaunches it after a crash; the `<LogonTrigger>`'s own firing is a
+human check on a real machine (`release-testing.md`), because a hosted runner cannot produce the
+Terminal Services session logon the trigger subscribes to.
 
 Per-user state (credentials, settings, the audit log) lives under `%USERPROFILE%\.privacyfence\`,
 created by the app on first run — the installer never touches it, and uninstalling removes only the
