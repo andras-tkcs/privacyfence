@@ -1,4 +1,4 @@
-"""The windowed-Windows-build std-streams guard (`daemon_main._ensure_std_streams`).
+"""The windowed-Windows-build std-streams guard (`std_streams.ensure_std_streams`).
 
 This is the regression test for the defect that made Windows autostart
 never work: a windowed PyInstaller executable started with no console has
@@ -20,7 +20,7 @@ import sys
 import pytest
 from uvicorn.logging import DefaultFormatter
 
-from privacyfence.daemon_main import _ensure_std_streams
+from privacyfence.std_streams import ensure_std_streams
 
 
 @pytest.fixture
@@ -49,7 +49,7 @@ def test_uvicorn_formatter_cannot_be_built_without_the_guard(no_std_streams):
 
 
 def test_guard_restores_streams_and_uvicorn_configures(no_std_streams):
-    _ensure_std_streams()
+    ensure_std_streams()
     no_std_streams.append(sys.stdout)
 
     assert sys.stdout is not None and sys.stderr is not None
@@ -66,6 +66,6 @@ def test_guard_leaves_real_streams_alone():
     """Every non-frozen run -- the whole test suite, a dev `privacyfence-app`,
     the macOS/Linux builds -- must be untouched by this."""
     before_out, before_err = sys.stdout, sys.stderr
-    _ensure_std_streams()
+    ensure_std_streams()
     assert sys.stdout is before_out
     assert sys.stderr is before_err

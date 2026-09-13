@@ -254,6 +254,35 @@ def _session_table() -> str:
     return (result.stdout + result.stderr).strip() or "(query user returned nothing)"
 
 
+def _enable_task_scheduler_event_log() -> None:
+    """Best-effort: make sure Task Scheduler's own operational channel is
+    recording, since it is the only place that says *why* a task did or did
+    not run again. Enabled by default on current Windows; enabling it is
+    idempotent and costs nothing when it already is."""
+    subprocess.run(
+        ["wevtutil", "sl", "Microsoft-Windows-TaskScheduler/Operational", "/e:true"],
+        capture_output=True, text=True, timeout=20,
+    )
+
+
+def _task_scheduler_events(count: int = 40) -> str:
+    """The last *count* Task Scheduler operational events, newest first.
+
+    ``schtasks /query /v`` reports only the outcome of the last run --
+    "Last Result: 1" and nothing about what the service decided afterwards.
+    Whether a restart was attempted, skipped, or never considered is in this
+    log and nowhere else."""
+    result = subprocess.run(
+        [
+            "wevtutil", "qe", "Microsoft-Windows-TaskScheduler/Operational",
+            f"/c:{count}", "/rd:true", "/f:text",
+        ],
+        capture_output=True, text=True, timeout=60,
+    )
+    text = (result.stdout + result.stderr).strip()
+    return text or "(no Task Scheduler operational events -- is the channel enabled?)"
+
+
 def _decode_console_output(raw: bytes) -> str:
     """``schtasks /query /xml`` writes UTF-16 (with a BOM) when its output
     is redirected, unlike the ANSI text every other ``schtasks`` output mode
@@ -505,6 +534,9 @@ def _real_home_state(request):
                 _registered_task_xml_or_error(), encoding="utf-8",
             )
             (dest / "logs" / "query-user.txt").write_text(_session_table(), encoding="utf-8")
+            (dest / "logs" / "taskscheduler-events.txt").write_text(
+                _task_scheduler_events(120), encoding="utf-8",
+            )
             # The daemon's own log, if it got far enough to write one -- see
             # _daemon_log_tail for why this is the only thing a
             # Scheduler-launched daemon leaves behind.
@@ -538,6 +570,7 @@ def _installed(_real_home_state, tmp_path):
         _kill_alias_processes()
         shutil.rmtree(INSTALL_DIR, ignore_errors=True)
 
+    _enable_task_scheduler_event_log()
     log_path = tmp_path / "install.log"
     setup_exe = _built_installers()[-1]
     install_result = _run_installer(
@@ -705,6 +738,7 @@ async def test_task_scheduler_restarts_the_daemon_after_it_crashes(_installed):
         f"Task Scheduler never relaunched {ALIAS_EXE_NAME} within 180s of pid {first_pid} being killed -- "
         f"the task's <RestartOnFailure> (PT1M, 3 attempts) did not take effect\n"
         f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}\n"
+        f"---- Task Scheduler operational log (newest first) ----\n{_task_scheduler_events()}\n"
         f"---- daemon log (tail) ----\n{_daemon_log_tail(_installed.home)}"
     )
     restarted_pid, restarted_owner = restarted
