@@ -6,12 +6,12 @@
 #
 # The daemon (privacyfence-app) is still Python, run from .venv. The shim
 # (mcpb/shim/, the stdio<->/mcp Streamable HTTP proxy that replaced the
-# bridge at P5 -- see docs/https-connector-refactor-plan.md §12, D11) is
-# Node/TypeScript and is rebuilt on every run so it always reflects the
-# current checkout. Unlike the old bridge, the shim carries no protocol
-# version of its own to keep in sync with the daemon's (it has no schema
-# knowledge at all -- see mcpb/shim/'s own README/module comments), so
-# there's no version pinning to do here beyond a plain build.
+# bridge at P5, decision D11) is Node/TypeScript and is rebuilt on every
+# run so it always reflects the current checkout. Unlike the old bridge,
+# the shim carries no protocol version of its own to keep in sync with
+# the daemon's (it has no schema knowledge at all -- see mcpb/shim/'s own
+# README/module comments), so there's no version pinning to do here
+# beyond a plain build.
 #
 # Usage:
 #   ./scripts/dev_start.sh

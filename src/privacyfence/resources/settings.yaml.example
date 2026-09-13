@@ -229,19 +229,18 @@ web:
   # surface, /mcp below, and /settings, one server either way. Always
   # bound to localhost only in this (local) mode -- see web/server.py's
   # module docstring. The embedded server itself always runs in local mode
-  # since P10 (docs/https-connector-refactor-plan.md §12, decision D6): the
-  # web approval UI is the only one there is, so there's no "off" switch
-  # for it the way there used to be a native/web choice (`web.approval_ui`,
-  # removed at P10 -- this key is simply gone now, not just defaulted).
+  # since P10, decision D6: the web approval UI is the only one there is,
+  # so there's no "off" switch for it the way there used to be a
+  # native/web choice (`web.approval_ui`, removed at P10 -- this key is
+  # simply gone now, not just defaulted).
   port: 8765
   mcp:
-    # Turns on the /mcp Streamable HTTP endpoint (see
-    # docs/https-connector-refactor-plan.md's P2) -- Claude talks to
+    # Turns on the /mcp Streamable HTTP endpoint (P2) -- Claude talks to
     # PrivacyFence directly over HTTP. On by default as of D11/P4b:
     # PrivacyFence.mcpb installs a thin stdio shim for Claude Desktop that
     # only speaks /mcp, so a fresh install needs this on for that
     # extension's zero-config promise ("no config file edited") to
-    # actually hold -- see §12's P4b exit criterion. Since P5 retired the
+    # actually hold -- P4b's own exit criterion. Since P5 retired the
     # original bridge/IPC-socket transport, this is no longer "additive
     # alongside the bridge" -- it's the only way Claude reaches this
     # daemon at all. Flip to false only if you want this daemon completely
@@ -251,22 +250,21 @@ web:
     # `Authorization: Bearer <the token in ~/.privacyfence/mcp_token>`.
     enabled: true
   settings:
-    # Serve /settings and its POST /api/settings/{action} dispatcher (see
-    # docs/https-connector-refactor-plan.md §16). Through P9 this defaulted
-    # to false, since a native settings window covered the same ground;
-    # P10 deleted that window (§12, D6), so this now defaults to true --
-    # without it there is no interactive way at all to install an
-    # organization config bundle, authenticate a connector, or edit a rule
-    # (hand-editing this file and org_config.json directly still works
-    # regardless of this setting). Flip to false only if you're deliberately
-    # editing config by hand and want /settings unreachable too.
+    # Serve /settings and its POST /api/settings/{action} dispatcher.
+    # Through P9 this defaulted to false, since a native settings window
+    # covered the same ground; P10 deleted that window (decision D6), so
+    # this now defaults to true -- without it there is no interactive way
+    # at all to install an organization config bundle, authenticate a
+    # connector, or edit a rule (hand-editing this file and
+    # org_config.json directly still works regardless of this setting).
+    # Flip to false only if you're deliberately editing config by hand and
+    # want /settings unreachable too.
     enabled: true
     # The web settings page's "Quit PrivacyFence" action stops the server
-    # rendering the page it was clicked on -- confirmed in-page either way
-    # (§16.2.8), but this is the local-mode-only kill switch for the
-    # action entirely. Will be refused outright once `mode: org` exists (a
-    # future phase); local mode leans "the token is enough" (§16.8's open
-    # question #2).
+    # rendering the page it was clicked on -- confirmed in-page either way,
+    # but this is the local-mode-only kill switch for the action entirely.
+    # Will be refused outright once `mode: org` exists (a future phase);
+    # local mode leans "the token is enough" for now.
     allow_quit: true
   notifications:
     # Desktop notifications for a new pending approval while the

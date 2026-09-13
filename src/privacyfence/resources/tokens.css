@@ -1,6 +1,6 @@
-/* Shared design tokens (docs/https-connector-refactor-plan.md §16.2.3):
-   the same :root custom-property block resources/approval_window/styles.css
-   has always defined for the approval card, exported here so a second
+/* Shared design tokens: the same :root custom-property block
+   resources/approval_window/styles.css has always defined for the
+   approval card, exported here so a second
    document -- settings_window_html.py, and web_shell.py's topbar chrome --
    can embed the identical palette instead of hand-copying it a second time.
 
@@ -21,8 +21,7 @@
    stack (Claude Design's SF Pro Text-based mockup, see that module's
    docstring) rather than adopting the approval card's embedded Source
    Serif 4 -- this file is a palette swap for the settings page, not a
-   typography change (docs/https-connector-refactor-plan.md §16.8's risk
-   #5: "the tokens are a palette swap, not a layout change").
+   typography change.
 */
 :root {
   --color-bg: #f3f2f2;
