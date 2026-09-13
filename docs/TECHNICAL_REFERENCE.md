@@ -1022,9 +1022,12 @@ template's own header comment and `platform-support.md`'s "Known open items" for
 `<LogonTrigger>` with no `<UserId>` fires for any interactive logon, `<Principal>` uses `GroupId`
 (`Builtin\Users`) rather than a specific account so the task runs as whichever user just signed in,
 in their own session, at the non-elevated `LeastPrivilege` run level, and
-`<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>` gives it real
-crash-restart behavior — parity with the macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and
-the Linux `.deb`'s systemd restart policy. `<DisallowStartIfOnBatteries>` and
+`<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>` was intended as
+parity with the macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and the Linux `.deb`'s systemd
+restart policy, but **does not actually restart a crashed daemon** — Task Scheduler logs an action
+that ran and then died as a successfully completed task, so the setting never engages (measured, with
+the event-log evidence, in `platform-support.md`'s "Known open items"; Windows has no crash-restart
+today). `<DisallowStartIfOnBatteries>` and
 `<StopIfGoingOnBatteries>` are both set to `false`, inverting Task Scheduler's own defaults: left at
 the defaults, a laptop on battery power would not start PrivacyFence at sign-in and would stop it
 when unplugged — a privacy gate that quietly isn't running, with the MCP client simply finding no

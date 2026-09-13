@@ -20,23 +20,31 @@ This module does both:
    account), a ``Builtin\\Users`` principal bound to the ``Actions`` element
    by a matching ``id``/``Context`` pair, ``LeastPrivilege``, ``Parallel``
    multiple-instances, the real installed ``privacyfence-app.exe`` path as
-   the action's ``Command``, the ``RestartOnFailure`` interval/count that
-   carries crash-restart, and the two battery settings that would otherwise
-   default to "don't start on battery power". Each of those has been a real,
+   the action's ``Command``, the ``RestartOnFailure`` interval/count, and the
+   two battery settings that would otherwise default to "don't start on
+   battery power". Each of those has been a real,
    shipped bug at least once -- see ``installer/privacyfence-task.xml.tmpl``'s
    own header comment -- and every one of them was invisible to a test that
    only asked "does a task with this name exist". The same contract is
    asserted against the shipped template on every PR, on any OS, by
    ``tests/unit/test_windows_autostart_task_template.py``; both call
    ``tests/windows_task_contract.py``.
-2. **Task Scheduler really starts the daemon, and really restarts it after a
-   crash.** The service is asked to run the installed task; the process it
-   launches is confirmed to be the installed exe, running as the logged-on
-   user (``Win32_Process``'s ``GetOwner``, not assumed), serving the Phase 3
-   daemon/MCP/approval/audit contract, and ending on "Quit PrivacyFence".
-   A second test kills that process outright and watches Task Scheduler
-   relaunch it -- a *different* pid, serving again, within the task's own
-   ``<RestartOnFailure><Interval>PT1M</Interval>`` window (Phase 13 item 4).
+2. **Task Scheduler really starts the daemon.** The service is asked to run
+   the installed task; the process it launches is confirmed to be the
+   installed exe, running as the logged-on user (``Win32_Process``'s
+   ``GetOwner``, not assumed), serving the Phase 3 daemon/MCP/approval/audit
+   contract, and ending on "Quit PrivacyFence". This is also what found the
+   defect that had kept Windows autostart from ever working: started with no
+   console, the windowed build had no ``sys.stdout`` for uvicorn's log
+   formatter to probe, and the daemon exited 1 before binding its port (see
+   ``privacyfence/std_streams.py``). Every other automated start of this app
+   in this repo hands it a redirected stdout, so nothing else could have.
+3. **What ``<RestartOnFailure>`` actually does after a crash**, which is
+   nothing (Phase 13 item 4). The second test kills the Scheduler-started
+   daemon and asserts that Task Scheduler does *not* bring it back, because
+   the measured behavior is that it logs the dead action as a successfully
+   completed task. That test's own docstring carries the event-log evidence
+   and says what has to replace it once a real keep-alive exists.
 
 **The one deliberate substitution, and the history behind it.** Task
 Scheduler is asked to run the task *on demand* rather than by a user signing
@@ -707,46 +715,65 @@ async def test_installed_task_definition_starts_the_packaged_daemon(_installed):
     assert "autologon.example.com" in settings_path.read_text(encoding="utf-8")
 
 
-# The wait below is the task's own <RestartOnFailure><Interval>PT1M</Interval>
-# plus room for Task Scheduler's own scheduling granularity, on top of an
-# install and a cold daemon start -- well past this module's own 300s
-# default, let alone the suite's 30s one.
+# The wait below spans more than two of the task's own
+# <RestartOnFailure><Interval>PT1M</Interval> windows, on top of an install
+# and a cold daemon start -- well past this module's own 300s default, let
+# alone the suite's 30s one.
 @pytest.mark.timeout(480)
-async def test_task_scheduler_restarts_the_daemon_after_it_crashes(_installed):
-    """docs/automated-test-strategy-plan.md Phase 13 item 4: the task's
-    ``<RestartOnFailure>`` -- the Windows analogue of the macOS
-    LaunchAgent's ``KeepAlive``/``SuccessfulExit=false`` and the Linux
-    ``.deb``'s systemd ``Restart=on-failure`` -- shipping proven rather
-    than merely registered. A daemon that is killed outright ends its task
-    instance with a non-zero result, which is exactly the condition that
-    setting exists to answer."""
+async def test_restart_on_failure_does_not_cover_a_crashed_daemon(_installed):
+    """docs/automated-test-strategy-plan.md Phase 13 item 4, as measured
+    rather than as assumed -- and the assertion is deliberately negative.
+
+    The shipped task carries
+    ``<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>``,
+    added as the Windows analogue of the macOS LaunchAgent's
+    ``KeepAlive``/``SuccessfulExit=false`` and the Linux ``.deb``'s systemd
+    ``Restart=on-failure``. It is not one. Kill the Scheduler-started daemon
+    outright and Task Scheduler does not bring it back -- because it does not
+    consider the task to have failed at all. Its own operational log, from
+    the run that established this::
+
+        Event ID 201:  Task Scheduler successfully completed task
+                       "\\PrivacyFence", instance "{63cf2afb-...}", action
+                       "C:\\...\\privacyfence-app.exe" with return code
+                       2147942401.
+        Event ID 102:  Task Scheduler successfully finished "{63cf2afb-...}"
+                       instance of the "\\PrivacyFence" task for user
+                       "...\\runneradmin".
+
+    ``2147942401`` is ``0x80070001`` -- the action's own non-zero exit,
+    surfaced as an HRESULT. Task Scheduler logged it as *successfully
+    completed* regardless, and never scheduled a restart: ``RestartOnFailure``
+    answers a task that fails to *run*, not an action that ran and then died.
+
+    So this test exists to pin that down, for two reasons. It stops the
+    setting from being re-added and re-declared a fix without anyone
+    measuring it again, and it fails loudly the day the mechanism actually
+    becomes a keep-alive -- at which point it should be replaced by the
+    positive assertion this file used to attempt (kill, wait, assert a new
+    pid). Phase 13's exit criteria stay open until then; see that phase's
+    status note for the design options and their trade-offs.
+    """
     first_pid, _owner = _start_task_and_wait_for_daemon(_installed)
     _wait_until_connectable("localhost", _installed.port)
 
     # A real crash, not a graceful quit: /f is a TerminateProcess, so the
-    # task instance ends non-zero and never gets to clean up after itself.
+    # action ends non-zero and never gets to clean up after itself.
     kill = subprocess.run(
         ["taskkill", "/pid", first_pid, "/f"], capture_output=True, text=True, timeout=30,
     )
     assert kill.returncode == 0, f"taskkill on pid {first_pid} failed:\n{kill.stdout}{kill.stderr}"
     assert _wait_until_alias_process_gone(_installed.alias_exe, timeout=20.0), (
-        f"{ALIAS_EXE_NAME} (pid {first_pid}) survived taskkill /f, so nothing crashed to restart from"
+        f"{ALIAS_EXE_NAME} (pid {first_pid}) survived taskkill /f, so nothing crashed"
     )
 
-    restarted = _wait_for_alias_process(_installed.alias_exe, timeout=180.0, different_from=first_pid)
-    assert restarted, (
-        f"Task Scheduler never relaunched {ALIAS_EXE_NAME} within 180s of pid {first_pid} being killed -- "
-        f"the task's <RestartOnFailure> (PT1M, 3 attempts) did not take effect\n"
+    # Two and a half PT1M windows, i.e. past the second of the three restart
+    # attempts the setting asks for. Nothing comes back.
+    relaunched = _wait_for_alias_process(_installed.alias_exe, timeout=150.0, different_from=first_pid)
+    assert relaunched is None, (
+        f"Task Scheduler relaunched {ALIAS_EXE_NAME} as pid {relaunched[0] if relaunched else None} "
+        f"after a crash -- <RestartOnFailure> now behaves as a keep-alive, which is what Phase 13 "
+        f"wanted all along. Replace this test with the positive assertion and close that phase.\n"
         f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}\n"
-        f"---- Task Scheduler operational log (newest first) ----\n{_task_scheduler_events()}\n"
-        f"---- daemon log (tail) ----\n{_daemon_log_tail(_installed.home)}"
+        f"---- Task Scheduler operational log (newest first) ----\n{_task_scheduler_events()}"
     )
-    restarted_pid, restarted_owner = restarted
-    assert restarted_pid != first_pid
-    assert getpass.getuser().lower() in restarted_owner.lower(), (
-        f"the relaunched {ALIAS_EXE_NAME} (pid {restarted_pid}) runs as {restarted_owner!r}, not "
-        f"{getpass.getuser()!r}"
-    )
-    # Not just a process: the restarted daemon has to actually serve again.
-    _wait_for_path_content(_installed.home / ".privacyfence" / WEB_TOKEN_FILE_NAME, timeout=20)
-    _wait_until_connectable("localhost", _installed.port)

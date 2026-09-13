@@ -64,9 +64,11 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
 
 ## Known open items
 
-- **Windows Task Scheduler autostart registration and crash-restart — fixed and verified by real
-  `workflow_dispatch` runs; the one thing left uncovered by automation is the `LogonTrigger`'s own
-  firing, which a hosted runner cannot produce and the Windows human checks cover instead.** This
+- **Windows autostart — now actually works, verified end to end by real `workflow_dispatch` runs,
+  after a chain of independent bugs of which the last was in the daemon rather than the installer.
+  Two things remain: the `LogonTrigger`'s own firing, which a hosted runner cannot produce and the
+  Windows human checks cover instead, and crash-restart, which the shipped setting does not provide
+  (both below).** This
   mechanism went through several real, independently-found-and-fixed bugs before
   landing where it is now — see `installer/privacyfence-task.xml.tmpl`'s own header comment and
   `installer/privacyfence.iss`'s `[Code]` section for the full detail — and the early ones are worth
@@ -86,18 +88,55 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
   root `<Task>` element (the schema version `<RestartOnFailure>` and `<MultipleInstancesPolicy>`
   actually need), `id` on `<Principal>`, and the matching `Context` on `<Actions>` — without that
   id/Context pair, the registered `GroupId` principal is never actually bound to anything that runs.
+  **The defect that actually kept Windows autostart from ever working was not in the task at all —
+  it was in the daemon, and only a test that let Task Scheduler do the launching could see it.** The
+  Windows build is a windowed executable (`PrivacyFenceApp.win.spec`'s `console=False`, since a
+  console window flashing up at every sign-in would be a bug of its own), and a windowed process
+  started with no console has no standard handles, so CPython sets `sys.stdout`/`sys.stderr` to
+  `None`. uvicorn's default log formatter calls `sys.stdout.isatty()` while `uvicorn.Config(...)` is
+  being built, so the daemon raised `AttributeError: 'NoneType' object has no attribute 'isatty'`,
+  logged `Fatal error`, and exited 1 — before binding its port. Task Scheduler was starting the
+  daemon correctly and the daemon was killing itself; the same would have happened to the installer's
+  own "launch PrivacyFence now" step and to double-clicking the executable. Nothing caught it because
+  every automated start of this app until now — the packaged smoke tests included — ran it from a
+  shell with stdout redirected to a file, which is a perfectly valid stream.
+  `privacyfence/std_streams.py` now repairs the frozen process's streams before anything else runs
+  (the same move as `_daemon_entry.py`'s `SSL_CERT_FILE` fix-up), with
+  `tests/unit/test_daemon_std_streams.py` as a per-PR regression test built around the real failing
+  call.
   **One more real defect came out of asserting the definition Task Scheduler stored rather than the
   one this repo ships**: `<DisallowStartIfOnBatteries>` and `<StopIfGoingOnBatteries>` both default
   to `true` and the template had never mentioned either, so on a laptop the shipped task would not
   start PrivacyFence at sign-in while on battery, and would stop it the moment the machine was
   unplugged — a privacy gate quietly not running, with the MCP client simply finding no daemon. Both
   are now explicitly `false`, and the contract asserts them with no default fallback.
-  **Real crash-restart-on-failure is implemented and now proven**: the task definition carries
-  `<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>`, and
-  `windows-graphical-session.yml` kills the Scheduler-started daemon outright and watches Task
-  Scheduler relaunch it — closing
-  [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13 (implementation and
-  exit criteria both).
+  **Crash-restart is *not* implemented, contrary to what this note and
+  [`automated-test-strategy-plan.md`](automated-test-strategy-plan.md) Phase 13 both previously
+  claimed.** The task carries `<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>`,
+  added as the Windows analogue of the macOS LaunchAgent's `KeepAlive`/`SuccessfulExit=false` and the
+  Linux `.deb`'s systemd `Restart=on-failure`. It is not one, and the first test ever to kill a
+  Scheduler-started daemon measured that directly: nothing came back, and Task Scheduler's own
+  operational log says why — it logged the dead action as a *success*:
+
+  ```
+  Event ID 201: Task Scheduler successfully completed task "\PrivacyFence", instance "{63cf2afb-…}",
+                action "…\privacyfence-app.exe" with return code 2147942401.
+  ```
+
+  `2147942401` is `0x80070001`, the action's own non-zero exit surfaced as an HRESULT. The setting
+  answers a task that fails to *run*, not an action that ran and then died, so it never engages.
+  `windows-graphical-session.yml` now pins that measured behavior with a deliberately negative
+  assertion, so the setting cannot be re-added and re-declared a fix without measuring it again.
+  **Real crash-restart needs a different mechanism, and picking one is an open product decision.**
+  The Task Scheduler idiom is a repeating trigger (a `<TimeTrigger>` with a past `StartBoundary` and
+  an indefinite `<Repetition>`, so it is live without waiting for a sign-in), which relaunches the
+  daemon on the next tick after it dies. Two sub-decisions come with it and both have real costs: the
+  interval trades restart latency against a no-op process spawn per signed-in user per tick (the
+  daemon already exits immediately when its single-instance lock is held, but every tick still pays a
+  PyInstaller cold start, and on a laptop that is battery), and `MultipleInstancesPolicy` has to stay
+  `Parallel` — `IgnoreNew` would suppress the spawn but also stop a second user's sign-in from ever
+  getting a daemon. Whoever takes it should also quiet the "another instance is already running"
+  path, which currently logs at ERROR and exits 1 on every tick.
   **One gap remains, and it is in what CI can observe, not in the installer: the `LogonTrigger`'s own
   firing.** The test used to claim it drove that, via PowerShell's `Start-Process -Credential`
   (`CreateProcessWithLogonW`) as a stand-in for signing in, and was red on every run because of it:
