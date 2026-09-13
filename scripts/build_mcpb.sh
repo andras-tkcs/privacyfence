@@ -5,7 +5,7 @@
 #
 # Ships one file: PrivacyFence.mcpb — mcpb/shim/: talks to the daemon's
 # /mcp Streamable HTTP endpoint (the only transport there is since P5
-# retired the bridge, see docs/https-connector-refactor-plan.md §12, D11).
+# retired the bridge, decision D11).
 # Requires web.mcp.enabled in config/settings.yaml (on by default as of
 # D11/P4b). Until P5, this script also built a second "Legacy Bridge"
 # .mcpb as a rollback lever while both transports shipped; that lever isn't

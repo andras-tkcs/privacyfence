@@ -328,11 +328,11 @@ img { display: block; max-width: 100%; }
    each element), specifically so the @media block below can override them.
    An inline style can't carry a @media query at all, and this document no
    longer only ever renders inside a fixed-size native window frame: the web
-   approval UI (see docs/https-connector-refactor-plan.md §7.3) can host the
-   same document in an ordinary browser tab, at a phone viewport, or inline
-   in an expandable list row. 420px is approval_window_html.py's own
-   _WIDE_LEFT_COLUMN_WIDTH -- keep the two in sync if that constant ever
-   changes; it's baked in here rather than templated per-document so the
+   approval UI can host the same document in an ordinary browser tab, at a
+   phone viewport, or inline in an expandable list row. 420px is
+   approval_window_html.py's own _WIDE_LEFT_COLUMN_WIDTH -- keep the two
+   in sync if that constant ever changes; it's baked in here rather than
+   templated per-document so the
    @media override below can sit right next to the rule it overrides instead
    of racing it on source order across two separate <style> blocks. */
 .pf-wide-row { display: flex; gap: 28px; flex: 1; min-height: 0; }
@@ -354,7 +354,7 @@ img { display: block; max-width: 100%; }
      rule for the cascade to actually override it).
 
      flex-direction: column alone is not enough here -- two traps found
-     while building this (see docs/https-connector-refactor-plan.md §7.3):
+     while building this:
      .pf-wide-left's flex: 0 0 420px sets a *height* once the parent's main
      axis is vertical, not a width, so it has to drop to flex: none/height:
      auto explicitly; and leaving both panes at flex: 1; min-height: 0;
