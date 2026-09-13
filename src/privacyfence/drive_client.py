@@ -1991,7 +1991,7 @@ class DriveClient:
         # invalidates an already-computed later range.
         requests: list[dict] = []
         for (plain_start, plain_end), (text_markdown, _tables) in zip(
-            reversed(matches), reversed(per_match)
+            reversed(matches), reversed(per_match), strict=True
         ):
             docs_start = _offset_to_docs_index(plain_start, runs)
             docs_end = _offset_to_docs_index(plain_end, runs)

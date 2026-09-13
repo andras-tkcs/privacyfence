@@ -542,7 +542,7 @@ class SlackClient:
                         [c.id for c in page_channels],
                         lambda cid: self._channel_matches_participant(cid, participant),
                     )
-                    channels.extend(c for c, ok in zip(page_channels, matches) if ok)
+                    channels.extend(c for c, ok in zip(page_channels, matches, strict=True) if ok)
 
                 cursor = (response.get("response_metadata") or {}).get("next_cursor")
                 if not cursor:
