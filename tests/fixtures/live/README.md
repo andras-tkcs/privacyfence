@@ -14,4 +14,4 @@ pointing back at the recorder — nothing here is required for the suite to pass
 without a recorded fixture doesn't get this layer's regression coverage either.
 
 Re-record after a genuine provider API change, not routinely — see
-[`testing-policy.md` §2.1](../../../docs/testing-policy.md#21-qa_fixture_recorderpy---check---record).
+[`testing-policy.md` §2.1](../../../docs/testing-policy.md#21-qa_fixture_recorderpy---check----record).

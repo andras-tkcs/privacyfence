@@ -184,14 +184,33 @@ severity-policy comment documents the reasoning at the point of use. `push`/`pul
 both trigger on `cloudflare/downloads/package.json` and `package-lock.json`, same as the other two
 manifests this workflow watches.
 
-**2. The Worker's tests were a post-merge gate, not a pre-merge one.** Fixed in `3ae2544` (#345),
+**2. ~~The Worker's tests are a post-merge gate, not a pre-merge one.~~ Done** — `3ae2544` (#345),
 which shipped ahead of this note being updated: `deploy-download-worker.yml`'s `verify` job now
-runs typecheck/tests/dry-run bundle on `pull_request` too (same path filter as `push`), and
-`deploy` (`needs: verify`) still only runs on `main`/dispatch, so Cloudflare credentials never
-reach a fork PR's run. `verify` is intentionally still absent from
-`scripts/update_branch_protection.py`'s `REQUIRED_STATUS_CHECKS` — it's `paths:`-filtered, and that
-script's own comment (R3) explains why a `paths:`-filtered job can't be a required check without
-wedging any PR that doesn't touch the filtered tree.
+runs typecheck/`npm test`/dry-run bundle on `pull_request` too (same path filter as `push`), and
+`deploy` (`needs: verify`) still only runs on `main`/dispatch, so a PR that breaks the Worker fails
+its own checks instead of surfacing the break on `main` afterwards, and the Cloudflare credentials
+`deploy` needs never reach a fork PR's run. Same fix `docs/automated-test-strategy-plan.md`
+Phase 2.1 applied to `platform-windows` and Phase 8 to `org-mode-smoke`.
+
+One thing that fix deliberately does *not* do, and the reason this item is worth reading rather
+than just ticking: **`verify` reports, but it does not gate.** It carries the same `paths:` filter
+as `push`, so it is intentionally still absent from `scripts/update_branch_protection.py`'s
+`REQUIRED_STATUS_CHECKS` — that script's own comment (R3) explains why a `paths:`-filtered context
+can't be a required check: it never reports at all on a PR that misses the filter, and a required
+check that never reports blocks the merge indefinitely. So a red `verify` is visible on the PR but
+will not stop it merging. Making it genuinely gating needs a job that always runs and
+short-circuits when the paths don't match, so the context always reports; that is a separate,
+deliberate change, not an oversight in the split above — and the same limitation applies to the
+`npm-audit-worker` job item 1 just added: it's `paths:`-filtered too, so it reports but doesn't
+gate either.
+
+**Exit criteria:** a Worker dependency change triggers `dependency-audit.yml` and is audited under
+a written, deliberate severity policy — met (item 1). The Worker's tests and typecheck run on
+every PR that touches `cloudflare/downloads/**`, and `deploy-download-worker.yml` still runs them
+before deploying, so a direct push to `main` cannot deploy an untested Worker — met (item 2).
+Whether these per-PR checks should also *block* the merge — which needs an always-reporting job,
+not a `paths:`-filtered one — is left as a deliberate open choice above rather than folded into
+this phase's exit.
 
 ## Phase 2 — Release metadata pipeline
 
