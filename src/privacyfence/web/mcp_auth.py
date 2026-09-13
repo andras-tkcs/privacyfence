@@ -36,7 +36,7 @@ from .. import paths
 from ..principal import LOCAL_PRINCIPAL, Principal
 from ..secure_files import atomic_write_text
 
-MCP_TOKEN_FILE_NAME = "mcp_token"
+MCP_TOKEN_FILE_NAME = "mcp_token"  # nosec B105 -- a filename, not a credential value
 
 
 def load_or_create_mcp_token() -> str:

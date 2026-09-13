@@ -3,6 +3,7 @@ PrincipalRegistry de-singleton-ing helper.
 """
 from __future__ import annotations
 
+import dataclasses
 import threading
 
 import pytest
@@ -56,7 +57,7 @@ class TestPrincipal:
 
     def test_frozen(self):
         p = Principal(id="alice")
-        with pytest.raises(Exception):  # dataclasses.FrozenInstanceError
+        with pytest.raises(dataclasses.FrozenInstanceError):
             p.id = "bob"  # type: ignore[misc]
 
     def test_equality_is_by_value(self):

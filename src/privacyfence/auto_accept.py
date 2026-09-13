@@ -411,8 +411,17 @@ class AutoAcceptEvaluator:
         (verdict, matched_rule, reason):
 
           verdict="auto_accept"     -- a temp-accept or an ARGS_ONLY_RULES
-                                        match already decides this; the real
-                                        call will auto-accept identically.
+                                        match already decides this rule check;
+                                        for a 'review'-gated tool the real
+                                        call can still land on a popup if
+                                        PrivacyFence's PII detection gate
+                                        forces confirmation on the content
+                                        fetched later (gate.py's
+                                        pii_forces_confirmation) -- this
+                                        preflight has no fetched content to
+                                        check that against (see
+                                        privacyfence_check_policy's own
+                                        pii_gate_may_apply in mcp_tools.py).
           verdict="requires_review" -- every configured rule for this
                                         operation is in ARGS_ONLY_RULES and
                                         none matched, so fetching the real

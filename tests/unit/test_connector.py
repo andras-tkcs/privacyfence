@@ -45,7 +45,7 @@ class TestToolSpecRoundTrip:
         assert rebuilt.description == original.description
         assert rebuilt.read_only == original.read_only
         assert len(rebuilt.params) == len(original.params)
-        for a, b in zip(rebuilt.params, original.params):
+        for a, b in zip(rebuilt.params, original.params, strict=True):
             assert (a.name, a.annotation, a.required, a.default, a.description) == (
                 b.name, b.annotation, b.required, b.default, b.description,
             )

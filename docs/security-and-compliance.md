@@ -115,7 +115,7 @@ Treat audit data as sensitive: it can reveal which services/tools/resources were
 
 Runtime/test/build dependencies are declared in `pyproject.toml`, with release/dependency audit workflows under `.github/workflows/` and lock/update tooling under `requirements/` and `scripts/`.
 
-CI includes dependency auditing and static analysis in addition to the normal test suite. Ruff is blocking in the test workflow; mypy and Bandit are informational there unless workflow configuration changes.
+CI includes dependency auditing and static analysis in addition to the normal test suite. Ruff and Bandit are blocking in the test workflow; mypy is informational there unless workflow configuration changes.
 
 Each tagged release build generates a CycloneDX software bill of materials (SBOM) alongside the packaged artifacts.
 

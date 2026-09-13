@@ -263,7 +263,7 @@ def _join_markdown_lines(lines: list[str]) -> str:
     if not lines:
         return ""
     parts = [lines[0]]
-    for prev, line in zip(lines, lines[1:]):
+    for prev, line in zip(lines, lines[1:], strict=False):  # deliberately uneven: pairs each line with its successor
         parts.append("\n" if prev.startswith("- ") and line.startswith("- ") else "\n\n")
         parts.append(line)
     return "".join(parts)

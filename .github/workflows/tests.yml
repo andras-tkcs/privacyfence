@@ -379,8 +379,9 @@ jobs:
         continue-on-error: true
         run: mypy src/privacyfence
 
-      # Non-blocking for now (see [tool.bandit] in pyproject.toml) -- same
-      # reasoning as mypy above.
-      - name: Security lint (bandit, informational)
-        continue-on-error: true
+      # Blocking: see [tool.bandit] in pyproject.toml -- the false positives that used to
+      # justify running this non-blocking are now triaged and annotated `# nosec BXXX` at
+      # their call sites, so a passing run here means zero *un*-triaged findings, not zero
+      # findings.
+      - name: Security lint (bandit)
         run: bandit -c pyproject.toml -r src

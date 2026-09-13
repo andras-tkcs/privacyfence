@@ -633,7 +633,7 @@ class TestApplyGrantUpsert:
         cfg: dict = {}
         try:
             rg.apply_grant_upsert(cfg, rt, "folder1", capabilities={"nonexistent": True})
-            assert False, "expected ValueError"
+            raise AssertionError("expected ValueError")
         except ValueError:
             pass
 

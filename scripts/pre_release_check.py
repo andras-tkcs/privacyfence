@@ -20,6 +20,12 @@ left and nothing to compare.
 
 Run from the repo root (with `mcpb/shim/` node_modules already installed via
 `npm install`), the same as CI. Exits non-zero if any check fails.
+
+`ruff check .` and `bandit` are included below because they're CI's *blocking*
+static-analysis steps (`.github/workflows/tests.yml`'s `static-analysis` job -- see
+`[tool.ruff.lint]`/`[tool.bandit]` in pyproject.toml); mypy stays out of this gate for the
+same reason it's still `continue-on-error` in that job -- see `[tool.mypy]` in pyproject.toml,
+including the per-module overrides that are promoted to blocking as modules get cleaned up.
 """
 from __future__ import annotations
 
@@ -61,6 +67,10 @@ def main() -> int:
     results["shim typecheck"] = run(
         "shim typecheck", ["npm", "run", "typecheck"], cwd=REPO_ROOT / "mcpb" / "shim"
     )
+    results["ruff"] = run("ruff", ["ruff", "check", "."], cwd=REPO_ROOT)
+    results["bandit"] = run(
+        "bandit", ["bandit", "-c", "pyproject.toml", "-r", "src"], cwd=REPO_ROOT
+    )
 
     print("=== Pre-release check summary ===")
     for name, ok in results.items():
@@ -75,9 +85,8 @@ def main() -> int:
 
     print(
         "\nAll automated checks passed. Continue with "
-        "docs/release-testing.md for the manual sections "
-        "(fixture freshness, popup smoke, live QA prompt, DMG install) "
-        "before cutting the release."
+        "docs/release-testing.md's \"Human checks\" and \"Platform artifacts\" "
+        "sections for the parts automation can't judge before cutting the release."
     )
     return 0
 
