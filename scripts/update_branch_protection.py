@@ -55,6 +55,16 @@ API_ROOT = "https://api.github.com"
 # Deliberately NOT included: the packaged-artifact jobs (Phase 6) and the graphical-session jobs
 # (Phase 7) -- both live in build.yml / their own scheduled workflows and never run on
 # `pull_request`, so they can't be a per-PR required check at all.
+#
+# Also deliberately NOT included, for a different reason: `lockfile-freshness`, `pip-audit` and
+# `npm-audit` (dependency-audit.yml). All three are meant to block and do run on `pull_request`,
+# but only when the PR touches one of that workflow's own `paths:` filters (a dependency
+# manifest, a lock file, or the workflow itself) -- unlike every job listed below, which runs
+# unconditionally on every PR. Requiring a `paths:`-filtered job by name would wedge any PR that
+# doesn't touch those paths: GitHub never sees that context reported at all for such a PR, and a
+# required check with no reported status blocks merging forever rather than passing vacuously.
+# Revisit this if dependency-audit.yml ever drops its `paths:` filter (e.g. moves the manifest
+# checks into tests.yml's own per-PR job instead).
 REQUIRED_STATUS_CHECKS = [
     "test",
     "platform-windows",
