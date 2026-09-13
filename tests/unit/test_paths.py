@@ -243,6 +243,63 @@ class TestDownloadsDir:
             assert paths.downloads_dir() == tmp_path / "users" / "bob" / "downloads"
 
 
+class TestAllDownloadsDirs:
+    """Enumeration used by DownloadStagingStore.__init__ to find ciphertext
+    orphaned by a daemon restart -- see that class's docstring. Existence-
+    only: unlike downloads_dir()/user_dir(), it must never create a
+    directory, or every call would provision empty staging dirs for
+    principals that never staged anything."""
+
+    def test_empty_data_dir_yields_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        assert paths.all_downloads_dirs() == []
+        # Confirms the "existence-only" claim above.
+        assert not (tmp_path / "downloads").exists()
+        assert not (tmp_path / "users").exists()
+
+    def test_finds_the_local_principals_downloads_dir_once_provisioned(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        paths.downloads_dir(Principal(id="local"))
+
+        assert paths.all_downloads_dirs() == [tmp_path / "downloads"]
+
+    def test_finds_each_provisioned_org_principals_downloads_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        paths.downloads_dir(Principal(id="alice"))
+        paths.downloads_dir(Principal(id="bob"))
+
+        assert paths.all_downloads_dirs() == [
+            tmp_path / "users" / "alice" / "downloads",
+            tmp_path / "users" / "bob" / "downloads",
+        ]
+
+    def test_skips_a_users_entry_that_never_provisioned_a_downloads_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        paths.user_dir(Principal(id="carol"))  # config/etc. but no download ever staged
+
+        assert paths.all_downloads_dirs() == []
+
+    def test_skips_a_users_entry_that_isnt_a_safe_principal_id(self, monkeypatch, tmp_path):
+        # user_dir()/downloads_dir() could never have produced this
+        # directory name themselves (the character class rejects the
+        # space) -- reachable only by something else writing directly
+        # under users/, which all_downloads_dirs() must not trust.
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        stray = tmp_path / "users" / "not a safe id" / "downloads"
+        stray.mkdir(parents=True)
+
+        assert paths.all_downloads_dirs() == []
+
+    def test_skips_a_file_sitting_directly_under_users(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        users_root = tmp_path / "users"
+        users_root.mkdir()
+        (users_root / "not-a-directory").write_text("stray file")
+
+        assert paths.all_downloads_dirs() == []
+
+
 class TestBundleMacosDir:
     def test_none_when_not_bundled(self, monkeypatch):
         monkeypatch.setattr(paths, "is_bundled", lambda: False)

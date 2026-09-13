@@ -8,10 +8,10 @@
 # run_app()` unconditionally ending with `from .menu_bar import
 # run_menu_bar; run_menu_bar(...)`, and `menu_bar.py` doing a bare `import
 # rumps` (macOS AppKit) at module scope with no platform guard -- is fixed
-# as of P10 (docs/https-connector-refactor-plan.md §12, decision D6):
-# menu_bar.py and the rest of the native AppKit UI layer are deleted
-# outright, not merely guarded, and run_app() now ends by blocking on a
-# plain threading.Event (see that module's own `_wait_for_shutdown`).
+# as of P10, decision D6: menu_bar.py and the rest of the native AppKit UI
+# layer are deleted outright, not merely guarded, and run_app() now ends
+# by blocking on a plain threading.Event (see that module's own
+# `_wait_for_shutdown`).
 # `rumps`/`pyobjc-framework-*` are optional extras now (pyproject.toml's
 # `macos-native` group) that this install path never pulls in.
 #
