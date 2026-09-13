@@ -13,5 +13,14 @@ if getattr(sys, "frozen", False):
     os.environ.setdefault("SSL_CERT_FILE", certifi.where())
     os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 
-from privacyfence.daemon_main import main
+# Before any other import: the Windows build is windowed, so started with no
+# console it has no sys.stdout/sys.stderr at all, and a library that probes
+# them while being imported would fail as surely as uvicorn did while being
+# configured. See privacyfence/std_streams.py for the full history -- this
+# is what made the Task Scheduler autostart exit 1 on every sign-in.
+from privacyfence.std_streams import ensure_std_streams
+
+ensure_std_streams()
+
+from privacyfence.daemon_main import main  # noqa: E402 -- must follow the two fix-ups above
 sys.exit(main())
