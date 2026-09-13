@@ -164,7 +164,8 @@ Remaining test-automation work is tracked only in [`automated-test-strategy-plan
   `tests/unit/test_windows_autostart_task_template.py` holds the shipped template to the same
   contract (`tests/windows_task_contract.py`), so a regression in it no longer waits for a scheduled
   Windows-only workflow to notice. Check `windows-graphical-session.yml`'s own run history for the
-  current result rather than trusting this note alone.
+  current result rather than trusting this note alone — as of this writing it is green for the first
+  time since it was written, with the autostart path exercised end to end.
   **A related wrinkle worth knowing, not currently a defect**: `installer/privacyfence.iss` is
   `PrivilegesRequired=lowest`, so a silent install resolves `{autopf}` to `{userpf}` —
   `%LOCALAPPDATA%\Programs\PrivacyFence`, inside the installing account's own profile, which no other
