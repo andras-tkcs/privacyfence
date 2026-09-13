@@ -30,6 +30,18 @@ name: Dependency audit
 #     `npm audit --omit=dev` and BLOCKS on high or critical; moderate/low
 #     findings are reported by the same command's exit status but don't fail
 #     the job -- see the "informational" step below.
+#   - The download Worker (cloudflare/downloads/package.json, see
+#     docs/release-publishing-kpi-plan.md Phase 1.1, R8) declares zero
+#     runtime `dependencies` -- everything, `wrangler` included, is a
+#     devDependency -- so the shim's `--omit=dev` policy can't be copied
+#     verbatim here: it would audit an empty set and always pass. And unlike
+#     the shim's dev deps (build-time only, never touch a credential), this
+#     tree's `wrangler` runs in deploy-download-worker.yml's `deploy` job
+#     holding CLOUDFLARE_API_TOKEN against a production endpoint -- a
+#     materially larger blast radius than the shim's. So the whole tree,
+#     dev deps included, is audited with plain `npm audit --audit-level=high`
+#     (no `--omit=dev`) and BLOCKS on high or critical, same threshold as the
+#     shim but a deliberately wider scope.
 on:
   push:
     branches: [main]
@@ -38,6 +50,8 @@ on:
       - "requirements/*.lock.txt"
       - "mcpb/shim/package.json"
       - "mcpb/shim/package-lock.json"
+      - "cloudflare/downloads/package.json"
+      - "cloudflare/downloads/package-lock.json"
       - ".github/workflows/dependency-audit.yml"
   pull_request:
     paths:
@@ -45,6 +59,8 @@ on:
       - "requirements/*.lock.txt"
       - "mcpb/shim/package.json"
       - "mcpb/shim/package-lock.json"
+      - "cloudflare/downloads/package.json"
+      - "cloudflare/downloads/package-lock.json"
       - ".github/workflows/dependency-audit.yml"
   schedule:
     # 07:00 UTC every Monday -- independent of any commit, so a newly
@@ -145,3 +161,30 @@ jobs:
         if: always()
         run: npm audit --omit=dev || true
         working-directory: mcpb/shim
+
+  npm-audit-worker:
+    # Separate job (not folded into npm-audit above) because the policy is
+    # deliberately different: the whole tree, dev deps included -- see the
+    # severity-policy comment at the top of this file (R8).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cloudflare/downloads/package-lock.json
+
+      - name: Install Worker dependencies
+        run: npm ci
+        working-directory: cloudflare/downloads
+
+      - name: Audit Worker dependencies (blocking - high/critical, dev deps included)
+        run: npm audit --audit-level=high
+        working-directory: cloudflare/downloads
+
+      - name: Audit Worker dependencies (informational - full report)
+        if: always()
+        run: npm audit || true
+        working-directory: cloudflare/downloads

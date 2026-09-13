@@ -153,59 +153,64 @@ is not touched yet.
 `https://downloads.privacyfence.eu/health` (or the still-enabled `*.workers.dev` URL while
 testing) returns 200; all Worker unit tests pass in CI.
 
-## Phase 1.1 — Bring the Worker tree under the repo-wide CI gates
+## Phase 1.1 — Bring the Worker tree under the repo-wide CI gates — done
 
 Phase 1 added `cloudflare/downloads/` — this repo's second Node component — but the repo-wide
-gates that should have picked it up still only know about `mcpb/shim/`. Both gaps below were found
-by a code-review pass after Phase 1 landed; they belong to this plan rather than to that review,
-since this tree is this plan's to own.
+gates that should have picked it up still only knew about `mcpb/shim/`. Both gaps below were found
+by a code-review pass after Phase 1 landed; they belonged to this plan rather than to that review,
+since this tree is this plan's to own. Both are now closed.
 
-**1. `dependency-audit.yml` never sees this tree.** Its `paths:` triggers name only
-`mcpb/shim/package.json`/`package-lock.json`, and its `npm-audit` job is hard-scoped to
-`working-directory: mcpb/shim` — so a Worker dependency change triggers nothing, and the weekly
-scheduled run audits nothing here either. `.github/dependabot.yml` *does* cover the directory,
+**1. `dependency-audit.yml` didn't see this tree (R8).** Its `paths:` triggers named only
+`mcpb/shim/package.json`/`package-lock.json`, and its `npm-audit` job was hard-scoped to
+`working-directory: mcpb/shim` — so a Worker dependency change triggered nothing, and the weekly
+scheduled run audited nothing here either. `.github/dependabot.yml` *does* cover the directory,
 which is how the `sharp`/libheif CVEs behind the `overrides.sharp` pin surfaced: a Dependabot
 alert, not this repo's own gate.
 
-Copying the shim's policy verbatim would not fix it. That policy audits `--omit=dev` on the
+Copying the shim's policy verbatim wouldn't have fixed it. That policy audits `--omit=dev` on the
 reasoning that dev dependencies "run in CI and on contributors' machines, never on an end user's."
 This tree inverts that: `package.json` declares **zero runtime `dependencies`** — everything is
 `devDependencies` (`wrangler`, `vitest`, `@cloudflare/vitest-pool-workers`, `typescript`,
-`@cloudflare/workers-types`) — so `--omit=dev` here audits an empty set and always passes. And
+`@cloudflare/workers-types`) — so `--omit=dev` here would audit an empty set and always pass. And
 those dev dependencies are not build-time-only the way the shim's are: `wrangler` runs in a job
 holding `CLOUDFLARE_API_TOKEN` and pushes code to a public production endpoint. A compromised
 package in this dev tree has a materially larger blast radius than one in the shim's.
 
-So this needs its own severity decision rather than a copied one. Decide and write down whether
-the Worker's dev tree blocks on high/critical (defensible, given the deploy credential) or stays
-informational like the shim's (defensible, given it never reaches an end user) — then wire
-whichever you pick. Add the two path entries either way, so the workflow at least runs.
+So this got its own severity decision rather than a copied one: the whole tree, dev dependencies
+included, is now audited with plain `npm audit --audit-level=high` (no `--omit=dev`) in its own
+`npm-audit-worker` job, blocking on high/critical — the deploy credential justifies treating dev
+deps here as seriously as the shim treats its runtime ones. `dependency-audit.yml`'s own
+severity-policy comment documents the reasoning at the point of use. `push`/`pull_request` now
+both trigger on `cloudflare/downloads/package.json` and `package-lock.json`, same as the other two
+manifests this workflow watches.
 
-**2. ~~The Worker's tests are a post-merge gate, not a pre-merge one.~~ Done** — `3ae2544`.
-`deploy-download-worker.yml` now splits into `verify` (typecheck, `npm test`, dry-run bundle;
-triggered on `pull_request` as well as `push`) and `deploy` (`needs: verify`, still `main`/dispatch
-only), so a PR that breaks the Worker fails its own checks instead of surfacing the break on `main`
-afterwards — and the Cloudflare credentials `deploy` needs never reach a fork PR's run. Same fix
-`docs/automated-test-strategy-plan.md` Phase 2.1 applied to `platform-windows` and Phase 8 to
-`org-mode-smoke`.
+**2. ~~The Worker's tests are a post-merge gate, not a pre-merge one.~~ Done** — `3ae2544` (#345),
+which shipped ahead of this note being updated: `deploy-download-worker.yml`'s `verify` job now
+runs typecheck/`npm test`/dry-run bundle on `pull_request` too (same path filter as `push`), and
+`deploy` (`needs: verify`) still only runs on `main`/dispatch, so a PR that breaks the Worker fails
+its own checks instead of surfacing the break on `main` afterwards, and the Cloudflare credentials
+`deploy` needs never reach a fork PR's run. Same fix `docs/automated-test-strategy-plan.md`
+Phase 2.1 applied to `platform-windows` and Phase 8 to `org-mode-smoke`.
 
 One thing that fix deliberately does *not* do, and the reason this item is worth reading rather
 than just ticking: **`verify` reports, but it does not gate.** It carries the same `paths:` filter
-as `push`, so it is absent from `scripts/update_branch_protection.py`'s `REQUIRED_STATUS_CHECKS`
-for exactly the reason that list's own comment now gives for the `dependency-audit.yml` jobs — a
-`paths:`-filtered context never reports at all on a PR that misses the filter, and a required check
-that never reports blocks the merge indefinitely. So a red `verify` is visible on the PR but will
-not stop it merging. Making it genuinely gating needs a job that always runs and short-circuits
-when the paths don't match, so the context always reports; that is a separate, deliberate change,
-not an oversight in the split above.
+as `push`, so it is intentionally still absent from `scripts/update_branch_protection.py`'s
+`REQUIRED_STATUS_CHECKS` — that script's own comment (R3) explains why a `paths:`-filtered context
+can't be a required check: it never reports at all on a PR that misses the filter, and a required
+check that never reports blocks the merge indefinitely. So a red `verify` is visible on the PR but
+will not stop it merging. Making it genuinely gating needs a job that always runs and
+short-circuits when the paths don't match, so the context always reports; that is a separate,
+deliberate change, not an oversight in the split above — and the same limitation applies to the
+`npm-audit-worker` job item 1 just added: it's `paths:`-filtered too, so it reports but doesn't
+gate either.
 
 **Exit criteria:** a Worker dependency change triggers `dependency-audit.yml` and is audited under
-a written, deliberate severity policy (item 1, open). Item 2's own criteria are met: the Worker's
-tests and typecheck run on every PR that touches `cloudflare/downloads/**`, and
-`deploy-download-worker.yml` still runs them before deploying, so a direct push to `main` cannot
-deploy an untested Worker. Whether that per-PR check should also *block* the merge — which needs an
-always-reporting job, not a `paths:`-filtered one — is left as a deliberate open choice above rather
-than folded into this phase's exit.
+a written, deliberate severity policy — met (item 1). The Worker's tests and typecheck run on
+every PR that touches `cloudflare/downloads/**`, and `deploy-download-worker.yml` still runs them
+before deploying, so a direct push to `main` cannot deploy an untested Worker — met (item 2).
+Whether these per-PR checks should also *block* the merge — which needs an always-reporting job,
+not a `paths:`-filtered one — is left as a deliberate open choice above rather than folded into
+this phase's exit.
 
 ## Phase 2 — Release metadata pipeline
 
