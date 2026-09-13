@@ -1,89 +1,137 @@
-"""Real graphical-session autostart verification for the Windows installer
-(docs/automated-test-strategy-plan.md Phase 7 item 2; docs/windows-support-
-plan.md 8.2).
+"""Real Task Scheduler autostart verification for the Windows installer
+(docs/automated-test-strategy-plan.md Phase 7 item 2 and Phase 13 item 4;
+the now-removed windows-support-plan.md 8.2).
 
 ``test_windows_packaged_smoke.py`` (Phase 6.2) already proves the installer
-registers the Task Scheduler autostart task (``schtasks /query`` against it)
+registers *a* Task Scheduler autostart task (``schtasks /query`` against it)
 and that the alias exe it points at, once started, serves a real
 daemon/MCP/approval/audit round trip -- but it starts that alias exe itself,
-directly, as a subprocess. It never actually signs anyone in. What it
-deliberately leaves open -- see that module's own docstring, point 2 -- is
-this phase's own question: does a real interactive Windows logon *itself*
-start the daemon via that task's ``/sc onlogon`` trigger, with nothing else
-telling it to?
+directly, as a subprocess, out of that test's own ``tmp_path``. Nothing
+there ever asks Task Scheduler to run anything, and nothing there looks at
+what the task actually says.
 
-There is no physical sign-in to drive on a GitHub-hosted Windows runner, so
-this module makes two deliberate substitutions instead of skipping the
-question (the Linux analogue, ``test_linux_graphical_session_autostart.py``,
-makes exactly one, for the same underlying reason -- no real login manager
-in CI):
+This module does both:
 
-1. **A throwaway local account stands in for "someone signs in", instead of
-   the CI runner's own already-logged-on account.** This test has no way to
-   learn that account's password (nor should it), so it can't make it log on
-   a *second* time -- and the task ``installer/privacyfence.iss`` registers
-   (from ``[Code]``'s ``RegisterAutostartTask``, out of the real Task
-   Scheduler XML definition in ``installer/privacyfence-task.xml.tmpl``)
-   names ``Builtin\\Users`` as its principal's ``GroupId``, the built-in
-   group rather than one specific account, so its ``LogonTrigger`` fires for
-   *any* interactive logon, not just the installing user's. Two earlier
-   CLI-flag attempts at the same thing were each caught by a real run of
-   this very workflow -- first ``schtasks /create`` with no ``/RU`` at all
-   (which scopes the task to whichever account ran it, i.e. the installing
-   user only: registration succeeded, but the throwaway account's logon
-   never fired the trigger), then ``/ru "BUILTIN\\Users"``, which fixed the
-   scope but had no way to express the restart-on-failure behavior this
-   task also needs. See that template's own header comment for the full
-   history. That group scope is the same "whichever account is at the
-   keyboard" one the macOS LaunchAgent (keyed off the current console
-   uid) and the Linux ``.deb``'s XDG autostart (keyed off the current
-   desktop session) already have -- so a brand-new throwaway account, whose
-   password this test mints and knows, is a valid stand-in for "a user
-   signs in", not a special case the real trigger wouldn't also fire for.
-2. **The throwaway account is a local Administrator**, even though the
-   daemon it ends up running still runs at ``LeastPrivilege`` (the
-   scheduled task's own ``RunLevel``, independent of the account's own
-   group membership -- this is exactly what's being verified: the task
-   still requests the non-elevated token). This is *not* needed for
-   anything this test is trying to prove; it works around a Windows Server
-   default (the base image these runners are built from) that denies
-   "Log on locally" to plain standard accounts entirely, which would make
-   the throwaway account -- not just this test -- unable to sign in at all,
-   Task Scheduler trigger or no.
+1. **The registered definition matches the autostart contract.** Not the
+   template file in this repo -- the definition read back out of Task
+   Scheduler itself (``schtasks /query /xml``), i.e. what the service
+   actually parsed, normalized and stored: a ``LogonTrigger`` with no
+   ``UserId`` (so it is scoped to any interactive logon, not the installing
+   account), a ``Builtin\\Users`` principal bound to the ``Actions`` element
+   by a matching ``id``/``Context`` pair, ``LeastPrivilege``, ``Parallel``
+   multiple-instances, the real installed ``privacyfence-app.exe`` path as
+   the action's ``Command``, the ``RestartOnFailure`` interval/count, and the
+   two battery settings that would otherwise default to "don't start on
+   battery power". Each of those has been a real,
+   shipped bug at least once -- see ``installer/privacyfence-task.xml.tmpl``'s
+   own header comment -- and every one of them was invisible to a test that
+   only asked "does a task with this name exist". The same contract is
+   asserted against the shipped template on every PR, on any OS, by
+   ``tests/unit/test_windows_autostart_task_template.py``; both call
+   ``tests/windows_task_contract.py``.
+2. **Task Scheduler really starts the daemon.** The service is asked to run
+   the installed task; the process it launches is confirmed to be the
+   installed exe, running as the logged-on user (``Win32_Process``'s
+   ``GetOwner``, not assumed), serving the Phase 3 daemon/MCP/approval/audit
+   contract, and ending on "Quit PrivacyFence". This is also what found the
+   defect that had kept Windows autostart from ever working: started with no
+   console, the windowed build had no ``sys.stdout`` for uvicorn's log
+   formatter to probe, and the daemon exited 1 before binding its port (see
+   ``privacyfence/std_streams.py``). Every other automated start of this app
+   in this repo hands it a redirected stdout, so nothing else could have.
+3. **What ``<RestartOnFailure>`` actually does after a crash**, which is
+   nothing (Phase 13 item 4). The second test kills the Scheduler-started
+   daemon and asserts that Task Scheduler does *not* bring it back, because
+   the measured behavior is that it logs the dead action as a successfully
+   completed task. That test's own docstring carries the event-log evidence
+   and says what has to replace it once a real keep-alive exists.
 
-Everything else is the real, unmocked mechanism: a genuine interactive
-Windows logon for that account (``LOGON32_LOGON_INTERACTIVE`` via
-``CreateProcessWithLogonW``, driven here through PowerShell's ``Start-
-Process -Credential`` -- the same underlying API ``runas.exe`` uses, and the
-standard documented way admins manually test an "At log on" Task Scheduler
-trigger without a physical sign-in), Task Scheduler's own real trigger
-evaluation of the real installed task, the real packaged
-``privacyfence-app.exe`` alias it launches (confirmed running as the
-account that just logged on, via ``Win32_Process``'s ``GetOwner``, not
-assumed), a real daemon/MCP/approval/audit round trip against it (Phase 3's
-own contract shape, reusing ``test_windows_packaged_smoke.py``'s own
-helpers), and "Quit PrivacyFence" confirmed to actually end that real
-process.
+**The one deliberate substitution, and the history behind it.** Task
+Scheduler is asked to run the task *on demand* rather than by a user signing
+in. ``AllowStartOnDemand`` and the trigger share every step that follows the
+decision to run -- resolving the ``Builtin\\Users`` principal to a concrete
+logged-on member, running the action with that member's ``LeastPrivilege``
+token, in their profile -- so everything above is the real mechanism. What
+it does not cover is the trigger's own firing, i.e. Task Scheduler deciding
+*when*.
 
-Skipped entirely unless running on real Windows, elevated (creating and
-deleting a local user account needs it), with a just-built ``dist/
-PrivacyFence-*-setup.exe`` on disk -- same posture as
-``test_windows_packaged_smoke.py``, and, like
-``test_linux_graphical_session_autostart.py``, run from its own
-``.github/workflows/windows-graphical-session.yml`` (packaging-related
+That gap is deliberate, and it replaces a substitution that could not work.
+This module used to create a throwaway local account, call PowerShell's
+``Start-Process -Credential`` for it, call that "signing in", and assert the
+daemon turned up. It never did, on any run: ``CreateProcessWithLogonW``
+(what that cmdlet, and ``runas.exe``, are built on) creates a *logon
+session* but not the Terminal Services *session* logon that Task Scheduler's
+``LogonTrigger`` subscribes to, so the trigger was never evaluated at all.
+Task Scheduler said so itself once the failure message started asking it --
+run 24 of ``windows-graphical-session.yml``, against ``main``, with the task
+correctly registered::
+
+    Status:                Ready
+    Scheduled Task State:  Enabled
+    Run As User:           Users
+    Last Run Time:         11/30/1999 12:00:00 AM
+    Last Result:           267011        (SCHED_S_TASK_HAS_NOT_RUN)
+
+Registered, enabled, ready, never attempted. Nothing was wrong on the
+installer side; the test was asserting something a hosted runner cannot
+produce. So the trigger's own firing is now covered where it can actually be
+covered: ``release-testing.md``'s Windows human checks, on a real machine
+with a real sign-in, tracked on
+`privacyfence/privacyfence#121 <https://github.com/privacyfence/privacyfence/issues/121>`_.
+(An RDP loopback into the runner would create a genuine session logon, and
+was considered -- it needs an RDP client that can run without a desktop of
+its own, which a hosted runner does not have, so it would trade a gap that
+is honestly described for one that is merely harder to see.)
+
+The throwaway account is gone with it, for a reason worth stating because it
+is a property of the shipped task rather than of the test: a task whose
+principal is a *group* runs with the interactive token of a member who is
+**signed in**, and the daemon lands in that member's own profile. On a
+hosted runner exactly one account has a real interactive session -- the
+runner's own -- so that is the account this module can have the task run
+for, and a throwaway account (which, as above, cannot be given a session at
+all) buys nothing. Run 25 showed the same thing from the other side: asking
+for the run as that throwaway account returned ``ERROR: Access is denied.``
+
+So, like ``test_linux_graphical_session_autostart.py`` and unlike every
+other packaged test in this repo, this module does **not** isolate the
+daemon's home directory under ``tmp_path``: Task Scheduler starts the daemon
+with no injected environment, in the real profile of the real logged-on
+account, which is the whole point. It refuses to run at all (skips) if that
+account already has PrivacyFence state, and removes whatever it creates
+afterwards -- see ``_real_home_state``. **Only ever run this against a
+disposable CI account.**
+
+The install also goes to a machine-wide directory rather than the
+installer's own default. ``installer/privacyfence.iss`` is
+``PrivilegesRequired=lowest``, so a silent install resolves ``{autopf}`` to
+``{userpf}`` -- ``%LOCALAPPDATA%\\Programs\\PrivacyFence``, inside the
+installing account's profile, which no *other* account can read. The shipped
+task's ``Builtin\\Users`` principal only composes with a per-machine layout,
+so that is what this test installs (see ``INSTALL_DIR``).
+
+Skipped entirely unless running on real Windows, elevated (installing
+machine-wide and managing a Task Scheduler task needs it), with a just-built
+``dist/PrivacyFence-*-setup.exe`` on disk -- same posture as
+``test_windows_packaged_smoke.py``, and, like the Linux module, run from its
+own ``.github/workflows/windows-graphical-session.yml`` (packaging-related
 ``main`` pushes, weekly, and on demand) rather than ``build.yml``'s
 tag-triggered release pipeline or ``tests.yml``'s per-PR jobs: this is the
 same flakiest-and-most-expensive tier in ``docs/automated-test-strategy-
 plan.md``'s taxonomy (Phase 7's own objective) the Linux module already
-lives in, so a flaky run here must never block an actual release.
+lives in, so a flaky run here must never block an actual release. The module
+and workflow keep their "graphical session" names, which now read as the
+tier they belong to rather than a literal description of what this module
+drives -- renaming them would break the workflow's own run history and
+``paths:`` triggers for no gain.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
+import getpass
 import os
 import platform
-import secrets
 import shutil
 import subprocess
 import time
@@ -96,6 +144,7 @@ pytest.importorskip("mcp", reason="mcp (Python MCP client, test-only) not instal
 
 from tests.diagnostics import (  # noqa: E402
     capture_directory_manifest,
+    copy_named_logs,
     failure_dir,
     suite_name_for,
     write_environment_info,
@@ -116,95 +165,13 @@ from tests.integration.test_windows_packaged_smoke import (  # noqa: E402
     _task_exists,
     _wait_until_connectable,
 )
+from tests.windows_task_contract import assert_task_xml_matches_autostart_contract  # noqa: E402
 
-
-@pytest.fixture
-def _graphical_diagnostics(request):
-    """docs/automated-test-strategy-plan.md Phase 10: this module's own
-    tests/diagnostics.py capture call. Unlike test_windows_packaged_
-    smoke.py's ``home`` (always under that test's own ``tmp_path``), this
-    module's daemon boots into a *real* throwaway user's Windows profile --
-    not known until the test body itself calls ``_wait_for_profile_dir`` --
-    so the test registers it into this fixture's own mutable ``state`` dict
-    once it's known, the same "register, then capture from teardown" shape
-    test_deb_packaged_lifecycle.py's own ``_capture_installed_file_
-    manifest``/``_clean_package_state`` pair uses for real installed system
-    state. There's no ``daemon.log`` here either -- a Scheduler-launched
-    process has no redirected stdout of its own -- so this reaches for
-    ``schtasks /query ... /v`` (the task's own last-run result code) instead
-    of a log file, same reasoning as test_linux_graphical_session_
-    autostart.py's own ``journalctl`` capture for its systemd-launched one."""
-    state: dict[str, Path] = {}
-    yield state
-    rep_call = getattr(request.node, "rep_call", None)
-    if rep_call is None or not rep_call.failed:
-        return
-    dest = failure_dir(request.node.nodeid, suite=suite_name_for(__file__))
-    write_environment_info(dest / "environment.txt")
-    home = state.get("home")
-    if home is not None:
-        # A different filename than the generic per-`tmp_path` capture's own
-        # `manifest.txt` (docs/automated-test-strategy-plan.md Phase 10's
-        # tests/conftest.py hook also fires for this test, since it directly
-        # takes `tmp_path` too, for `install_dir`) -- this is a second,
-        # separate manifest (the throwaway user's real profile, not
-        # `tmp_path`), not a replacement for it.
-        capture_directory_manifest(home / ".privacyfence", dest / "manifest-profile-home.txt")
-    task_info = subprocess.run(
-        ["schtasks", "/query", "/tn", TASK_NAME, "/v", "/fo", "list"], capture_output=True, text=True,
-    )
-    (dest / "logs").mkdir(parents=True, exist_ok=True)
-    (dest / "logs" / "schtasks-query.txt").write_text(task_info.stdout + task_info.stderr, encoding="utf-8")
-
-
-def _task_state_summary() -> str:
-    """The registered task's own view of what happened, as ``schtasks
-    /query /v`` reports it.
-
-    Registration succeeding and the trigger actually firing are two
-    different things, and the assertion below can only observe the second
-    one indirectly (no daemon process turned up). Task Scheduler knows
-    which of them failed: "Last Run Time" and "Last Result" say whether it
-    ever tried to run the action at all, and "Scheduled Task State" /
-    "Status" say whether the task is even enabled and ready. Putting those
-    lines straight into the failure message is the same move that turned
-    the registration failure underneath this one from eight opaque runs
-    into a single readable error -- the schtasks output was always there,
-    it just was not anywhere a failing run could show it.
-    """
-    result = subprocess.run(
-        ["schtasks", "/query", "/tn", TASK_NAME, "/v", "/fo", "list"],
-        capture_output=True, text=True, timeout=15,
-    )
-    if result.returncode != 0:
-        return f"(schtasks /query failed, exit {result.returncode}): {result.stdout}{result.stderr}"
-    wanted = (
-        "Status:", "Last Run Time:", "Last Result:", "Next Run Time:",
-        "Scheduled Task State:", "Run As User:", "Task To Run:",
-    )
-    lines = [
-        line.strip() for line in result.stdout.splitlines()
-        if line.strip().startswith(wanted)
-    ]
-    return "\n".join(lines) if lines else result.stdout
-
-
-def _install_log_tail(log_path: Path, *, max_chars: int = 8000) -> str:
-    """The last *max_chars* of Inno's own ``/LOG=`` output, or a plain
-    ``(missing)``/``(empty)`` marker. Never the whole file: this onedir
-    bundle's own [Files] copy log alone runs to tens of thousands of
-    lines, and CurStepChanged(ssPostInstall)'s own RegisterAutostartTask
-    call -- the part actually worth seeing on a registration failure --
-    is logged only after every one of those file-copy lines, so returning
-    the whole file risks it never actually reaching whatever captured
-    this assertion's own output (a CI log viewer's own size limit,
-    included)."""
-    if not log_path.exists():
-        return "(missing)"
-    text = log_path.read_text(errors="replace")
-    if not text:
-        return "(empty)"
-    return text[-max_chars:]
+# Machine-wide, and deliberately not the installer's own default -- see the
+# module docstring. No space in the path: Inno parses `/DIR=` off its own raw
+# command line rather than argv, so a value that needs quoting is one more
+# thing to get wrong in a test whose subject is something else entirely.
+INSTALL_DIR = Path(os.environ.get("SystemDrive", "C:") + "\\") / "PrivacyFenceAutostartTest"
 
 
 def _is_admin() -> bool:
@@ -238,22 +205,179 @@ pytestmark = [
     ),
     pytest.mark.skipif(
         not _is_admin(),
-        reason="creating/deleting a local user account needs an elevated shell",
+        reason="a machine-wide install and Task Scheduler task management need an elevated shell",
     ),
-    # A real silent install, a real user-account creation, a real interactive
-    # logon, a real daemon cold start, and a full MCP/approval/audit round
-    # trip -- comfortably slower than the suite's default timeout=30, same
-    # reasoning as every other packaged/system test in this repo.
-    pytest.mark.timeout(180),
+    # A real silent install, a real Scheduler-driven daemon cold start, and a
+    # full MCP/approval/audit round trip -- comfortably slower than the
+    # suite's default timeout=30, same reasoning as every other
+    # packaged/system test in this repo.
+    pytest.mark.timeout(300),
 ]
 
 
 # --------------------------------------------------------------------------- #
-# PowerShell helpers -- Start-Process -Credential and Win32_Process/GetOwner
-# have no schtasks.exe-style command-line-only equivalent, so this module
-# drops into PowerShell for exactly those two things (everything else here
-# uses the same plain cmd-tool-via-subprocess style as
-# test_windows_packaged_smoke.py/test_deb_packaged_lifecycle.py).
+# Task Scheduler: what it stored, what it says happened, what it will do now
+# --------------------------------------------------------------------------- #
+
+def _task_state_summary() -> str:
+    """The registered task's own view of what happened, as ``schtasks
+    /query /v`` reports it.
+
+    A task existing and a task having actually run are two different
+    things, and the assertions below can only observe the second one
+    indirectly (no daemon process turned up). Task Scheduler knows which of
+    them failed: "Last Run Time" and "Last Result" say whether it ever tried
+    to run the action at all, and "Scheduled Task State" / "Status" say
+    whether the task is even enabled and ready. Putting those lines straight
+    into the failure message is the same move that turned the registration
+    failure underneath this one from eight opaque runs into a single
+    readable error -- the schtasks output was always there, it just was not
+    anywhere a failing run could show it.
+    """
+    result = subprocess.run(
+        ["schtasks", "/query", "/tn", TASK_NAME, "/v", "/fo", "list"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        return f"(schtasks /query failed, exit {result.returncode}): {result.stdout}{result.stderr}"
+    wanted = (
+        "Status:", "Last Run Time:", "Last Result:", "Next Run Time:",
+        "Scheduled Task State:", "Run As User:", "Task To Run:",
+    )
+    lines = [
+        line.strip() for line in result.stdout.splitlines()
+        if line.strip().startswith(wanted)
+    ]
+    return "\n".join(lines) if lines else result.stdout
+
+
+def _session_table() -> str:
+    """Who is actually signed in, as Windows itself reports it.
+
+    Load-bearing for reading a failure here rather than merely decorative: a
+    group-principal task runs with the interactive token of a *signed-in*
+    member, so "no session" and "no daemon" are the same failure, and this is
+    the only thing that tells them apart from a broken action."""
+    result = subprocess.run(["query", "user"], capture_output=True, text=True, timeout=15)
+    return (result.stdout + result.stderr).strip() or "(query user returned nothing)"
+
+
+def _enable_task_scheduler_event_log() -> None:
+    """Best-effort: make sure Task Scheduler's own operational channel is
+    recording, since it is the only place that says *why* a task did or did
+    not run again. Enabled by default on current Windows; enabling it is
+    idempotent and costs nothing when it already is."""
+    subprocess.run(
+        ["wevtutil", "sl", "Microsoft-Windows-TaskScheduler/Operational", "/e:true"],
+        capture_output=True, text=True, timeout=20,
+    )
+
+
+def _task_scheduler_events(count: int = 40) -> str:
+    """The last *count* Task Scheduler operational events, newest first.
+
+    ``schtasks /query /v`` reports only the outcome of the last run --
+    "Last Result: 1" and nothing about what the service decided afterwards.
+    Whether a restart was attempted, skipped, or never considered is in this
+    log and nowhere else."""
+    result = subprocess.run(
+        [
+            "wevtutil", "qe", "Microsoft-Windows-TaskScheduler/Operational",
+            f"/c:{count}", "/rd:true", "/f:text",
+        ],
+        capture_output=True, text=True, timeout=60,
+    )
+    text = (result.stdout + result.stderr).strip()
+    return text or "(no Task Scheduler operational events -- is the channel enabled?)"
+
+
+def _decode_console_output(raw: bytes) -> str:
+    """``schtasks /query /xml`` writes UTF-16 (with a BOM) when its output
+    is redirected, unlike the ANSI text every other ``schtasks`` output mode
+    produces -- so this reads bytes and decides, rather than letting
+    ``subprocess``'s own ``text=True`` guess the console code page and
+    mangle it."""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    return raw.decode("utf-8-sig", errors="replace")
+
+
+def _registered_task_xml() -> str:
+    """The task definition as *Task Scheduler itself* stores it.
+
+    Deliberately not installer/privacyfence-task.xml.tmpl and not the
+    substituted copy Setup handed to ``schtasks``: the service parses,
+    validates, normalizes and stores its own version of that document, and
+    the gap between the two is exactly where this task's real bugs have
+    lived (an ``id``/``Context`` pair that registered fine but bound the
+    principal to nothing that runs; a schema version whose absence silently
+    dropped the 1.2-only Settings elements; schema defaults the template
+    never mentioned, which is how the battery settings were found)."""
+    result = subprocess.run(
+        ["schtasks", "/query", "/tn", TASK_NAME, "/xml", "ONE"], capture_output=True, timeout=20,
+    )
+    text = _decode_console_output(result.stdout) + _decode_console_output(result.stderr)
+    assert result.returncode == 0, f"schtasks /query /xml failed (exit {result.returncode}):\n{text}"
+    start = text.find("<?xml")
+    if start < 0:
+        start = text.find("<Task")
+    assert start >= 0, f"schtasks /query /xml returned no task document:\n{text}"
+    return text[start:]
+
+
+def _registered_task_xml_or_error() -> str:
+    """Diagnostics-path variant: never raises, so a teardown capture can't
+    turn a real failure into an error inside the fixture."""
+    try:
+        return _registered_task_xml()
+    except Exception as exc:  # noqa: BLE001 -- diagnostics only, any failure is itself the datum
+        return f"(could not read the registered task XML: {exc!r})"
+
+
+def _daemon_log_tail(home: Path, *, max_chars: int = 4000) -> str:
+    """The daemon's own log, which is the only thing it leaves behind when
+    Task Scheduler starts it.
+
+    ``daemon_main.setup_logging`` writes to ``<data dir>/logs/
+    privacyfence.log`` -- for a bundled app, ``%USERPROFILE%\\.privacyfence\\
+    logs\\privacyfence.log`` -- and ``main()`` logs an explicit
+    ``Fatal error: ...`` with a traceback there before returning 1. A
+    Scheduler-launched process has no console and no redirected stdout, so
+    unlike ``test_windows_packaged_smoke.py`` (which captures the daemon's
+    stdout to a file it can quote on failure) this file is the *only* place
+    a daemon that died on startup says why. ``Last Result: 1`` from
+    ``schtasks /query`` says only that it did."""
+    log_path = home / ".privacyfence" / "logs" / "privacyfence.log"
+    if not log_path.exists():
+        return f"({log_path} missing -- the daemon never got as far as setting up logging)"
+    text = log_path.read_text(errors="replace")
+    return text[-max_chars:] if text else "(empty)"
+
+
+def _install_log_tail(log_path: Path, *, max_chars: int = 8000) -> str:
+    """The last *max_chars* of Inno's own ``/LOG=`` output, or a plain
+    ``(missing)``/``(empty)`` marker. Never the whole file: this onedir
+    bundle's own [Files] copy log alone runs to tens of thousands of
+    lines, and CurStepChanged(ssPostInstall)'s own RegisterAutostartTask
+    call -- the part actually worth seeing on a registration failure --
+    is logged only after every one of those file-copy lines, so returning
+    the whole file risks it never actually reaching whatever captured
+    this assertion's own output (a CI log viewer's own size limit,
+    included)."""
+    if not log_path.exists():
+        return "(missing)"
+    text = log_path.read_text(errors="replace")
+    if not text:
+        return "(empty)"
+    return text[-max_chars:]
+
+
+# --------------------------------------------------------------------------- #
+# PowerShell helper -- Win32_Process/GetOwner has no schtasks.exe-style
+# command-line-only equivalent, so this module drops into PowerShell for
+# exactly that (everything else here uses the same plain
+# cmd-tool-via-subprocess style as test_windows_packaged_smoke.py/
+# test_deb_packaged_lifecycle.py).
 # --------------------------------------------------------------------------- #
 
 def _windows_powershell_env() -> dict[str, str]:
@@ -266,12 +390,10 @@ def _windows_powershell_env() -> dict[str, str]:
     Windows PowerShell 5.1's module directory. A nested ``powershell.exe``
     process (spawned below) inherits that env var as plain process
     environment and, unlike a real top-level 5.1 session, never recomputes
-    it -- so autoloading its own built-in cmdlets (``ConvertTo-SecureString``
-    from ``Microsoft.PowerShell.Security``, ``Get-CimInstance`` from
+    it -- so autoloading its own built-in cmdlets (``Get-CimInstance`` from
     ``CimCmdlets``, etc.) fails with "the module could not be loaded", 100%
-    reproducibly, regardless of the throwaway account or password involved.
-    Prepending Windows PowerShell 5.1's own system module directory restores
-    the lookup those cmdlets need."""
+    reproducibly. Prepending Windows PowerShell 5.1's own system module
+    directory restores the lookup those cmdlets need."""
     env = dict(os.environ)
     system_root = os.environ.get("SystemRoot", r"C:\Windows")
     system_modules = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "Modules")
@@ -289,29 +411,6 @@ def _run_powershell(script: str, *, timeout: float = 60.0) -> subprocess.Complet
     return subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
         capture_output=True, text=True, timeout=timeout, env=_windows_powershell_env(),
-    )
-
-
-def _run_as_user(username: str, password: str, exe: str, args: str, *, timeout: float = 30.0) -> None:
-    """Performs a real interactive Windows logon for *username*
-    (``LOGON32_LOGON_INTERACTIVE`` via ``CreateProcessWithLogonW``, which is
-    what ``Start-Process -Credential`` uses -- the same primitive
-    ``runas.exe`` is built on) and runs *exe* under it, waiting for it to
-    exit. This -- not a physical sign-in -- is this module's one real
-    substitution; see its own docstring."""
-    password_escaped = password.replace("'", "''")
-    script = (
-        "$ErrorActionPreference = 'Stop'\n"
-        f"$secpw = ConvertTo-SecureString -String '{password_escaped}' -AsPlainText -Force\n"
-        f"$cred = New-Object System.Management.Automation.PSCredential('{username}', $secpw)\n"
-        f"$p = Start-Process -FilePath '{exe}' -ArgumentList '{args}' -Credential $cred "
-        "-WorkingDirectory 'C:\\Windows' -WindowStyle Hidden -PassThru -Wait\n"
-        "exit $p.ExitCode\n"
-    )
-    result = _run_powershell(script, timeout=timeout)
-    assert result.returncode == 0, (
-        f"logon-equivalent process for {username!r} failed (exit {result.returncode}):\n"
-        f"{result.stdout}{result.stderr}"
     )
 
 
@@ -336,83 +435,28 @@ def _find_process_by_exe_path(exe_path: str) -> tuple[str, str] | None:
     return pid, owner
 
 
-# --------------------------------------------------------------------------- #
-# Throwaway local account -- see module docstring for why this stands in for
-# "someone signs in" and why it's a local Administrator.
-# --------------------------------------------------------------------------- #
-
-def _random_username() -> str:
-    return "pfglogon" + secrets.token_hex(3)
-
-
-def _random_password() -> str:
-    # Fixed upper/lower/digit/symbol characters guarantee this satisfies the
-    # default Windows local-account complexity policy regardless of what
-    # secrets.token_hex happens to produce.
-    return f"Pf!{secrets.token_hex(6)}Aa1"
-
-
-def _create_local_user(username: str, password: str) -> None:
-    result = subprocess.run(
-        ["net", "user", username, password, "/add", "/y"], capture_output=True, text=True, timeout=20,
-    )
-    assert result.returncode == 0, f"net user /add failed:\n{result.stdout}{result.stderr}"
-    # See module docstring point 2 -- purely to satisfy "Log on locally"
-    # rights on the Windows Server base image these runners use, not to
-    # change anything about how the daemon itself ends up running (the
-    # scheduled task's own /rl limited governs that).
-    admin_result = subprocess.run(
-        ["net", "localgroup", "Administrators", username, "/add"], capture_output=True, text=True, timeout=20,
-    )
-    assert admin_result.returncode == 0, f"net localgroup Administrators /add failed:\n{admin_result.stdout}{admin_result.stderr}"
-
-
-def _delete_local_user(username: str) -> None:
-    subprocess.run(["net", "user", username, "/delete"], capture_output=True, text=True, timeout=20)
-
-
-def _logoff_sessions(username: str) -> None:
-    """Best-effort cleanup only -- never raises. Ends any session left open
-    under *username* so its profile isn't still mounted when this test tries
-    to delete the account/profile directory afterward."""
-    try:
-        result = subprocess.run(["query", "user"], capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.TimeoutExpired):
-        return
-    for line in result.stdout.splitlines()[1:]:
-        parts = line.split()
-        if parts and parts[0].lstrip(">").lower() == username.lower() and len(parts) > 2 and parts[2].isdigit():
-            subprocess.run(["logoff", parts[2]], capture_output=True, text=True, timeout=15)
-
-
-def _wait_for_profile_dir(username: str, *, timeout: float = 30.0) -> Path:
-    users_root = Path(os.environ.get("SystemDrive", "C:") + "\\") / "Users"
+def _wait_for_alias_process(
+    exe_path: str, *, timeout: float, different_from: str | None = None,
+) -> tuple[str, str] | None:
+    """Polls for the installed alias exe, optionally requiring a *different*
+    pid than one already seen (which is what makes "Task Scheduler
+    relaunched it" distinguishable from "the old process is still here")."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        candidates = [p for p in users_root.glob(f"{username}*") if p.is_dir()]
-        if candidates:
-            return candidates[0]
+        found = _find_process_by_exe_path(exe_path)
+        if found and (different_from is None or found[0] != different_from):
+            return found
         time.sleep(0.5)
-    raise AssertionError(f"no profile directory for {username!r} appeared under {users_root} within {timeout}s")
+    return None
 
 
-@pytest.fixture
-def _throwaway_user():
-    username = _random_username()
-    password = _random_password()
-    _create_local_user(username, password)
-    try:
-        yield username, password
-    finally:
-        _logoff_sessions(username)
-        _delete_local_user(username)
-        users_root = Path(os.environ.get("SystemDrive", "C:") + "\\") / "Users"
-        for candidate in users_root.glob(f"{username}*"):
-            for _attempt in range(10):
-                shutil.rmtree(candidate, ignore_errors=True)
-                if not candidate.exists():
-                    break
-                time.sleep(0.5)
+def _wait_until_alias_process_gone(exe_path: str, *, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _find_process_by_exe_path(exe_path) is None:
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def _wait_for_path_content(path: Path, *, timeout: float) -> str:
@@ -426,39 +470,120 @@ def _wait_for_path_content(path: Path, *, timeout: float) -> str:
     raise AssertionError(f"{path} never appeared/populated within {timeout}s")
 
 
+def _kill_alias_processes() -> None:
+    """Best-effort: end any daemon this module's install left running, so a
+    failed test never leaks a process holding the install directory open."""
+    subprocess.run(
+        ["taskkill", "/f", "/im", ALIAS_EXE_NAME], capture_output=True, text=True, timeout=30,
+    )
+
+
+def _remove_task() -> None:
+    """Stop and delete the task *before* uninstalling, not after.
+
+    The uninstaller removes it too ([UninstallRun]), but the crash-restart
+    test deliberately leaves a task with pending restart attempts behind:
+    left registered, Task Scheduler can relaunch the daemon out of the
+    directory the uninstaller is in the middle of deleting."""
+    subprocess.run(["schtasks", "/end", "/tn", TASK_NAME], capture_output=True, text=True, timeout=20)
+    subprocess.run(["schtasks", "/delete", "/tn", TASK_NAME, "/f"], capture_output=True, text=True, timeout=20)
+
+
 # --------------------------------------------------------------------------- #
-# The test -- Phase 7 item 2 / 8.2: install, sign in (real logon-equivalent),
-# verify autostart, exercise the Phase 3 system contract.
+# Fixtures -- the real (un-isolated) home, and one real install per test
 # --------------------------------------------------------------------------- #
 
-async def test_installer_autostart_activates_daemon_via_real_logon_session(
-    _throwaway_user, tmp_path, _graphical_diagnostics,
-):
-    username, password = _throwaway_user
-    setup_exe = _built_installers()[-1]
-    install_dir = tmp_path / "install"
+@pytest.fixture
+def _real_home_state(request):
+    """The daemon's home is the real logged-on account's profile, not
+    ``tmp_path``.
 
-    # ── Materialize a real Windows user profile for the throwaway account
-    # *before* installing anything, via one real interactive logon (the same
-    # technique the actual triggering logon below uses) -- so the settings.
-    # yaml pre-seed just below has somewhere to write, and so the triggering
-    # logon later is never this account's very first one at all. ───────────
-    _run_as_user(username, password, "cmd.exe", "/c exit")
-    home = _wait_for_profile_dir(username, timeout=30)
-    _graphical_diagnostics["home"] = home
+    Task Scheduler launches the action itself, with no injected environment
+    -- that is the whole point here -- so there is nowhere to redirect
+    ``%USERPROFILE%`` to even if this module wanted to. Same posture, and
+    same safeguards, as ``test_linux_graphical_session_autostart.py``'s own
+    identically-named fixture: skip rather than run if this account already
+    has PrivacyFence state, and remove whatever this test creates.
 
+    Also doubles as this module's docs/automated-test-strategy-plan.md Phase
+    10 diagnostics capture, for the same reason that module's does -- the
+    generic per-``tmp_path`` capture in ../conftest.py cannot see any of
+    this, and a Scheduler-launched process has no redirected stdout of its
+    own to collect either, so this reaches for what Task Scheduler knows
+    (the task's own stored definition and last-run result) instead."""
+    real_home = Path.home()
+    state_dir = real_home / ".privacyfence"
+    if state_dir.exists():
+        pytest.skip(
+            f"{state_dir} already exists -- this test boots the daemon into the real profile with "
+            "no isolation (the whole point is a real, un-injected Task Scheduler launch); only run "
+            "it against a disposable account with no existing PrivacyFence state"
+        )
+    try:
+        yield real_home
+    finally:
+        rep_call = getattr(request.node, "rep_call", None)
+        if rep_call is not None and rep_call.failed:
+            dest = failure_dir(request.node.nodeid, suite=suite_name_for(__file__))
+            write_environment_info(dest / "environment.txt")
+            capture_directory_manifest(state_dir, dest / "manifest-profile-home.txt")
+            (dest / "logs").mkdir(parents=True, exist_ok=True)
+            task_info = subprocess.run(
+                ["schtasks", "/query", "/tn", TASK_NAME, "/v", "/fo", "list"],
+                capture_output=True, text=True,
+            )
+            (dest / "logs" / "schtasks-query.txt").write_text(
+                task_info.stdout + task_info.stderr, encoding="utf-8",
+            )
+            # The stored definition, not this repo's template: which of the
+            # two disagrees with the other is the whole question whenever a
+            # task registers but then behaves unexpectedly.
+            (dest / "logs" / "schtasks-query-xml.txt").write_text(
+                _registered_task_xml_or_error(), encoding="utf-8",
+            )
+            (dest / "logs" / "query-user.txt").write_text(_session_table(), encoding="utf-8")
+            (dest / "logs" / "taskscheduler-events.txt").write_text(
+                _task_scheduler_events(120), encoding="utf-8",
+            )
+            # The daemon's own log, if it got far enough to write one -- see
+            # _daemon_log_tail for why this is the only thing a
+            # Scheduler-launched daemon leaves behind.
+            copy_named_logs(state_dir, dest / "logs")
+        shutil.rmtree(state_dir, ignore_errors=True)
+
+
+class _Installed:
+    """What a test needs to know about the installation the fixture made:
+    the profile the daemon will boot into, the port its settings.yaml was
+    seeded with, and where the installed alias exe actually is."""
+
+    def __init__(self, *, home: Path, port: int, log_path: Path) -> None:
+        self.home = home
+        self.port = port
+        self.log_path = log_path
+        self.alias_exe = str(INSTALL_DIR / ALIAS_EXE_NAME)
+
+
+@pytest.fixture
+def _installed(_real_home_state, tmp_path):
+    """One real silent install per test, and its full teardown -- both tests
+    below need the same installed-and-registered starting state, and neither
+    may leave a task or a daemon behind for the other (or for whatever runs
+    next on this machine)."""
+    home = _real_home_state
     port = _free_port()
     _prepare_home(home, port=port)
 
-    # ── Install (as this test's own -- not the throwaway -- account; see
-    # module docstring point 1 for why installer/privacyfence.iss's own
-    # RegisterAutostartTask (its Task Scheduler XML, not a plain schtasks
-    # /create flag) makes this the exact real-world trigger scope,
-    # regardless of which account runs the installer) ──────────────────────
+    if INSTALL_DIR.exists():  # a previous run that died before its own cleanup
+        _kill_alias_processes()
+        shutil.rmtree(INSTALL_DIR, ignore_errors=True)
+
+    _enable_task_scheduler_event_log()
     log_path = tmp_path / "install.log"
+    setup_exe = _built_installers()[-1]
     install_result = _run_installer(
         str(setup_exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/SP-", "/NORESTART",
-        f"/DIR={install_dir}", f"/LOG={log_path}",
+        f"/DIR={INSTALL_DIR}", f"/LOG={log_path}",
     )
     assert install_result.returncode == 0, (
         f"installer failed (exit {install_result.returncode}):\n{install_result.stdout}{install_result.stderr}\n"
@@ -468,14 +593,14 @@ async def test_installer_autostart_activates_daemon_via_real_logon_session(
     # doesn't abort Setup on its own failure, so a silent install can still
     # exit 0 with no task actually registered -- the install log (Inno's
     # own /LOG= output, which records every [Code] Exec call and its
-    # result) is the only way to see why, short of downloading this test's
-    # own diagnostics artifact by hand. Only the *tail* -- this onedir
-    # bundle's own per-file [Files] copy log alone runs to tens of
-    # thousands of lines, which previously pushed the actually useful part
-    # (CurStepChanged(ssPostInstall)'s own RegisterAutostartTask call,
-    # logged only after every file is already copied) past what a CI log
-    # viewer -- or this test's own captured stdout -- keeps readily
-    # available.
+    # result, schtasks' own stdout/stderr included) is the only way to see
+    # why, short of downloading this test's own diagnostics artifact by
+    # hand. Only the *tail*: this onedir bundle's own per-file [Files] copy
+    # log alone runs to tens of thousands of lines, which previously pushed
+    # the actually useful part (CurStepChanged(ssPostInstall)'s own
+    # RegisterAutostartTask call, logged only after every file is already
+    # copied) past what a CI log viewer -- or this test's own captured
+    # stdout -- keeps readily available.
     assert _task_exists(), (
         f"Task Scheduler task {TASK_NAME!r} missing after install\n"
         f"---- install log (tail) ----\n{_install_log_tail(log_path)}"
@@ -483,40 +608,85 @@ async def test_installer_autostart_activates_daemon_via_real_logon_session(
 
     # A silent install's own [Run] "launch now" step is skipifsilent -- it
     # must never fire under /VERYSILENT (test_windows_packaged_smoke.py's
-    # own lifecycle test relies on the same fact); only the next real
-    # logon's ONLOGON trigger should ever start the daemon.
+    # own lifecycle test relies on the same fact); only Task Scheduler
+    # should ever start the daemon in this module.
     assert not (home / ".privacyfence" / WEB_TOKEN_FILE_NAME).exists(), (
-        "a silent install must never itself start the daemon -- only a real logon should"
+        "a silent install must never itself start the daemon -- only the autostart task should"
     )
 
-    # ── The actual "sign in" moment -- a real interactive logon for the
-    # throwaway account. See module docstring for why this is this test's
-    # one deliberate substitution for a physical sign-in. ──────────────────
-    _run_as_user(username, password, "cmd.exe", "/c exit")
+    try:
+        yield _Installed(home=home, port=port, log_path=log_path)
+    finally:
+        _remove_task()
+        _kill_alias_processes()
+        uninstaller = INSTALL_DIR / "unins000.exe"
+        if uninstaller.is_file():
+            _run_installer(str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+        shutil.rmtree(INSTALL_DIR, ignore_errors=True)
 
-    alias_exe_path = str(install_dir / ALIAS_EXE_NAME)
-    deadline = time.monotonic() + 30.0
-    found = None
-    while time.monotonic() < deadline:
-        found = _find_process_by_exe_path(alias_exe_path)
-        if found:
-            break
-        time.sleep(0.5)
-    assert found, (
-        f"{alias_exe_path} never appeared as a running process within 30s of {username}'s logon -- "
-        f"the ONLOGON task trigger never fired\n"
+
+def _assert_registered_task_matches_autostart_contract(exec_path: str) -> None:
+    """The same contract tests/unit/test_windows_autostart_task_template.py
+    holds the shipped template to (tests/windows_task_contract.py), asserted
+    here against the document that actually governs: the one Task Scheduler
+    parsed, normalized and stored when the installer registered it."""
+    assert_task_xml_matches_autostart_contract(_registered_task_xml(), exec_path=exec_path)
+
+
+def _start_task() -> None:
+    """Ask Task Scheduler to run the installed task now.
+
+    The module docstring's one deliberate substitution for a user signing
+    in: the trigger decides *when*, and everything after that decision --
+    resolving the ``Builtin\\Users`` principal to a signed-in member, that
+    member's ``LeastPrivilege`` token, their profile, the action itself --
+    is the same code path either way."""
+    result = subprocess.run(
+        ["schtasks", "/run", "/tn", TASK_NAME], capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"schtasks /run failed (exit {result.returncode}):\n{result.stdout}{result.stderr}\n"
+        f"---- who is signed in (query user) ----\n{_session_table()}\n"
         f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}"
     )
-    pid, owner = found
-    assert username.lower() in owner.lower(), (
-        f"{ALIAS_EXE_NAME} (pid {pid}) is running as {owner!r}, not the account that just logged on ({username!r})"
+
+
+def _start_task_and_wait_for_daemon(installed: _Installed) -> tuple[str, str]:
+    _start_task()
+    found = _wait_for_alias_process(installed.alias_exe, timeout=30.0)
+    assert found, (
+        f"{installed.alias_exe} never appeared as a running process within 30s of Task Scheduler "
+        f"being asked to run {TASK_NAME!r}\n"
+        f"---- who is signed in (query user) ----\n{_session_table()}\n"
+        f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}\n"
+        f"---- daemon log (tail) ----\n{_daemon_log_tail(installed.home)}"
     )
+    pid, owner = found
+    # A group principal runs the action as a signed-in member, in that
+    # member's own profile -- which is the account running this test, since
+    # it is the only one with a real session here.
+    assert getpass.getuser().lower() in owner.lower(), (
+        f"{ALIAS_EXE_NAME} (pid {pid}) is running as {owner!r}, not the signed-in account "
+        f"({getpass.getuser()!r}) the Builtin\\Users principal should have resolved to"
+    )
+    return pid, owner
 
-    web_token = _wait_for_path_content(home / ".privacyfence" / WEB_TOKEN_FILE_NAME, timeout=20)
-    mcp_token = _wait_for_path_content(home / ".privacyfence" / MCP_TOKEN_FILE_NAME, timeout=20)
-    _wait_until_connectable("localhost", port)
 
-    base_url = f"http://localhost:{port}"
+# --------------------------------------------------------------------------- #
+# The tests -- Phase 7 item 2 / 8.2 (Scheduler-started daemon, real system
+# contract) and Phase 13 item 4 (crash-restart).
+# --------------------------------------------------------------------------- #
+
+async def test_installed_task_definition_starts_the_packaged_daemon(_installed):
+    _assert_registered_task_matches_autostart_contract(_installed.alias_exe)
+
+    pid, _owner = _start_task_and_wait_for_daemon(_installed)
+
+    web_token = _wait_for_path_content(_installed.home / ".privacyfence" / WEB_TOKEN_FILE_NAME, timeout=20)
+    mcp_token = _wait_for_path_content(_installed.home / ".privacyfence" / MCP_TOKEN_FILE_NAME, timeout=20)
+    _wait_until_connectable("localhost", _installed.port)
+
+    base_url = f"http://localhost:{_installed.port}"
     mcp_url = f"{base_url}/mcp"
 
     # ── Phase 3's own daemon/MCP/approval/audit contract shape, against a
@@ -535,21 +705,75 @@ async def test_installer_autostart_activates_daemon_via_real_logon_session(
 
         await _quit(web_client, session_id)
 
-    # ── Graceful shutdown propagates to the real process the trigger
+    # ── Graceful shutdown propagates to the real process Task Scheduler
     # started -- not just makes it unreachable over HTTP ───────────────────
-    deadline = time.monotonic() + 20.0
-    while time.monotonic() < deadline:
-        if _find_process_by_exe_path(alias_exe_path) is None:
-            break
-        time.sleep(0.5)
-    else:
-        pytest.fail(f"{ALIAS_EXE_NAME} (pid {pid}) still running after Quit PrivacyFence")
+    assert _wait_until_alias_process_gone(_installed.alias_exe, timeout=20.0), (
+        f"{ALIAS_EXE_NAME} (pid {pid}) still running after Quit PrivacyFence"
+    )
 
-    settings_path = home / ".privacyfence" / "config" / "settings.yaml"
+    settings_path = _installed.home / ".privacyfence" / "config" / "settings.yaml"
     assert "autologon.example.com" in settings_path.read_text(encoding="utf-8")
 
-    # ── Cleanup: silent uninstall, same flow as test_windows_packaged_
-    # smoke.py's own lifecycle test ─────────────────────────────────────────
-    uninstaller = install_dir / "unins000.exe"
-    if uninstaller.is_file():
-        _run_installer(str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+
+# The wait below spans more than two of the task's own
+# <RestartOnFailure><Interval>PT1M</Interval> windows, on top of an install
+# and a cold daemon start -- well past this module's own 300s default, let
+# alone the suite's 30s one.
+@pytest.mark.timeout(480)
+async def test_restart_on_failure_does_not_cover_a_crashed_daemon(_installed):
+    """docs/automated-test-strategy-plan.md Phase 13 item 4, as measured
+    rather than as assumed -- and the assertion is deliberately negative.
+
+    The shipped task carries
+    ``<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>``,
+    added as the Windows analogue of the macOS LaunchAgent's
+    ``KeepAlive``/``SuccessfulExit=false`` and the Linux ``.deb``'s systemd
+    ``Restart=on-failure``. It is not one. Kill the Scheduler-started daemon
+    outright and Task Scheduler does not bring it back -- because it does not
+    consider the task to have failed at all. Its own operational log, from
+    the run that established this::
+
+        Event ID 201:  Task Scheduler successfully completed task
+                       "\\PrivacyFence", instance "{63cf2afb-...}", action
+                       "C:\\...\\privacyfence-app.exe" with return code
+                       2147942401.
+        Event ID 102:  Task Scheduler successfully finished "{63cf2afb-...}"
+                       instance of the "\\PrivacyFence" task for user
+                       "...\\runneradmin".
+
+    ``2147942401`` is ``0x80070001`` -- the action's own non-zero exit,
+    surfaced as an HRESULT. Task Scheduler logged it as *successfully
+    completed* regardless, and never scheduled a restart: ``RestartOnFailure``
+    answers a task that fails to *run*, not an action that ran and then died.
+
+    So this test exists to pin that down, for two reasons. It stops the
+    setting from being re-added and re-declared a fix without anyone
+    measuring it again, and it fails loudly the day the mechanism actually
+    becomes a keep-alive -- at which point it should be replaced by the
+    positive assertion this file used to attempt (kill, wait, assert a new
+    pid). Phase 13's exit criteria stay open until then; see that phase's
+    status note for the design options and their trade-offs.
+    """
+    first_pid, _owner = _start_task_and_wait_for_daemon(_installed)
+    _wait_until_connectable("localhost", _installed.port)
+
+    # A real crash, not a graceful quit: /f is a TerminateProcess, so the
+    # action ends non-zero and never gets to clean up after itself.
+    kill = subprocess.run(
+        ["taskkill", "/pid", first_pid, "/f"], capture_output=True, text=True, timeout=30,
+    )
+    assert kill.returncode == 0, f"taskkill on pid {first_pid} failed:\n{kill.stdout}{kill.stderr}"
+    assert _wait_until_alias_process_gone(_installed.alias_exe, timeout=20.0), (
+        f"{ALIAS_EXE_NAME} (pid {first_pid}) survived taskkill /f, so nothing crashed"
+    )
+
+    # Two and a half PT1M windows, i.e. past the second of the three restart
+    # attempts the setting asks for. Nothing comes back.
+    relaunched = _wait_for_alias_process(_installed.alias_exe, timeout=150.0, different_from=first_pid)
+    assert relaunched is None, (
+        f"Task Scheduler relaunched {ALIAS_EXE_NAME} as pid {relaunched[0] if relaunched else None} "
+        f"after a crash -- <RestartOnFailure> now behaves as a keep-alive, which is what Phase 13 "
+        f"wanted all along. Replace this test with the positive assertion and close that phase.\n"
+        f"---- task state (schtasks /query /v) ----\n{_task_state_summary()}\n"
+        f"---- Task Scheduler operational log (newest first) ----\n{_task_scheduler_events()}"
+    )

@@ -73,7 +73,8 @@ def authorize_url(client_config: dict[str, Any], scopes: list[str], redirect_uri
     ``exchange_code`` below on the matching callback request."""
     flow = build_flow(client_config, scopes, redirect_uri)
     url, _ = flow.authorization_url(access_type="offline", include_granted_scopes="true", prompt="consent", state=state)
-    assert flow.code_verifier is not None  # Flow.authorization_url() always sets it (autogenerate_code_verifier=True)
+    # Flow.authorization_url() always sets it (autogenerate_code_verifier=True).
+    assert flow.code_verifier is not None  # nosec B101 -- invariant narrowing, not input validation
     return url, flow.code_verifier
 
 

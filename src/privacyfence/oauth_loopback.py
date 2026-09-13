@@ -199,6 +199,7 @@ def run_browser_oauth(
 
     if result.error:
         raise OAuthLoopbackError(result.error)
-    assert result.code is not None
+    # _handle_callback() only ever sets result.error XOR result.code.
+    assert result.code is not None  # nosec B101 -- invariant narrowing, not input validation
 
     return exchange(result.code, redirect_uri, code_verifier)

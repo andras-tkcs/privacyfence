@@ -111,14 +111,14 @@ from .state_stream import StateStream
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8765
-TOKEN_FILE_NAME = "web_token"
+TOKEN_FILE_NAME = "web_token"  # nosec B105 -- a filename, not a credential value
 # SEC-06: rotation-tracking sibling of TOKEN_FILE_NAME -- records which
 # installed version last (re)generated it, so an upgrade rotates a token
 # that was minted (and possibly already leaked, logged, or bookmarked
 # from a URL) by an older, pre-SEC-06 build, rather than trusting it
 # forever just because the file itself was never deleted. See
 # load_or_create_token()'s own docstring.
-TOKEN_VERSION_FILE_NAME = "web_token_version"
+TOKEN_VERSION_FILE_NAME = "web_token_version"  # nosec B105 -- a filename, not a credential value
 MCP_URL_FILE_NAME = "mcp_url"
 
 # Content-Security-Policy: see web/csp.py's own module docstring for the

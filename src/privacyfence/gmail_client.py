@@ -1192,7 +1192,7 @@ class GmailClient:
                     .execute()
                 )
                 data = att.get("data")
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001  # nosec B110 -- best-effort inline fetch; caller falls back to no body
                 pass
         if data and not filename:
             decoded = self._decode_body(data)
